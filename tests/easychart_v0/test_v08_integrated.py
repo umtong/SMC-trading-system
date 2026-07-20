@@ -48,9 +48,13 @@ def fixture(monkeypatch, *, blocker=None, net_target_r: float = 1.0):
         location_ob=location,
         authority_id="v09-owned",
     )
+    source_block = SimpleNamespace(known_at=ts("2025-01-01 10:10"))
     book = SimpleNamespace(
         symbol="BTCUSDT",
-        order_blocks={Timeframe.M5: (object(),), Timeframe.M15: (object(),)},
+        order_blocks={
+            Timeframe.M5: (source_block,),
+            Timeframe.M15: (object(),),
+        },
         fvgs={Timeframe.M5: ()},
     )
 
