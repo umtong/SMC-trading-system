@@ -52,4 +52,5 @@ jobs:
           name: smc-trading-system-repository-snapshot
           path: export/SMC-trading-system
           compression-level: 9
+          include-hidden-files: true
           if-no-files-found: error
