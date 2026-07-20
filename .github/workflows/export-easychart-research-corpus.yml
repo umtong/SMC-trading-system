@@ -1,0 +1,34 @@
+name: Export EasyChart research corpus
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build source corpus archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/easychart-corpus
+          cp -R data/easychart_captions /tmp/easychart-corpus/
+          cp registrations/easychart_caption_corpus_2026_07.json /tmp/easychart-corpus/
+          cp artifacts/strategy_composition_2026_07_18/EASYCHART_OB_STRATEGY_RECONSTRUCTION_V2.md /tmp/easychart-corpus/
+          cp artifacts/strategy_composition_2026_07_18/EASYCHART_OB_V0_5_LIQUIDITY_DELIVERY_COMPARISON_KO.md /tmp/easychart-corpus/
+          cp artifacts/strategy_composition_2026_07_18/EASYCHART_SR_FLIP_FVG_V0_7_COMPARISON_KO.md /tmp/easychart-corpus/
+          find /tmp/easychart-corpus -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/easychart-corpus/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-research-corpus-${{ github.run_id }}
+          path: /tmp/easychart-corpus
+          if-no-files-found: error
+          retention-days: 14
