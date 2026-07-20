@@ -1,0 +1,87 @@
+name: V12 official derivatives context data
+
+on:
+  push:
+    branches:
+      - agent/v12-one-minute-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build month manifest
+        run: |
+          python - <<'PY' > months.txt
+          year, month = 2022, 1
+          while (year, month) < (2026, 7):
+              print(f"{year:04d}-{month:02d}")
+              month += 1
+              if month == 13:
+                  year += 1
+                  month = 1
+          PY
+
+      - name: Download and verify official USD-M context archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/monthly"
+          mkdir -p official-binance-context
+          : > official-binance-context/MISSING.txt
+          for symbol in BTCUSDT ETHUSDT; do
+            for dataset in metrics fundingRate; do
+              mkdir -p "official-binance-context/${dataset}/${symbol}"
+              while read -r month; do
+                name="${symbol}-${dataset}-${month}.zip"
+                url="${root}/${dataset}/${symbol}/${name}"
+                out="official-binance-context/${dataset}/${symbol}/${name}"
+                if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 "${url}" --output "${out}"; then
+                  curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 120 "${url}.CHECKSUM" --output "${out}.CHECKSUM"
+                  expected="$(awk '{print tolower($1)}' "${out}.CHECKSUM")"
+                  actual="$(sha256sum "${out}" | awk '{print tolower($1)}')"
+                  test "${actual}" = "${expected}"
+                else
+                  rm -f "${out}"
+                  echo "${url}" >> official-binance-context/MISSING.txt
+                fi
+              done < months.txt
+            done
+
+            dataset="premiumIndexKlines"
+            interval="5m"
+            mkdir -p "official-binance-context/${dataset}/${symbol}/${interval}"
+            while read -r month; do
+              name="${symbol}-${interval}-${month}.zip"
+              url="${root}/${dataset}/${symbol}/${interval}/${name}"
+              out="official-binance-context/${dataset}/${symbol}/${interval}/${name}"
+              if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 "${url}" --output "${out}"; then
+                curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 120 "${url}.CHECKSUM" --output "${out}.CHECKSUM"
+                expected="$(awk '{print tolower($1)}' "${out}.CHECKSUM")"
+                actual="$(sha256sum "${out}" | awk '{print tolower($1)}')"
+                test "${actual}" = "${expected}"
+              else
+                rm -f "${out}"
+                echo "${url}" >> official-binance-context/MISSING.txt
+              fi
+            done < months.txt
+          done
+          find official-binance-context -type f -name '*.zip' -print0 | sort -z | xargs -0 -r sha256sum > official-binance-context/MANIFEST.sha256
+          echo "verified archives: $(find official-binance-context -type f -name '*.zip' | wc -l)"
+          echo "missing archives: $(wc -l < official-binance-context/MISSING.txt)"
+          cat official-binance-context/MISSING.txt
+
+      - name: Upload verified derivatives context
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-context-2022-2026-${{ github.run_id }}
+          path: official-binance-context
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
