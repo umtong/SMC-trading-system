@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - agent/v08-robust-growth-protocol
   workflow_dispatch:
 
 permissions:
