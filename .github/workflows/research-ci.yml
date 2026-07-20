@@ -28,4 +28,20 @@ jobs:
         run: python -m pip install -e ".[dev]"
 
       - name: Run strategy tests
-        run: python -m pytest tests/easychart_v0 -q
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests/easychart_v0 -q > pytest.log 2>&1
+          status=$?
+          cat pytest.log
+          exit "$status"
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-${{ github.run_id }}
+          path: pytest.log
+          if-no-files-found: error
+          retention-days: 7
