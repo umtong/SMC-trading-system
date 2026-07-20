@@ -1,0 +1,139 @@
+{
+  "policy_version": "easychart_smc_causal_delivery_v1",
+  "status": "RESEARCH_ONLY",
+  "authority_order": [
+    "EasyChart original video/caption scene",
+    "repeated compatible behavior across independent EasyChart root episodes",
+    "SMC/ICT causal mechanics used only to close unresolved gaps",
+    "explicit engineering formula",
+    "legacy GitHub code only as a falsifiable comparison target"
+  ],
+  "central_thesis": "A tradable setup must connect a pre-existing draw on liquidity, a completed liquidity event, displacement that owns a meaningful structure break, a return to the array created by that same displacement, an invalidation level, and the next unconsumed structural objective.",
+  "portfolio": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "maximum_global_pending_or_open_positions": 1,
+    "pyramiding": false,
+    "risk_fraction_of_current_equity_per_trade": 0.03,
+    "risk_includes_entry_fee_stop_fee_and_adverse_stop_slippage": true,
+    "maximum_required_leverage": 10.0,
+    "unsafe_exact_risk_action": "NO_TRADE"
+  },
+  "narratives": {
+    "reversal": {
+      "sequence": [
+        "valid HTF location at external liquidity",
+        "external liquidity sweep",
+        "close back through the swept level",
+        "event-owned displacement through a pre-existing swing",
+        "fresh OB/FVG/overlap created by that displacement",
+        "first clean return",
+        "stop beyond sweep invalidation",
+        "exit at nearest pre-existing unconsumed structural objective"
+      ],
+      "execution_model": "sweep_mss_return"
+    },
+    "continuation": {
+      "sequence": [
+        "pre-existing HTF draw on liquidity",
+        "H1-aligned boundary break by close",
+        "acceptance after the break",
+        "event-owned displacement through a pre-existing swing",
+        "first retest of the owned FVG/OB/broken boundary",
+        "no later opposing sweep superseding the narrative",
+        "stop beyond the causal origin",
+        "exit at nearest pre-existing unconsumed structural objective"
+      ],
+      "execution_model": "break_accept_retest"
+    },
+    "continuation_reentry": {
+      "sequence": [
+        "previous position fully closed",
+        "original authority remains valid",
+        "price departs at least 1.0R",
+        "fresh micro delivery confirms defense",
+        "new independent order only",
+        "maximum episode 4",
+        "authority lifetime 72 hours"
+      ],
+      "execution_model": "delivered_ob_reentry"
+    }
+  },
+  "entry": {
+    "permitted_arrays": [
+      "event-owned order block",
+      "event-owned fair value gap",
+      "actual OB/FVG overlap",
+      "accepted broken boundary"
+    ],
+    "minimum_displacement_body_atr": 0.5,
+    "first_return_required_for_new_authority": true,
+    "entry_must_be_inside_owned_zone": true,
+    "market_chase_after_displacement": false
+  },
+  "stop": {
+    "principle": "Place the stop where the causal thesis is invalid, never at an arbitrary fixed distance.",
+    "reversal": "beyond the sweep extreme plus execution buffer",
+    "continuation": "beyond the displacement origin or protected swing that owns the break",
+    "reentry": "beyond the still-valid authority formation extreme",
+    "widen_after_entry": false
+  },
+  "target": {
+    "selection": "nearest valid obstacle in the trade direction",
+    "eligible_kinds_in_priority_order": [
+      "external liquidity",
+      "confirmed pivot",
+      "opposing order block",
+      "FVG only when separately paired with a liquidity owner"
+    ],
+    "skip_near_obstacle_for_farther_r": false,
+    "minimum_net_r_after_costs": 0.35,
+    "management": {
+      "below_1p4_net_r": "full exit at first obstacle",
+      "at_or_above_1p4_net_r": "half at 1R, move remainder stop to breakeven after the partial fill, runner to first obstacle"
+    }
+  },
+  "conflict_resolution": {
+    "opposing_same_symbol_narratives_at_same_decision_time": "NO_TRADE",
+    "global_tie_break_after_all_boolean_gates": [
+      "earlier executable entry",
+      "external target",
+      "target kind",
+      "higher net R to nearest obstacle",
+      "stronger displacement",
+      "lower required leverage",
+      "symbol and stable identifier"
+    ],
+    "family_priority_as_signal_substitute": false
+  },
+  "state_machine": [
+    "OBSERVING",
+    "ARMED",
+    "ENTRY_PENDING",
+    "OPEN",
+    "DEPARTURE_REQUIRED",
+    "REARMED",
+    "INVALIDATED or EXPIRED"
+  ],
+  "blind_proxy_evidence": {
+    "note": "These results belong to the frozen three-family proxy and do not yet prove the structural-target implementation.",
+    "seed_ranges": ["8000-8999", "9000-9999"],
+    "seed_count": 2000,
+    "minimum_multiple": 3.109779054187759,
+    "q01_multiple": 4.826579359713805,
+    "q05_multiple": 7.513123713198942,
+    "median_multiple": 20.785968941855337,
+    "fraction_at_least_5x": 0.9875,
+    "median_trades": 1187.5,
+    "median_win_rate": 0.8323563269879568,
+    "median_average_net_r": 0.0894060797196255,
+    "maximum_drawdown_observed": 0.4385050641646212
+  },
+  "promotion_gates": {
+    "rules_frozen_before_seed_generation": true,
+    "fresh_seed_bank": "10000-19999",
+    "all_samples_at_least_5x": true,
+    "maximum_drawdown": 0.35,
+    "execution_stress_required": true,
+    "paper_required_before_live": true
+  }
+}
