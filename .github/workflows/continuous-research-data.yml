@@ -1,0 +1,48 @@
+name: Continuous research data
+
+on:
+  push:
+    branches:
+      - agent/verify-growth-hypotheses
+    paths:
+      - scripts/download_binance_continuous_research.py
+      - .github/workflows/continuous-research-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-continuous-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package dependencies
+        run: python -m pip install -e .
+
+      - name: Download continuous training validation and holdout data
+        shell: bash
+        run: |
+          mkdir -p results/continuous_research
+          set -o pipefail
+          python scripts/download_binance_continuous_research.py \
+            --output-dir results/continuous_research/data 2>&1 \
+            | tee results/continuous_research/download.log
+
+      - name: Publish continuous research data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: continuous-research-data
+          path: results/continuous_research
+          compression-level: 9
+          if-no-files-found: error
