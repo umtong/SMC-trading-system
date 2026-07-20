@@ -259,6 +259,12 @@ def sample_trials(
 
 @dataclass(frozen=True, slots=True)
 class TrialPerformance:
+    """One chronological BTC/ETH shared-equity trial.
+
+    ``trades`` counts only completed trades.  Pending, cancelled, rejected and
+    censored intents never satisfy the frequency requirement.
+    """
+
     trial_fingerprint: str
     initial_equity: float
     final_equity: float
@@ -266,6 +272,7 @@ class TrialPerformance:
     trades: int
     wins: int
     net_r: float
+    operating_days: int = 140
     average_net_r: float | None = None
 
     def __post_init__(self) -> None:
@@ -278,6 +285,8 @@ class TrialPerformance:
             raise ValueError("final_equity cannot be negative")
         if not 0 <= drawdown <= 1:
             raise ValueError("max_drawdown_fraction must be between zero and one")
+        if self.operating_days <= 0:
+            raise ValueError("operating_days must be positive")
         if self.trades < 0 or not 0 <= self.wins <= self.trades:
             raise ValueError("invalid trade counts")
         net_r = _finite(self.net_r, name="net_r")
@@ -302,6 +311,14 @@ class TrialPerformance:
     def win_rate(self) -> float | None:
         return None if self.trades == 0 else self.wins / self.trades
 
+    @property
+    def trades_per_operating_day(self) -> float:
+        return self.trades / self.operating_days
+
+    @property
+    def trade_surplus_over_operating_days(self) -> int:
+        return self.trades - self.operating_days
+
 
 @dataclass(frozen=True, slots=True)
 class RobustnessSummary:
@@ -317,6 +334,9 @@ class RobustnessSummary:
     worst_max_drawdown_fraction: float
     minimum_trades: int
     median_trades: float
+    minimum_trades_per_operating_day: float
+    median_trades_per_operating_day: float
+    minimum_trade_surplus_over_operating_days: int
     median_average_net_r: float | None
 
 
@@ -332,6 +352,10 @@ def summarize_trials(
     multiples = [item.equity_multiple for item in performances]
     drawdowns = [item.max_drawdown_fraction for item in performances]
     trades = [item.trades for item in performances]
+    trade_rates = [item.trades_per_operating_day for item in performances]
+    trade_surpluses = [
+        item.trade_surplus_over_operating_days for item in performances
+    ]
     averages = [
         item.average_net_r
         for item in performances
@@ -350,6 +374,9 @@ def summarize_trials(
         worst_max_drawdown_fraction=max(drawdowns),
         minimum_trades=min(trades),
         median_trades=statistics.median(trades),
+        minimum_trades_per_operating_day=min(trade_rates),
+        median_trades_per_operating_day=statistics.median(trade_rates),
+        minimum_trade_surplus_over_operating_days=min(trade_surpluses),
         median_average_net_r=(None if not averages else statistics.median(averages)),
     )
 
@@ -359,7 +386,7 @@ class GrowthGate:
     target_multiple: float = 5.0
     required_target_hit_rate: float = 1.0
     minimum_trials: int = 20
-    minimum_trades_per_trial: int = 20
+    minimum_trade_surplus_over_operating_days: int = 1
     maximum_worst_drawdown_fraction: float = 0.35
     minimum_median_average_net_r: float = 0.0
 
@@ -367,8 +394,12 @@ class GrowthGate:
         _positive(self.target_multiple, name="target_multiple")
         if not 0 <= self.required_target_hit_rate <= 1:
             raise ValueError("required_target_hit_rate must be between zero and one")
-        if self.minimum_trials <= 0 or self.minimum_trades_per_trial < 0:
-            raise ValueError("minimum trial and trade counts are invalid")
+        if self.minimum_trials <= 0:
+            raise ValueError("minimum_trials must be positive")
+        if self.minimum_trade_surplus_over_operating_days < 1:
+            raise ValueError(
+                "minimum_trade_surplus_over_operating_days must be at least one"
+            )
         if not 0 <= self.maximum_worst_drawdown_fraction <= 1:
             raise ValueError("maximum_worst_drawdown_fraction must be between zero and one")
         _finite(self.minimum_median_average_net_r, name="minimum_median_average_net_r")
@@ -395,8 +426,11 @@ def evaluate_growth_gate(
         reasons.append("insufficient_trials")
     if summary.target_hit_rate + 1e-12 < gate.required_target_hit_rate:
         reasons.append("target_multiple_not_repeated")
-    if summary.minimum_trades < gate.minimum_trades_per_trial:
-        reasons.append("insufficient_trade_frequency")
+    if (
+        summary.minimum_trade_surplus_over_operating_days
+        < gate.minimum_trade_surplus_over_operating_days
+    ):
+        reasons.append("completed_trades_not_above_operating_days")
     if (
         summary.worst_max_drawdown_fraction
         > gate.maximum_worst_drawdown_fraction + 1e-12
