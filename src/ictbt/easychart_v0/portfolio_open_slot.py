@@ -7,11 +7,11 @@ from typing import Callable, Sequence
 import pandas as pd
 
 from .application import ReplayAttempt, intent_from_opportunity
+from .domain import EntryMode, Timeframe
 from .execution import CostConfig, OrderIntent, RiskConfig
 from .execution_economics import cost_inclusive_target_r
-from .pipeline import FeatureBook, Opportunity, OpportunityRejection
+from .pipeline import Opportunity, OpportunityRejection
 from .portfolio import (
-    Authority,
     CandidateAssembler,
     ClosedPortfolioAttempt,
     PortfolioContext,
@@ -109,7 +109,7 @@ class OpenSlotPortfolioReplayResult:
 @dataclass(frozen=True, slots=True)
 class _PendingOrder:
     context: PortfolioContext
-    authority: Authority
+    authority: object
     opportunity: Opportunity
     intent: OrderIntent
     replay: ReplayResult
@@ -170,7 +170,7 @@ def cost_aware_open_slot_priority(
 def _terminal_pending_order(
     *,
     context: PortfolioContext,
-    authority: Authority,
+    authority: object,
     opportunity: Opportunity,
     intent: OrderIntent,
     replay: ReplayResult,
@@ -340,7 +340,7 @@ def run_open_slot_portfolio(
             next_pending_event is None or next_cutoff <= next_pending_event
         ):
             raw = by_cutoff[next_cutoff]
-            opportunities: list[tuple[Opportunity, PortfolioContext, Authority]] = []
+            opportunities: list[tuple[Opportunity, PortfolioContext, object]] = []
             for context, authority in raw:
                 assembled = assemble_candidate(context.book, authority, costs)
                 if isinstance(assembled, OpportunityRejection):
@@ -361,7 +361,7 @@ def run_open_slot_portfolio(
                         equity=equity,
                         costs=costs,
                         risk=risk,
-                        event_created_entry_mode="limit_first_revisit",
+                        event_created_entry_mode=EntryMode.LIMIT_FIRST_REVISIT,
                     )
                 except ValueError:
                     sizing_rejections += 1
@@ -376,31 +376,8 @@ def run_open_slot_portfolio(
                     candle_interval="5min",
                     costs=costs,
                     volume_bars={
-                        context.book.frames.keys().__iter__().__next__(): context.candles
-                    },
-                )
-                # Use the same explicit volume clocks as the established router.
-                replay = replay_intent(
-                    intent,
-                    candles=context.candles,
-                    candle_interval="5min",
-                    costs=costs,
-                    volume_bars={
-                        # FeatureBook always carries these completed frames.
-                        # Importing Timeframe locally avoids a circular public API.
-                        __import__(
-                            "ictbt.easychart_v0.domain",
-                            fromlist=["Timeframe"],
-                        ).Timeframe.M5: context.candles,
-                        __import__(
-                            "ictbt.easychart_v0.domain",
-                            fromlist=["Timeframe"],
-                        ).Timeframe.M15: context.book.frames[
-                            __import__(
-                                "ictbt.easychart_v0.domain",
-                                fromlist=["Timeframe"],
-                            ).Timeframe.M15
-                        ],
+                        Timeframe.M5: context.candles,
+                        Timeframe.M15: context.book.frames[Timeframe.M15],
                     },
                 )
                 order = _terminal_pending_order(
@@ -411,7 +388,9 @@ def run_open_slot_portfolio(
                     replay=replay,
                     priority=candidate_priority(opportunity, context, costs),
                 )
-                if order.event_at <= next_cutoff and order.fill_at is None:
+                if order.event_at < next_cutoff:
+                    raise RuntimeError("pending terminal event precedes its authority")
+                if order.event_at == next_cutoff and order.fill_at is None:
                     if order.replay.status == "ENTRY_REJECTED":
                         entry_rejections += 1
                     else:
