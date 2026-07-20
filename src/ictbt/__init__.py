@@ -1,24 +1,9 @@
-"""ICT day-trading research engine, isolated from the legacy workspace."""
+"""Current EasyChart/SMC research package.
 
-from .backtest import BacktestConfig, BacktestResult, run_backtest
-from .s2_signals import S2Config
-from .s3_signals import S3Config
-from .s4_signals import S4Config
-from .s5_signals import S5Config
-from .s6_signals import S6Config
-from .s7_signals import S7Config
-from .signals import S1Config, detect_pivot_events
+The public repository intentionally contains only ``ictbt.easychart_v0``.
+Legacy strategy modules remain outside this repository, so importing the
+package root must not eagerly import those unavailable modules.  Consumers
+should import the active research API from ``ictbt.easychart_v0``.
+"""
 
-__all__ = [
-    "BacktestConfig",
-    "BacktestResult",
-    "S1Config",
-    "S2Config",
-    "S3Config",
-    "S4Config",
-    "S5Config",
-    "S6Config",
-    "S7Config",
-    "detect_pivot_events",
-    "run_backtest",
-]
+__all__: list[str] = []
