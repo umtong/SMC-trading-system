@@ -7,12 +7,6 @@ on:
     paths:
       - ".github/v1-bundle/**"
       - ".github/workflows/materialize-v1.yml"
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/v1-bundle/**"
-      - ".github/workflows/materialize-v1.yml"
   workflow_dispatch:
 
 permissions:
@@ -24,9 +18,8 @@ concurrency:
 
 jobs:
   materialize:
-    if: github.head_ref == 'agent/easychart-v1-robust-growth-gate' || github.ref_name == 'agent/easychart-v1-robust-growth-gate'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout staging branch
         uses: actions/checkout@v4
@@ -34,104 +27,100 @@ jobs:
           fetch-depth: 0
           ref: agent/easychart-v1-robust-growth-gate
 
-      - name: Decode, salvage, audit, and extract V1 bundle
+      - name: Verify and extract V1 bundle
         id: extract
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           diagnostic=/tmp/v1-bundle-diagnostic.txt
+          expected_sha=e351a75589317526b35a244d2378c098bc53012cfeec5eff953a3a10530468c2
           : > "$diagnostic"
-          part_count="$(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' | wc -l)"
-          echo "part_count=$part_count" >> "$diagnostic"
-          find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 \
-            | sort -z \
-            | xargs -0 wc -c >> "$diagnostic" 2>&1
-          if test "$part_count" -ne 4; then
-            echo "expected exactly four bundle parts" >> "$diagnostic"
-            exit 10
-          fi
-          cat .github/v1-bundle/part-* > /tmp/easychart-v1.tar.gz.b64
-          echo "combined_base64_bytes=$(wc -c < /tmp/easychart-v1.tar.gz.b64)" >> "$diagnostic"
-          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
-          decode_status=$?
-          echo "base64_decode_status=$decode_status" >> "$diagnostic"
-          echo "decoded_bytes=$(wc -c < /tmp/easychart-v1.tar.gz)" >> "$diagnostic"
-          if test -s /tmp/easychart-v1.tar.gz; then
-            sha256sum /tmp/easychart-v1.tar.gz >> "$diagnostic" 2>&1
-          fi
-          if test "$decode_status" -ne 0; then
-            cat "$diagnostic"
-            exit "$decode_status"
-          fi
 
-          # The original staging transfer has a corrupt gzip CRC/length trailer.
-          # GNU gzip still emits the complete decompressed payload before returning
-          # status 1. The tar container is therefore the second independent
-          # integrity boundary: only a valid tar with every required path is used.
-          gzip -dc /tmp/easychart-v1.tar.gz > /tmp/easychart-v1.tar 2>> "$diagnostic"
-          gzip_stream_status=$?
-          echo "gzip_stream_status=$gzip_stream_status" >> "$diagnostic"
-          echo "raw_tar_bytes=$(wc -c < /tmp/easychart-v1.tar)" >> "$diagnostic"
-          tar -tf /tmp/easychart-v1.tar > /tmp/easychart-v1-files.txt 2>> "$diagnostic"
-          status=$?
-          echo "raw_tar_list_status=$status" >> "$diagnostic"
-          if test "$status" -eq 0; then
-            for required in \
-              src/ictbt/easychart_v1/strategy.py \
-              src/ictbt/easychart_v1/backtest.py \
-              src/ictbt/easychart_v1/validation.py \
-              tests/easychart_v1/test_backtest.py; do
-              grep -qx "$required" /tmp/easychart-v1-files.txt || status=20
-            done
-            echo "required_paths_status=$status" >> "$diagnostic"
-          fi
-          if test "$status" -eq 0; then
-            tar -xf /tmp/easychart-v1.tar 2>> "$diagnostic"
-            status=$?
-            echo "raw_tar_extract_status=$status" >> "$diagnostic"
-          fi
-          if test "$status" -eq 0; then
-            actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
-            mkdir -p artifacts/strategy_composition_2026_07_20
-            printf '%s  transferred-easychart-v1.tar.gz\n' "$actual_sha" > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
-            printf 'gzip_stream_status=%s\nraw_tar_verified=true\n' "$gzip_stream_status" >> artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
-          fi
-          cat "$diagnostic"
-          exit "$status"
+          mapfile -d '' parts < <(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 | sort -z)
+          echo "part_count=${#parts[@]}" | tee -a "$diagnostic"
+          test "${#parts[@]}" -eq 7
+          for part in "${parts[@]}"; do
+            size="$(wc -c < "$part")"
+            printf '%s %s\n' "$size" "$part" | tee -a "$diagnostic"
+            test "$size" -le 19000
+          done
 
-      - name: Upload bundle diagnostic
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v1-bundle-diagnostic-${{ github.run_id }}
-          path: |
-            /tmp/v1-bundle-diagnostic.txt
-            /tmp/easychart-v1.tar
-          if-no-files-found: warn
-          retention-days: 7
+          cat "${parts[@]}" > /tmp/easychart-v1.tar.gz.b64
+          combined_bytes="$(wc -c < /tmp/easychart-v1.tar.gz.b64)"
+          echo "combined_base64_bytes=$combined_bytes" | tee -a "$diagnostic"
+          test "$combined_bytes" -eq 130492
+
+          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz
+          actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
+          echo "expected_sha256=$expected_sha" | tee -a "$diagnostic"
+          echo "actual_sha256=$actual_sha" | tee -a "$diagnostic"
+          test "$actual_sha" = "$expected_sha"
+          gzip -t /tmp/easychart-v1.tar.gz
+
+          tar -tzf /tmp/easychart-v1.tar.gz > /tmp/easychart-v1-files.txt
+          for required in \
+            README.md \
+            pyproject.toml \
+            src/ictbt/easychart_v1/strategy.py \
+            src/ictbt/easychart_v1/features.py \
+            src/ictbt/easychart_v1/backtest.py \
+            src/ictbt/easychart_v1/validation.py \
+            src/ictbt/easychart_v1/paper_live.py \
+            src/ictbt/easychart_v1/live_app.py \
+            src/ictbt/easychart_v1/market_data.py \
+            tests/easychart_v1/test_backtest.py \
+            configs/easychart_v1/promotion_gate.json \
+            scripts/download_binance_vision_5m.py \
+            scripts/run_easychart_v1_random_validation.py \
+            scripts/optimize_easychart_v1_until_promotion.py; do
+            grep -qx "$required" /tmp/easychart-v1-files.txt
+          done
+          echo "tar_required_paths=verified" | tee -a "$diagnostic"
+          tar -xzf /tmp/easychart-v1.tar.gz
+
+          mkdir -p artifacts/strategy_composition_2026_07_20
+          {
+            printf '%s  easychart-v1.tar.gz\n' "$actual_sha"
+            printf 'base64_bytes=%s\n' "$combined_bytes"
+            printf 'gzip_verified=true\n'
+            printf 'tar_required_paths_verified=true\n'
+          } > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
 
       - name: Test materialized tree
         id: materialized_tests
-        if: steps.extract.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
           set +e
           status=0
-          python -m pip install -e ".[dev]" || status=$?
+          : > /tmp/v1-materialized-test.log
+          python -m pip install -e ".[dev]" >> /tmp/v1-materialized-test.log 2>&1 || status=$?
           if test "$status" -eq 0; then
-            python -m pytest tests/easychart_v0 tests/easychart_v1 -q || status=$?
+            python -m pytest tests/easychart_v0 tests/easychart_v1 -q >> /tmp/v1-materialized-test.log 2>&1 || status=$?
           fi
           if test "$status" -eq 0; then
-            python -m ictbt.easychart_v1 required-edge --trades 141 280 || status=$?
+            python -m ictbt.easychart_v1 required-edge --trades 141 280 >> /tmp/v1-materialized-test.log 2>&1 || status=$?
           fi
           if test "$status" -eq 0; then
-            easychart-v1 --help >/dev/null || status=$?
+            easychart-v1 --help >> /tmp/v1-materialized-test.log 2>&1 || status=$?
           fi
+          cat /tmp/v1-materialized-test.log
           printf '%s\n' "$status" > /tmp/v1-materialized-test-status
           exit "$status"
 
-      - name: Commit materialized sources
+      - name: Upload materialization evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-materialization-${{ github.run_id }}
+          path: |
+            /tmp/v1-bundle-diagnostic.txt
+            /tmp/easychart-v1-files.txt
+            /tmp/v1-materialized-test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit verified materialized sources
         if: ${{ always() && steps.extract.outcome == 'success' }}
         shell: bash
         run: |
@@ -141,17 +130,20 @@ jobs:
           git rm -r .github/v1-bundle
           git rm .github/workflows/materialize-v1.yml
           git add -A
+          if test -f scripts/optimize_easychart_v1_candidates.py; then
+            git add -f scripts/optimize_easychart_v1_candidates.py
+          fi
           git diff --cached --check
           git commit -m "Materialize EasyChart V1 robust growth research core"
           git push origin HEAD:agent/easychart-v1-robust-growth-gate
 
-      - name: Preserve materialization test failure
+      - name: Preserve test failure status
         if: ${{ always() && steps.extract.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
           status="$(cat /tmp/v1-materialized-test-status 2>/dev/null || echo 1)"
           if test "$status" -ne 0; then
-            echo "Materialized source was committed for repair, but its test suite failed with status $status."
+            echo "Verified sources were materialized, but V0+V1 validation failed with status $status."
             exit "$status"
           fi
