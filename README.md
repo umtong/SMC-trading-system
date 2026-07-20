@@ -40,12 +40,13 @@ SMC-trading-system/
 ├─ results/easychart_*/             버전별 요약·진단·거래 원장
 ├─ data/easychart_captions/yt_dlp/  EasyChart 연구에 사용한 영상 자막
 ├─ registrations/                   사용 자료 묶음과 등록 정보
-├─ MAIN_AGENT_STATE.md              현재 전략·결과·다음 작업의 기준선
+├─ V08_RESEARCH_STATE.md            V0.8 draft의 최신 결정·게이트·미입증 항목
+├─ MAIN_AGENT_STATE.md              V0.7 이하 보존 전략·결과 기준선
 ├─ pyproject.toml                   Python 패키지·CLI·테스트 설정
 └─ README.md                        프로젝트 개요와 진입 안내
 ```
 
-현재 작업을 파악할 때는 `README.md` 다음에 `MAIN_AGENT_STATE.md`를 읽고, 세부 규칙이나 결과가 필요할 때 `artifacts`, `results`, `src` 순으로 확인하면 된다.
+V0.8 draft를 파악할 때는 `README.md` 다음에 `V08_RESEARCH_STATE.md`, `MAIN_AGENT_STATE.md` 순으로 읽는다. 세부 규칙이나 결과가 필요할 때 `artifacts`, `results`, `src`를 확인한다.
 
 ## 현재 상태
 
@@ -56,11 +57,12 @@ SMC-trading-system/
 
 V0.8은 아직 반복 random trial에서 5배·141건 이상을 입증하지 못했으므로 paper/live 주문 권한은 없다.
 
-현재 전략·결과·다음 작업은 [MAIN_AGENT_STATE.md](MAIN_AGENT_STATE.md)를 가장 먼저 따른다. 과거 문서와 충돌하면 사용자의 최신 결정, 현재 코드와 실행 결과, `MAIN_AGENT_STATE.md`, 정책·수식 문서, 과거 보고서 순으로 판단한다.
+V0.8 branch에서 내용이 충돌하면 사용자의 최신 결정, 현재 코드와 실제 실행 결과, [V0.8 연구 상태 기준선](V08_RESEARCH_STATE.md), [V0.7 이하 보존 상태](MAIN_AGENT_STATE.md), 정책·수식·과거 보고서 순으로 판단한다.
 
 ## 주요 문서
 
-- [현재 상태 기준선](MAIN_AGENT_STATE.md)
+- [V0.8 연구 상태 기준선](V08_RESEARCH_STATE.md)
+- [V0.7 이하 보존 상태](MAIN_AGENT_STATE.md)
 - [V0.8 강건 성장 프로토콜](artifacts/strategy_composition_2026_07_18/EASYCHART_V08_ROBUST_GROWTH_PROTOCOL_KO.md)
 - [전략 정책 기준선](artifacts/strategy_composition_2026_07_18/EASYCHART_OB_V0_POLICY_DECISION_DRAFT.md)
 - [OHLCV 판정 수식](artifacts/strategy_composition_2026_07_18/EASYCHART_OB_V0_OHLCV_FORMULA_CONTRACT.md)
