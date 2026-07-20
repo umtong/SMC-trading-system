@@ -105,6 +105,15 @@ from .application import (
     plan_snapshot,
     run_historical_replay,
 )
+from .portfolio import (
+    CandidateAssembler,
+    CandidatePriority,
+    ClosedPortfolioAttempt,
+    PortfolioContext,
+    PortfolioReplayResult,
+    default_candidate_priority,
+    run_global_portfolio,
+)
 from .v05 import (
     V05BuildDiagnostics,
     V05BuildResult,
@@ -258,6 +267,13 @@ __all__ = [
     "load_5m_csv",
     "plan_snapshot",
     "run_historical_replay",
+    "CandidateAssembler",
+    "CandidatePriority",
+    "ClosedPortfolioAttempt",
+    "PortfolioContext",
+    "PortfolioReplayResult",
+    "default_candidate_priority",
+    "run_global_portfolio",
     "V05BuildDiagnostics",
     "V05BuildResult",
     "build_m15_m5_liquidity_delivery_authorities",
