@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - agent/v08-robust-growth-protocol
   workflow_dispatch:
 
 permissions:
@@ -46,12 +45,3 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
-
-      - name: Export source snapshot for agent validation
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-snapshot-${{ github.run_id }}
-          path: .
-          include-hidden-files: true
-          retention-days: 1
