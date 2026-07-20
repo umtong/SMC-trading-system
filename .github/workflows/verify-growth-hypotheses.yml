@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - agent/verify-growth-hypotheses
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_dispatch:
 
 permissions:
