@@ -7,6 +7,12 @@ on:
     paths:
       - ".github/v1-bundle/**"
       - ".github/workflows/materialize-v1.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/**"
+      - ".github/workflows/materialize-v1.yml"
   workflow_dispatch:
 
 permissions:
@@ -18,6 +24,7 @@ concurrency:
 
 jobs:
   materialize:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
