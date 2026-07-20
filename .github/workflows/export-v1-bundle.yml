@@ -7,6 +7,12 @@ on:
     paths:
       - ".github/v1-bundle/export-trigger-*"
       - ".github/workflows/export-v1-bundle.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/export-trigger-*"
+      - ".github/workflows/export-v1-bundle.yml"
   workflow_dispatch:
 
 permissions:
@@ -14,6 +20,7 @@ permissions:
 
 jobs:
   export:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
