@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import date
 import hashlib
 import io
 from pathlib import Path
@@ -32,29 +31,7 @@ KLINE_COLUMNS = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ArchiveRequest:
-    symbol: str
-    period: str
-    label: str
-
-    @property
-    def filename(self) -> str:
-        return f"{self.symbol}-{INTERVAL}-{self.label}.zip"
-
-    @property
-    def url(self) -> str:
-        return (
-            f"{BASE_URL}/{self.period}/klines/{self.symbol}/{INTERVAL}/"
-            f"{self.filename}"
-        )
-
-    @property
-    def checksum_url(self) -> str:
-        return f"{self.url}.CHECKSUM"
-
-
-def _utc_day(value: str) -> pd.Timestamp:
+def _utc_day(value: object) -> pd.Timestamp:
     timestamp = pd.Timestamp(value)
     if pd.isna(timestamp):
         raise ValueError("date must be valid")
@@ -75,46 +52,73 @@ def _next_month(value: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(year=value.year, month=value.month + 1, day=1, tz="UTC")
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveRequest:
+    symbol: str
+    period: str
+    label: str
+    covered_start: pd.Timestamp
+    covered_end: pd.Timestamp
+
+    def __post_init__(self) -> None:
+        if not self.symbol or self.period not in {"monthly", "daily"} or not self.label:
+            raise ValueError("archive identity is invalid")
+        start = _utc_day(self.covered_start)
+        end = _utc_day(self.covered_end)
+        if end <= start:
+            raise ValueError("archive coverage must contain at least one day")
+        object.__setattr__(self, "covered_start", start)
+        object.__setattr__(self, "covered_end", end)
+
+    @property
+    def filename(self) -> str:
+        return f"{self.symbol}-{INTERVAL}-{self.label}.zip"
+
+    @property
+    def url(self) -> str:
+        return (
+            f"{BASE_URL}/{self.period}/klines/{self.symbol}/{INTERVAL}/"
+            f"{self.filename}"
+        )
+
+    @property
+    def checksum_url(self) -> str:
+        return f"{self.url}.CHECKSUM"
+
+
 def plan_archives(
     symbol: str,
     *,
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> tuple[ArchiveRequest, ...]:
-    """Plan full months as monthly archives and boundary months as daily files."""
+    """Request one monthly archive per touched month.
+
+    Historical boundary months are still cheapest as one monthly file.  When a
+    current or otherwise unavailable monthly file returns 404, the request's
+    exact covered date range is expanded into daily fallback files.
+    """
 
     if not symbol:
         raise ValueError("symbol is required")
-    if not start < end:
+    begin = _utc_day(start)
+    finish_requested = _utc_day(end)
+    if not begin < finish_requested:
         raise ValueError("start must precede end")
     output: list[ArchiveRequest] = []
-    cursor = _month_start(start)
-    while cursor < end:
-        finish = _next_month(cursor)
-        covered_start = max(start, cursor)
-        covered_end = min(end, finish)
-        if covered_start == cursor and covered_end == finish:
-            output.append(
-                ArchiveRequest(
-                    symbol=symbol,
-                    period="monthly",
-                    label=cursor.strftime("%Y-%m"),
-                )
+    cursor = _month_start(begin)
+    while cursor < finish_requested:
+        month_end = _next_month(cursor)
+        output.append(
+            ArchiveRequest(
+                symbol=symbol,
+                period="monthly",
+                label=cursor.strftime("%Y-%m"),
+                covered_start=max(begin, cursor),
+                covered_end=min(finish_requested, month_end),
             )
-        else:
-            for day in pd.date_range(
-                covered_start,
-                covered_end - pd.Timedelta(days=1),
-                freq="1D",
-            ):
-                output.append(
-                    ArchiveRequest(
-                        symbol=symbol,
-                        period="daily",
-                        label=day.strftime("%Y-%m-%d"),
-                    )
-                )
-        cursor = finish
+        )
+        cursor = month_end
     return tuple(output)
 
 
@@ -152,17 +156,19 @@ def _download(
 
 
 def _daily_fallback(monthly: ArchiveRequest) -> tuple[ArchiveRequest, ...]:
-    month = pd.Timestamp(f"{monthly.label}-01", tz="UTC")
-    finish = _next_month(month)
+    if monthly.period != "monthly":
+        raise ValueError("daily fallback requires a monthly request")
     return tuple(
         ArchiveRequest(
             symbol=monthly.symbol,
             period="daily",
             label=day.strftime("%Y-%m-%d"),
+            covered_start=day,
+            covered_end=day + pd.Timedelta(days=1),
         )
         for day in pd.date_range(
-            month,
-            finish - pd.Timedelta(days=1),
+            monthly.covered_start,
+            monthly.covered_end - pd.Timedelta(days=1),
             freq="1D",
         )
     )
@@ -255,7 +261,9 @@ def download_symbol(
     cache_dir: Path,
     verify_checksum: bool = True,
 ) -> Path:
-    requests = plan_archives(symbol, start=start, end=end)
+    begin = _utc_day(start)
+    finish = _utc_day(end)
+    requests = plan_archives(symbol, start=begin, end=finish)
     archives: list[Path] = []
     for ordinal, request in enumerate(requests, start=1):
         print(
@@ -271,15 +279,17 @@ def download_symbol(
         )
 
     frames = [_load_archive(path) for path in archives]
+    if not frames:
+        raise ValueError(f"no archives downloaded for {symbol}")
     combined = pd.concat(frames, ignore_index=True)
     combined = combined.loc[
-        (combined["open_time"] >= start) & (combined["open_time"] < end)
+        (combined["open_time"] >= begin) & (combined["open_time"] < finish)
     ].copy()
     combined = combined.sort_values("open_time").drop_duplicates(
         subset=["open_time"],
         keep="last",
     )
-    expected_index = pd.date_range(start, end, freq="5min", inclusive="left")
+    expected_index = pd.date_range(begin, finish, freq="5min", inclusive="left")
     actual_index = pd.DatetimeIndex(combined["open_time"])
     if not actual_index.equals(expected_index):
         missing = expected_index.difference(actual_index)
