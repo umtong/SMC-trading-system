@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from types import SimpleNamespace
 from typing import Callable, Iterable, Sequence
 
 import pandas as pd
@@ -64,7 +63,6 @@ class PortfolioContext:
                 self.score_start.normalize(),
                 final_day,
                 freq="1D",
-                tz="UTC",
             )
         )
 
@@ -200,21 +198,22 @@ def _first_expiration(
     opportunity: Opportunity,
     replay: ReplayResult,
 ) -> tuple[pd.Timestamp, str] | None:
-    choices = tuple(
-        item
-        for item in (
-            _preentry_expiration(context.book, opportunity, replay),
-            _score_boundary_expiration(context, replay),
-        )
-        if item is not None
-    )
-    if not choices:
-        return None
-    expiration = min(choices, key=lambda item: (item[0], item[1]))
     fill_time = _entry_fill_time(replay)
-    if fill_time is not None and expiration[0] >= fill_time:
-        return None
-    return expiration
+    choices: list[tuple[pd.Timestamp, str]] = []
+
+    structural = _preentry_expiration(context.book, opportunity, replay)
+    if structural is not None and (
+        fill_time is None or structural[0] < fill_time
+    ):
+        choices.append(structural)
+
+    score_boundary = _score_boundary_expiration(context, replay)
+    if score_boundary is not None:
+        # Unlike structural expiry, the score boundary is an evaluation rule:
+        # a fill exactly at or after score_end must never become a scored trade.
+        choices.append(score_boundary)
+
+    return None if not choices else min(choices, key=lambda item: (item[0], item[1]))
 
 
 def _candidate_cutoffs(
