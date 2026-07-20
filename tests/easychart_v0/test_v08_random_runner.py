@@ -22,19 +22,18 @@ SPEC.loader.exec_module(runner)
 
 
 def frame(start: str, end: str) -> pd.DataFrame:
-    index = pd.date_range(
-        pd.Timestamp(start, tz="UTC"),
-        pd.Timestamp(end, tz="UTC"),
-        freq="5min",
-        inclusive="left",
-    )
+    """Two rows are enough: coverage discovery reads only first/last timestamps."""
+
+    opened = pd.Timestamp(start, tz="UTC")
+    final = pd.Timestamp(end, tz="UTC") - pd.Timedelta(minutes=5)
+    index = pd.DatetimeIndex((opened, final), name="open_time")
     return pd.DataFrame(
         {
-            "open": 1.0,
-            "high": 1.1,
-            "low": 0.9,
-            "close": 1.0,
-            "volume": 1.0,
+            "open": (1.0, 1.0),
+            "high": (1.1, 1.1),
+            "low": (0.9, 0.9),
+            "close": (1.0, 1.0),
+            "volume": (1.0, 1.0),
         },
         index=index,
     )
