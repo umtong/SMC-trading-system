@@ -82,7 +82,6 @@ def _scored_dates(trial: TrialSpec) -> frozenset[pd.Timestamp]:
                 window.score_start,
                 last,
                 freq="1D",
-                tz="UTC",
             )
         )
     return frozenset(output)
