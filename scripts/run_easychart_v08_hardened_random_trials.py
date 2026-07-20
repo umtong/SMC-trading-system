@@ -9,6 +9,7 @@ from pathlib import Path
 import run_easychart_v08_random_trials as base
 
 from ictbt.easychart_v0.domain import B1Subtype
+from ictbt.easychart_v0.portfolio_open_slot import run_open_slot_portfolio
 from ictbt.easychart_v0.research_governance import (
     evaluate_promotion_eligibility,
     growth_feasibility,
@@ -32,6 +33,7 @@ ARMS = (
     "leader_plus_all_v08_hardened",
 )
 _LAST_ARGS: argparse.Namespace | None = None
+_BASE_TRIAL_SUMMARY = base._trial_summary
 
 
 def _args() -> argparse.Namespace:
@@ -132,6 +134,47 @@ def _build_authority_sets(
     return sets, diagnostics
 
 
+def _run_open_position_slot(
+    contexts,
+    *,
+    initial_equity,
+    costs,
+    risk,
+    assemble_candidate,
+    **_ignored,
+):
+    cap = (
+        8.0
+        if _LAST_ARGS is None
+        else float(_LAST_ARGS.maximum_notional_to_equity)
+    )
+    return run_open_slot_portfolio(
+        contexts,
+        initial_equity=initial_equity,
+        costs=costs,
+        risk=risk,
+        assemble_candidate=assemble_candidate,
+        maximum_notional_to_equity=cap,
+    )
+
+
+def _trial_summary(*, arm, fingerprint, result):
+    row = _BASE_TRIAL_SUMMARY(
+        arm=arm,
+        fingerprint=fingerprint,
+        result=result,
+    )
+    row.update(
+        {
+            "exposure_rejections": result.exposure_rejections,
+            "pending_orders_created": result.pending_orders_created,
+            "cross_cancelled_pending": result.cross_cancelled_pending,
+            "maximum_concurrent_pending": result.maximum_concurrent_pending,
+        }
+    )
+    return row
+
+
 def _trial_specs(summary: dict[str, object]) -> tuple[TrialSpec, ...]:
     manifests = summary["trial_manifests"]
     assert isinstance(manifests, dict)
@@ -197,6 +240,11 @@ def _enrich_summary(args: argparse.Namespace) -> None:
         "trial_overlap": asdict(overlap),
         "minimum_trade_count_growth_feasibility": asdict(minimum_feasibility),
         "iid_trade_bootstrap_is_diagnostic_only": True,
+        "pending_order_model": (
+            "multiple_causal_limits_while_flat; earliest_fill_wins; "
+            "all_siblings_cross_cancel; maximum_open_positions=1"
+        ),
+        "maximum_notional_to_equity": args.maximum_notional_to_equity,
         "paper_live_promotion_eligible": bool(
             arms[best_arm]["promotion"]["eligible"]
         ),
@@ -212,6 +260,8 @@ def main() -> int:
     base.ARMS = ARMS
     base._args = _args
     base._build_authority_sets = _build_authority_sets
+    base.run_global_portfolio = _run_open_position_slot
+    base._trial_summary = _trial_summary
     result = base.main()
     if _LAST_ARGS is not None:
         _enrich_summary(_LAST_ARGS)
