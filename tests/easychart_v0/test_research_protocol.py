@@ -58,17 +58,28 @@ def test_partial_2026_coverage_never_samples_beyond_available_data() -> None:
     )
 
 
+def performance(
+    index: int,
+    *,
+    final_equity: float,
+    trades: int = 141,
+    operating_days: int = 140,
+) -> TrialPerformance:
+    return TrialPerformance(
+        f"trial-{index}",
+        10_000,
+        final_equity,
+        0.18,
+        trades,
+        min(trades, 85),
+        55.0,
+        operating_days=operating_days,
+    )
+
+
 def test_growth_gate_requires_repeated_five_x_not_one_lucky_trial() -> None:
     performances = tuple(
-        TrialPerformance(
-            f"trial-{index}",
-            10_000,
-            51_000 if index else 49_000,
-            0.18,
-            25,
-            15,
-            10.0,
-        )
+        performance(index, final_equity=51_000 if index else 49_000)
         for index in range(20)
     )
 
@@ -76,19 +87,41 @@ def test_growth_gate_requires_repeated_five_x_not_one_lucky_trial() -> None:
 
     assert not result.passed
     assert "target_multiple_not_repeated" in result.reasons
+    assert "completed_trades_not_above_operating_days" not in result.reasons
     assert result.summary.target_hit_rate == pytest.approx(0.95)
+
+
+def test_growth_gate_requires_completed_trades_to_exceed_operating_days() -> None:
+    exactly_one_per_day = tuple(
+        performance(index, final_equity=51_000, trades=140)
+        for index in range(20)
+    )
+    failed = evaluate_growth_gate(exactly_one_per_day)
+
+    assert not failed.passed
+    assert "completed_trades_not_above_operating_days" in failed.reasons
+    assert failed.summary.minimum_trades_per_operating_day == 1.0
+    assert failed.summary.minimum_trade_surplus_over_operating_days == 0
+
+    above_one_per_day = tuple(
+        performance(index, final_equity=51_000, trades=141)
+        for index in range(20)
+    )
+    passed = evaluate_growth_gate(above_one_per_day)
+
+    assert passed.passed
+    assert passed.summary.minimum_trades_per_operating_day == pytest.approx(
+        141 / 140
+    )
+    assert passed.summary.minimum_trade_surplus_over_operating_days == 1
 
 
 def test_growth_gate_can_pass_strict_contract() -> None:
     performances = tuple(
-        TrialPerformance(
-            f"trial-{index}",
-            10_000,
-            50_000 + index * 100,
-            0.20,
-            22,
-            14,
-            8.0,
+        performance(
+            index,
+            final_equity=50_000 + index * 100,
+            trades=145,
         )
         for index in range(20)
     )
@@ -101,19 +134,20 @@ def test_growth_gate_can_pass_strict_contract() -> None:
     assert result.passed
     assert result.reasons == ()
     assert result.summary.worst_equity_multiple == 5.0
+    assert result.summary.minimum_trade_surplus_over_operating_days == 5
 
 
 def test_bootstrap_path_stress_is_deterministic_and_cost_r_based() -> None:
     first = bootstrap_path_stress(
         (-1.0, 0.8, 1.2, 0.4),
         simulations=500,
-        trades_per_path=40,
+        trades_per_path=141,
         seed=17,
     )
     second = bootstrap_path_stress(
         (-1.0, 0.8, 1.2, 0.4),
         simulations=500,
-        trades_per_path=40,
+        trades_per_path=141,
         seed=17,
     )
 
