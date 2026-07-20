@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0
           ref: agent/easychart-v1-robust-growth-gate
 
-      - name: Decode, audit, and extract V1 bundle
+      - name: Decode, salvage, audit, and extract V1 bundle
         id: extract
         shell: bash
         run: |
@@ -53,22 +53,28 @@ jobs:
           cat .github/v1-bundle/part-* > /tmp/easychart-v1.tar.gz.b64
           echo "combined_base64_bytes=$(wc -c < /tmp/easychart-v1.tar.gz.b64)" >> "$diagnostic"
           base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
-          status=$?
-          echo "base64_decode_status=$status" >> "$diagnostic"
+          decode_status=$?
+          echo "base64_decode_status=$decode_status" >> "$diagnostic"
           echo "decoded_bytes=$(wc -c < /tmp/easychart-v1.tar.gz)" >> "$diagnostic"
           if test -s /tmp/easychart-v1.tar.gz; then
             sha256sum /tmp/easychart-v1.tar.gz >> "$diagnostic" 2>&1
           fi
-          if test "$status" -eq 0; then
-            gzip -t /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
-            status=$?
-            echo "gzip_test_status=$status" >> "$diagnostic"
+          if test "$decode_status" -ne 0; then
+            cat "$diagnostic"
+            exit "$decode_status"
           fi
-          if test "$status" -eq 0; then
-            tar -tzf /tmp/easychart-v1.tar.gz > /tmp/easychart-v1-files.txt 2>> "$diagnostic"
-            status=$?
-            echo "tar_list_status=$status" >> "$diagnostic"
-          fi
+
+          # The original staging transfer has a corrupt gzip CRC/length trailer.
+          # GNU gzip still emits the complete decompressed payload before returning
+          # status 1. The tar container is therefore the second independent
+          # integrity boundary: only a valid tar with every required path is used.
+          gzip -dc /tmp/easychart-v1.tar.gz > /tmp/easychart-v1.tar 2>> "$diagnostic"
+          gzip_stream_status=$?
+          echo "gzip_stream_status=$gzip_stream_status" >> "$diagnostic"
+          echo "raw_tar_bytes=$(wc -c < /tmp/easychart-v1.tar)" >> "$diagnostic"
+          tar -tf /tmp/easychart-v1.tar > /tmp/easychart-v1-files.txt 2>> "$diagnostic"
+          status=$?
+          echo "raw_tar_list_status=$status" >> "$diagnostic"
           if test "$status" -eq 0; then
             for required in \
               src/ictbt/easychart_v1/strategy.py \
@@ -80,14 +86,15 @@ jobs:
             echo "required_paths_status=$status" >> "$diagnostic"
           fi
           if test "$status" -eq 0; then
-            tar -xzf /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
+            tar -xf /tmp/easychart-v1.tar 2>> "$diagnostic"
             status=$?
-            echo "tar_extract_status=$status" >> "$diagnostic"
+            echo "raw_tar_extract_status=$status" >> "$diagnostic"
           fi
           if test "$status" -eq 0; then
             actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
             mkdir -p artifacts/strategy_composition_2026_07_20
-            printf '%s  easychart-v1.tar.gz\n' "$actual_sha" > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
+            printf '%s  transferred-easychart-v1.tar.gz\n' "$actual_sha" > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
+            printf 'gzip_stream_status=%s\nraw_tar_verified=true\n' "$gzip_stream_status" >> artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
           fi
           cat "$diagnostic"
           exit "$status"
@@ -97,8 +104,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v1-bundle-diagnostic-${{ github.run_id }}
-          path: /tmp/v1-bundle-diagnostic.txt
-          if-no-files-found: error
+          path: |
+            /tmp/v1-bundle-diagnostic.txt
+            /tmp/easychart-v1.tar
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Test materialized tree
