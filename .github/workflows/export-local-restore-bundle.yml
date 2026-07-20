@@ -1,0 +1,46 @@
+name: Export local restore bundle
+
+on:
+  push:
+    branches:
+      - agent/verify-growth-hypotheses
+    paths:
+      - .github/workflows/export-local-restore-bundle.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build repository snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export/SMC-trading-system
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='__pycache__/' \
+            --exclude='.pytest_cache/' \
+            --exclude='*.pyc' \
+            ./ export/SMC-trading-system/
+          printf '%s\n' "${GITHUB_SHA}" > export/SMC-trading-system/GITHUB_HEAD_SHA.txt
+          printf '%s\n' "${GITHUB_REF_NAME}" > export/SMC-trading-system/GITHUB_REF_NAME.txt
+          find export/SMC-trading-system -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > export/SMC-trading-system/SHA256SUMS_REPOSITORY.txt
+
+      - name: Upload repository snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: smc-trading-system-repository-snapshot
+          path: export/SMC-trading-system
+          compression-level: 9
+          if-no-files-found: error
