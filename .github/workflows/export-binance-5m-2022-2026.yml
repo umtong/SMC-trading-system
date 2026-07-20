@@ -21,14 +21,14 @@ jobs:
       - name: Install data dependencies
         run: python -m pip install pandas numpy
       - name: Download and normalize official Binance futures klines
+        id: download
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          python - <<'PY'
+          set +e
+          mkdir -p /tmp/binance-5m
+          python - <<'PY' > /tmp/binance-5m/download.log 2>&1
           from __future__ import annotations
-          import csv
-          from datetime import date
-          import gzip
           import hashlib
           import io
           import json
@@ -65,12 +65,13 @@ jobs:
               if target.exists() and target.stat().st_size > 0:
                   return target.read_bytes()
               req = urllib.request.Request(url, headers={"User-Agent": "SMC-research/1.0"})
-              with urllib.request.urlopen(req, timeout=120) as response:
+              with urllib.request.urlopen(req, timeout=180) as response:
                   data = response.read()
               target.write_bytes(data)
               return data
 
           manifest = {
+              "schema": "ictbt.binance_public_5m.v1",
               "source": ROOT,
               "market": "Binance USD-M futures",
               "interval": "5m",
@@ -84,6 +85,7 @@ jobs:
                   stem = f"{symbol}-5m-{year:04d}-{month:02d}.zip"
                   url = f"{ROOT}/{symbol}/5m/{stem}"
                   zip_path = RAW / stem
+                  print(f"DOWNLOAD {url}", flush=True)
                   blob = fetch(url, zip_path)
                   actual = hashlib.sha256(blob).hexdigest()
                   checksum_url = url + ".CHECKSUM"
@@ -98,12 +100,17 @@ jobs:
                   except urllib.error.HTTPError as exc:
                       if exc.code != 404:
                           raise
+                      print(f"CHECKSUM_NOT_FOUND {checksum_url}", flush=True)
                   with zipfile.ZipFile(io.BytesIO(blob)) as archive:
                       csv_names = [n for n in archive.namelist() if n.lower().endswith(".csv")]
                       if len(csv_names) != 1:
                           raise RuntimeError(f"unexpected CSV members in {stem}: {csv_names}")
                       with archive.open(csv_names[0]) as handle:
-                          frame = pd.read_csv(handle, header=None, names=columns)
+                          frame = pd.read_csv(handle, header=None, names=columns, dtype=str)
+                  first = str(frame.iloc[0]["open_time"]).strip().lower()
+                  if not first.lstrip("-").isdigit():
+                      print(f"DROP_HEADER {stem}: {frame.iloc[0].tolist()}", flush=True)
+                      frame = frame.iloc[1:].copy()
                   numeric = ["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "trades", "taker_buy_base", "taker_buy_quote"]
                   for col in numeric:
                       frame[col] = pd.to_numeric(frame[col], errors="raise")
@@ -122,13 +129,19 @@ jobs:
                       "checksum_ok": checksum_ok,
                       "rows": int(len(frame)),
                   })
-                  print(symbol, year, month, len(frame), actual, flush=True)
+                  print(f"OK {symbol} {year}-{month:02d} rows={len(frame)} sha256={actual}", flush=True)
 
           for symbol, chunks in frames.items():
               frame = pd.concat(chunks, ignore_index=True)
               frame = frame.drop_duplicates("open_time", keep="last").sort_values("open_time").reset_index(drop=True)
               mask = (frame.open_time >= pd.Timestamp("2022-01-01", tz="UTC")) & (frame.open_time < pd.Timestamp("2026-07-01", tz="UTC"))
               frame = frame.loc[mask].copy()
+              for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base", "taker_buy_quote"]:
+                  frame[col] = frame[col].astype("float64")
+              frame["trades"] = frame["trades"].astype("int64")
+              bad_ohlc = ~((frame.low <= frame[["open", "close", "high"]].min(axis=1)) & (frame.high >= frame[["open", "close", "low"]].max(axis=1)))
+              if bool(bad_ohlc.any()):
+                  raise RuntimeError(f"invalid OHLC rows for {symbol}: {int(bad_ohlc.sum())}")
               delta = frame.open_time.diff().dropna()
               gaps = delta[delta != pd.Timedelta(minutes=5)]
               symbol_meta = {
@@ -145,18 +158,33 @@ jobs:
                   yearly.to_csv(path, index=False, compression="gzip", float_format="%.10g")
                   symbol_meta[f"{year}_rows"] = int(len(yearly))
                   symbol_meta[f"{year}_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                  print(f"WRITE {path.name} rows={len(yearly)}", flush=True)
 
           manifest_path = OUT / "manifest.json"
           manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
           print(json.dumps(manifest["symbols"], ensure_ascii=False, indent=2))
           PY
-      - name: Upload official normalized data
+          status=$?
+          cat /tmp/binance-5m/download.log
+          printf '%s\n' "$status" > /tmp/binance-5m/download.status
+          exit "$status"
+      - name: Upload data and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: binance-btc-eth-5m-2022-2026-${{ github.run_id }}
           path: |
             /tmp/binance-5m/*.csv.gz
             /tmp/binance-5m/manifest.json
-          if-no-files-found: error
+            /tmp/binance-5m/download.log
+            /tmp/binance-5m/download.status
+          if-no-files-found: warn
           compression-level: 0
           retention-days: 14
+      - name: Preserve download failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(cat /tmp/binance-5m/download.status 2>/dev/null || echo 1)"
+          test "$status" -eq 0
