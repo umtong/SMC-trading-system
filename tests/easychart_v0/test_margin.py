@@ -70,6 +70,20 @@ def test_tight_stop_that_requires_excessive_notional_is_rejected() -> None:
     assert assessment.required_notional_to_equity > 8.0
 
 
+def test_structural_stop_still_requires_one_r_of_liquidation_buffer() -> None:
+    assessment = assess_margin_safety(
+        side=Side.LONG,
+        entry=100.0,
+        stop=94.0,
+        costs=costs(),
+        risk_fraction=0.03,
+    )
+
+    assert not assessment.accepted
+    assert assessment.reason == "liquidation_buffer_below_required_r"
+    assert 0 < assessment.stop_to_liquidation_r < 1
+
+
 def test_required_exposure_is_equity_scale_invariant() -> None:
     ratio = required_notional_to_equity(
         side=Side.LONG,
