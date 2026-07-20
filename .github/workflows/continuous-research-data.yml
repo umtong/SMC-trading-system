@@ -7,6 +7,12 @@ on:
     paths:
       - scripts/download_binance_continuous_research.py
       - .github/workflows/continuous-research-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_binance_continuous_research.py
+      - .github/workflows/continuous-research-data.yml
   workflow_dispatch:
 
 permissions:
