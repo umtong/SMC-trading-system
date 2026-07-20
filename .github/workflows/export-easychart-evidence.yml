@@ -1,0 +1,41 @@
+name: Export EasyChart official evidence corpus
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/evidence-trigger-*"
+      - ".github/workflows/export-easychart-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+          fetch-depth: 1
+      - name: Collect registered evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=/tmp/easychart-evidence
+          mkdir -p "$out/data/easychart_captions/yt_dlp" "$out/registrations" "$out/artifacts"
+          cp data/easychart_captions/yt_dlp/*.vtt "$out/data/easychart_captions/yt_dlp/"
+          cp registrations/easychart_caption_corpus_2026_07.json "$out/registrations/"
+          cp artifacts/strategy_composition_2026_07_18/EASYCHART_OB_STRATEGY_RECONSTRUCTION_V2.md "$out/artifacts/"
+          cp artifacts/strategy_composition_2026_07_18/EASYCHART_OB_V0_OHLCV_FORMULA_CONTRACT.md "$out/artifacts/"
+          find "$out" -type f -print0 | sort -z | xargs -0 sha256sum > "$out/SHA256SUMS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-official-evidence-${{ github.run_id }}
+          path: /tmp/easychart-evidence
+          if-no-files-found: error
+          retention-days: 14
