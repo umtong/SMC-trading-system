@@ -1,0 +1,70 @@
+name: Materialize EasyChart V1
+
+on:
+  push:
+    branches:
+      - agent/easychart-v1-robust-growth-gate
+    paths:
+      - ".github/v1-bundle/**"
+      - ".github/workflows/materialize-v1.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-easychart-v1
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/easychart-v1-robust-growth-gate
+
+      - name: Verify and extract V1 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' | wc -l)" -eq 4
+          cat .github/v1-bundle/part-* > /tmp/easychart-v1.tar.gz.b64
+          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz
+          echo "e542180faa653fe1bb11cd4bcc19cdc07deea5ecb733a999a567984e0b82b2d1  /tmp/easychart-v1.tar.gz" | sha256sum -c -
+          tar -tzf /tmp/easychart-v1.tar.gz > /tmp/easychart-v1-files.txt
+          grep -qx 'src/ictbt/easychart_v1/strategy.py' /tmp/easychart-v1-files.txt
+          grep -qx 'src/ictbt/easychart_v1/backtest.py' /tmp/easychart-v1-files.txt
+          grep -qx 'src/ictbt/easychart_v1/validation.py' /tmp/easychart-v1-files.txt
+          grep -qx 'tests/easychart_v1/test_backtest.py' /tmp/easychart-v1-files.txt
+          tar -xzf /tmp/easychart-v1.tar.gz
+
+      - name: Test materialized tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev]"
+          python -m pytest tests/easychart_v0 tests/easychart_v1 -q
+          python -m ictbt.easychart_v1 required-edge --trades 141 280
+          easychart-v1 --help >/dev/null
+
+      - name: Commit materialized sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r .github/v1-bundle
+          git rm .github/workflows/materialize-v1.yml
+          git add README.md pyproject.toml .gitignore .github/workflows/research-ci.yml \
+            src/ictbt/easychart_v1 tests/easychart_v1 \
+            scripts/download_binance_vision_5m.py \
+            scripts/run_easychart_v1_random_validation.py \
+            scripts/optimize_easychart_v1_until_promotion.py \
+            configs/easychart_v1 \
+            artifacts/strategy_composition_2026_07_20
+          git diff --cached --check
+          git commit -m "Materialize EasyChart V1 robust growth research core"
+          git push origin HEAD:agent/easychart-v1-robust-growth-gate
