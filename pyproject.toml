@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ict-daytrader-v2"
+version = "0.9.0"
+description = "EasyChart-based BTC/ETH SMC strategy detector and historical replay engine"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+easychart-v0 = "ictbt.easychart_v0.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]

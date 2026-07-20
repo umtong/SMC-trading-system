@@ -1,0 +1,141 @@
+{
+  "schema": "ictbt.caption_corpus.v1",
+  "created_at": "2026-07-11T00:00:00+09:00",
+  "corpus_id": "EASYCHART_ACTIVE_18_2026_07",
+  "source_root": "../data/easychart_captions/yt_dlp",
+  "active_count": 18,
+  "active_files": {
+    "-Tp2fhvVVGM.ko.vtt": "147315bee9fd7ba5bd9ebf61874b9e17d70966afa52b1f62a156644e1a57b88c",
+    "6fVd2eNbWxI.ko.vtt": "a466aa5a803bfa931242b63913fb38b1b63ed2dd3c0056fbdd682827b7543ec8",
+    "bTDsjdl3RbQ.ko.vtt": "249646c431ebe1c29c9b57ca73c402c1a6c1f019a7aa808efadc3fd713944005",
+    "chO4D5qTDo8.ko.vtt": "1b77aa37e5c8618669dd16f7572280031974637cb4593b02d76336a48d509246",
+    "CxVUB0E9OJU.ko.vtt": "3b541edb5c875783d34c151f6252aff11a74a95b9691b8a84d0ae33927ae39f7",
+    "cZqgERyz8wc.ko.vtt": "34460d1d96914fe06828672fd5100417020601baea7b7245d76edc5095a65ac3",
+    "F3exGqdN2Go.ko.vtt": "ac216e9bdbb09f9b829ee30b043d6667f95704647a40958616cbab20930e6299",
+    "GGFqHk_JPDI.ko.vtt": "a341d87c4a4a3bb00aaf54011ccd6d00081684c847d8b7e4635bbfe8a86afd29",
+    "HiH15zxEDnk.ko.vtt": "7925690dc56827f18e5fc71b57ebae8c0aa69f669d2b673927b429dd5dbf605d",
+    "HReT0PtawRA.ko.vtt": "329805920d73753cb582ff3d268615b0a60164de59cb9434b92cde7ff6d66685",
+    "SMtQ59w-kfw.ko.vtt": "1cad14d4005da1ec95eee1e174f13648c2778cfe255fbdcadad20f4aed61a5f6",
+    "TgO6Lhh29pA.ko.vtt": "2c316c0bf9f7fd06d32b698f9a24f70923d420e06ac4ab12e7c38f19171afe51",
+    "UmEPMyzjQS8.ko.vtt": "fb545a0916fc99396ea82ee1294a6deda14363241c2a441f3c40c1831dcfeaca",
+    "urzmGyPTc30.ko.vtt": "c94a255058db2f385682e52ac643f1c8657245a6946588d6ef539628e951afa9",
+    "V3kCjvJy3bg.ko.vtt": "80c32638f1c92cfd151ca8a4a08ab7b5dbb8fa537c3d32c44735b5345519ad84",
+    "xlYuENlNZN0.ko.vtt": "e45e0146f027ebbc9dc7aa6ed1dfcfbdf12ebc58ff078b2beb3cb8f55a2cac27",
+    "XpMCPkk6W5I.ko.vtt": "c8b2e33552f9d360f489cb58780d20ae7693f7eaeb2fe58c0e3c401cdbde87f5",
+    "ZozNRXnqRkc.ko.vtt": "23547092ad5d6934669bdb37c3167b03eb4a138d0d95af24340357303f4826ae"
+  },
+  "excluded_by_user": [
+    "_0r01r_Hjss.ko.vtt",
+    "_QvmvMaJ244.ko.vtt"
+  ],
+  "known_republication_edges": [
+    {
+      "source": "TgO6Lhh29pA:00:31-09:33",
+      "republished_in": "ZozNRXnqRkc:00:31-09:29",
+      "matched_fragments": 134,
+      "evidence_sha256": "8987b53c843b7fcfa2eba76317feb09cf2dafb0d2f323e9ed2a80752f7fbd8c6"
+    },
+    {
+      "source": "XpMCPkk6W5I:almost_all",
+      "republished_in": "ZozNRXnqRkc:70:00-79:31",
+      "matched_fragments": 105,
+      "evidence_sha256": "ef696fed47bca5e0a721a53b306342ad2dd6bf646af09a0a659e1e9e0291ebe5"
+    },
+    {
+      "source": "UmEPMyzjQS8:03:14-10:24",
+      "republished_in": "GGFqHk_JPDI:02:34-09:05",
+      "matched_fragments": 68,
+      "evidence_sha256": "a2426332f540e09955292033c6ce5d340dfa4b6a1011825e405fe92914cfa7e1"
+    },
+    {
+      "source": "CxVUB0E9OJU:05:54-06:33",
+      "republished_in": "GGFqHk_JPDI:12:45-13:13",
+      "matched_fragments": 86,
+      "exact_blocks": 8,
+      "evidence_sha256": "ec4a969ec98b5ca6df6cfab32b6daf92edbb5668e1beb513050770c80a9a0d08"
+    },
+    {
+      "source": "CxVUB0E9OJU:05:54-06:24",
+      "republished_in": "ZozNRXnqRkc:38:57-39:23",
+      "matched_fragments": 70,
+      "exact_blocks": 8,
+      "evidence_sha256": "416c2e6fe872831c105d65dedc0a6d3ba15b0271b98d08ca932151bfbbf7b0d4"
+    },
+    {
+      "source": "F3exGqdN2Go:10:30-11:51",
+      "republished_in": "ZozNRXnqRkc:18:49-20:09",
+      "matched_fragments": 402,
+      "exact_blocks": 30,
+      "evidence_sha256": "d271a3aa815920fbffc3c072288a6a83c152fa1abca62eb67f803ecc8eb4df54"
+    },
+    {
+      "source": "SMtQ59w-kfw:03:46-04:23",
+      "republished_in": "GGFqHk_JPDI:39:03-39:35",
+      "matched_fragments": 184,
+      "exact_blocks": 18,
+      "evidence_sha256": "9a1f345976e5eb131d9fae7d153211274910caebc197eb57ef1649af2f0e5381"
+    },
+    {
+      "source": "SMtQ59w-kfw:10:47-11:35",
+      "republished_in": "ZozNRXnqRkc:01:05:52-01:06:33",
+      "matched_fragments": 163,
+      "exact_blocks": 13,
+      "evidence_sha256": "b0c4e21a0b65db861dbfbd4bd0fd3cbfd7a0c906039acfecb5be485741b0f959"
+    },
+    {
+      "source": "UmEPMyzjQS8:09:01-09:30",
+      "republished_in": "ZozNRXnqRkc:34:42-35:07",
+      "matched_fragments": 59,
+      "exact_blocks": 6,
+      "evidence_sha256": "3e4f3a5ef272f0a3935985828da20b45b899fea835757bfe0677639c5aa363df"
+    },
+    {
+      "source": "V3kCjvJy3bg:09:11-09:57",
+      "republished_in": "GGFqHk_JPDI:28:44-29:24",
+      "matched_fragments": 121,
+      "exact_blocks": 10,
+      "evidence_sha256": "2fd654a13ce1812f6b08fc43abeb70e1cbd516b96054dfb3f8acbf7d6f49eb7c"
+    },
+    {
+      "source": "V3kCjvJy3bg:10:18-10:51",
+      "republished_in": "ZozNRXnqRkc:54:10-54:39",
+      "matched_fragments": 69,
+      "exact_blocks": 8,
+      "evidence_sha256": "c9baaf3289d7a39636992b0a40fa089c65d4a4761835a33435962395d37787ec"
+    },
+    {
+      "source": "cZqgERyz8wc:09:49-10:24",
+      "republished_in": "GGFqHk_JPDI:23:21-23:52",
+      "matched_fragments": 75,
+      "exact_blocks": 8,
+      "evidence_sha256": "fa63377b75157f7c89503d1585afc018a1596e73ddcec9c3ddb8f2aca1d25e19"
+    },
+    {
+      "source": "cZqgERyz8wc:09:49-10:28",
+      "republished_in": "ZozNRXnqRkc:48:49-49:23",
+      "matched_fragments": 85,
+      "exact_blocks": 9,
+      "evidence_sha256": "3fc746f15b0b0557cbd626c9b1bfd67a8c224759928c2f9c99117492271cbf6a"
+    },
+    {
+      "source": "GGFqHk_JPDI:13:21-14:19",
+      "republished_in": "ZozNRXnqRkc:39:33-40:30",
+      "matched_fragments": 658,
+      "exact_blocks": 54,
+      "evidence_sha256": "edf8ea8d63f74246624c117a9bb9cc4b6ba806fe91634d9609b50fc2779f9bb4"
+    }
+  ],
+  "republish_audit": {
+    "audited_at": "2026-07-12T00:00:00+09:00",
+    "method": "strip VTT tags, keep rolling-caption final lines, deduplicate consecutive text, join exact blocks of at least six fragments",
+    "coverage_status": "known exact-fragment edges; not a proof that all semantic republications were found"
+  },
+  "composite_sources": [
+    "GGFqHk_JPDI",
+    "xlYuENlNZN0",
+    "ZozNRXnqRkc"
+  ],
+  "independence_policy": "count unique root episodes and causal source lineages, never caption files or repeated mentions",
+  "allowed_use": "semantic rule provenance and visual-audit case discovery",
+  "prohibited_use": "treating eighteen files as eighteen independent performance observations"
+}
