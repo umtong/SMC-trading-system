@@ -154,6 +154,8 @@ def _trial_specs(summary: dict[str, object]) -> tuple[TrialSpec, ...]:
 
 def _enrich_summary(args: argparse.Namespace) -> None:
     path = args.output_dir / "summary.json"
+    if not path.exists():
+        return
     summary = json.loads(path.read_text(encoding="utf-8"))
     trials = _trial_specs(summary)
     overlap = summarize_trial_overlap(trials)
