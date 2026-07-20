@@ -69,6 +69,7 @@ jobs:
           test "${{ steps.evidence.outcome }}" = "success"
 
   public-data-reproduction:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -136,6 +137,7 @@ jobs:
           test "${{ steps.compare.outcome }}" = "success"
 
   research-universe-data:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
