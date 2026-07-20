@@ -38,22 +38,68 @@ jobs:
         id: extract
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          diagnostic=/tmp/v1-bundle-diagnostic.txt
+          : > "$diagnostic"
           part_count="$(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' | wc -l)"
-          test "$part_count" -eq 4
+          echo "part_count=$part_count" >> "$diagnostic"
+          find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 \
+            | sort -z \
+            | xargs -0 wc -c >> "$diagnostic" 2>&1
+          if test "$part_count" -ne 4; then
+            echo "expected exactly four bundle parts" >> "$diagnostic"
+            exit 10
+          fi
           cat .github/v1-bundle/part-* > /tmp/easychart-v1.tar.gz.b64
-          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz
-          actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
-          echo "materialized_bundle_sha256=$actual_sha"
-          gzip -t /tmp/easychart-v1.tar.gz
-          tar -tzf /tmp/easychart-v1.tar.gz > /tmp/easychart-v1-files.txt
-          grep -qx 'src/ictbt/easychart_v1/strategy.py' /tmp/easychart-v1-files.txt
-          grep -qx 'src/ictbt/easychart_v1/backtest.py' /tmp/easychart-v1-files.txt
-          grep -qx 'src/ictbt/easychart_v1/validation.py' /tmp/easychart-v1-files.txt
-          grep -qx 'tests/easychart_v1/test_backtest.py' /tmp/easychart-v1-files.txt
-          tar -xzf /tmp/easychart-v1.tar.gz
-          mkdir -p artifacts/strategy_composition_2026_07_20
-          printf '%s  easychart-v1.tar.gz\n' "$actual_sha" > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
+          echo "combined_base64_bytes=$(wc -c < /tmp/easychart-v1.tar.gz.b64)" >> "$diagnostic"
+          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
+          status=$?
+          echo "base64_decode_status=$status" >> "$diagnostic"
+          echo "decoded_bytes=$(wc -c < /tmp/easychart-v1.tar.gz)" >> "$diagnostic"
+          if test -s /tmp/easychart-v1.tar.gz; then
+            sha256sum /tmp/easychart-v1.tar.gz >> "$diagnostic" 2>&1
+          fi
+          if test "$status" -eq 0; then
+            gzip -t /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
+            status=$?
+            echo "gzip_test_status=$status" >> "$diagnostic"
+          fi
+          if test "$status" -eq 0; then
+            tar -tzf /tmp/easychart-v1.tar.gz > /tmp/easychart-v1-files.txt 2>> "$diagnostic"
+            status=$?
+            echo "tar_list_status=$status" >> "$diagnostic"
+          fi
+          if test "$status" -eq 0; then
+            for required in \
+              src/ictbt/easychart_v1/strategy.py \
+              src/ictbt/easychart_v1/backtest.py \
+              src/ictbt/easychart_v1/validation.py \
+              tests/easychart_v1/test_backtest.py; do
+              grep -qx "$required" /tmp/easychart-v1-files.txt || status=20
+            done
+            echo "required_paths_status=$status" >> "$diagnostic"
+          fi
+          if test "$status" -eq 0; then
+            tar -xzf /tmp/easychart-v1.tar.gz 2>> "$diagnostic"
+            status=$?
+            echo "tar_extract_status=$status" >> "$diagnostic"
+          fi
+          if test "$status" -eq 0; then
+            actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
+            mkdir -p artifacts/strategy_composition_2026_07_20
+            printf '%s  easychart-v1.tar.gz\n' "$actual_sha" > artifacts/strategy_composition_2026_07_20/MATERIALIZED_BUNDLE_SHA256.txt
+          fi
+          cat "$diagnostic"
+          exit "$status"
+
+      - name: Upload bundle diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-bundle-diagnostic-${{ github.run_id }}
+          path: /tmp/v1-bundle-diagnostic.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Test materialized tree
         id: materialized_tests
