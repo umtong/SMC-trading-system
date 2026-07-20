@@ -5,11 +5,11 @@ on:
   push:
     branches:
       - main
-      - agent/v08-robust-growth-protocol
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   tests:
@@ -25,20 +25,17 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install
-        run: python -m pip install -e ".[dev]"
-
-      - name: Run strategy tests
+      - name: Install and run strategy tests
         id: pytest
         shell: bash
         run: |
-          set +e
-          python -m pytest tests/easychart_v0 -q > pytest.log 2>&1
-          status=$?
-          cat pytest.log
-          exit "$status"
+          set -o pipefail
+          {
+            python -m pip install -e ".[dev]"
+            python -m pytest tests/easychart_v0 -q
+          } 2>&1 | tee pytest.log
 
-      - name: Upload pytest log
+      - name: Upload CI log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -55,3 +52,20 @@ jobs:
           path: .
           include-hidden-files: true
           retention-days: 1
+
+      - name: Comment failure log on pull request
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'pytest.log';
+            const text = fs.existsSync(path)
+              ? fs.readFileSync(path, 'utf8').slice(-60000)
+              : 'pytest.log was not created; failure occurred before the test command.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `### Research CI failure\n\n\`\`\`text\n${text}\n\`\`\``
+            });
