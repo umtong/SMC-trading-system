@@ -37,6 +37,11 @@ jobs:
           cat pytest.log
           exit "$status"
 
+      - name: Validate hardened research runner
+        run: |
+          python -m compileall -q src scripts/run_easychart_v08_hardened_random_trials.py
+          python scripts/run_easychart_v08_hardened_random_trials.py --help > /dev/null
+
       - name: Upload pytest log
         if: always()
         uses: actions/upload-artifact@v4
