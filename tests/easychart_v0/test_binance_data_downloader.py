@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import io
 from pathlib import Path
 import sys
 
@@ -19,21 +18,45 @@ sys.modules[SPEC.name] = downloader
 SPEC.loader.exec_module(downloader)
 
 
-def test_archive_plan_uses_monthly_middle_and_daily_boundaries() -> None:
+def test_archive_plan_prefers_one_monthly_file_per_touched_month() -> None:
     requests = downloader.plan_archives(
         "BTCUSDT",
         start=pd.Timestamp("2025-01-15", tz="UTC"),
         end=pd.Timestamp("2025-03-10", tz="UTC"),
     )
 
-    monthly = [item for item in requests if item.period == "monthly"]
-    daily = [item for item in requests if item.period == "daily"]
-    assert [item.label for item in monthly] == ["2025-02"]
-    assert daily[0].label == "2025-01-15"
-    assert daily[-1].label == "2025-03-09"
-    assert monthly[0].url.endswith(
+    assert [item.period for item in requests] == ["monthly"] * 3
+    assert [item.label for item in requests] == [
+        "2025-01",
+        "2025-02",
+        "2025-03",
+    ]
+    assert requests[0].covered_start == pd.Timestamp("2025-01-15", tz="UTC")
+    assert requests[0].covered_end == pd.Timestamp("2025-02-01", tz="UTC")
+    assert requests[-1].covered_start == pd.Timestamp("2025-03-01", tz="UTC")
+    assert requests[-1].covered_end == pd.Timestamp("2025-03-10", tz="UTC")
+    assert requests[1].url.endswith(
         "/futures/um/monthly/klines/BTCUSDT/5m/BTCUSDT-5m-2025-02.zip"
     )
+
+
+def test_daily_fallback_is_bounded_to_requested_partial_month() -> None:
+    monthly = downloader.plan_archives(
+        "BTCUSDT",
+        start=pd.Timestamp("2026-07-15", tz="UTC"),
+        end=pd.Timestamp("2026-07-20", tz="UTC"),
+    )[0]
+
+    daily = downloader._daily_fallback(monthly)
+
+    assert [item.label for item in daily] == [
+        "2026-07-15",
+        "2026-07-16",
+        "2026-07-17",
+        "2026-07-18",
+        "2026-07-19",
+    ]
+    assert all(item.period == "daily" for item in daily)
 
 
 def test_parser_handles_headerless_millisecond_futures_klines() -> None:
