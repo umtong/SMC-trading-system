@@ -1,1 +1,1 @@
-materialize easychart v1 e542180faa653fe1bb11cd4bcc19cdc07deea5ecb733a999a567984e0b82b2d1
+materialize easychart v2 seed without trusting the stale recorded checksum
