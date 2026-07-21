@@ -75,7 +75,7 @@ jobs:
       - name: Install research dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pandas numba lightgbm pyarrow
+          python -m pip install numpy pandas numba lightgbm scikit-learn pyarrow
 
       - name: Run strict five-calendar-month research
         id: research
