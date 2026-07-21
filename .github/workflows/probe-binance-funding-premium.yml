@@ -1,0 +1,37 @@
+name: Probe Binance funding premium schema
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe first official archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/probe
+          base=https://data.binance.vision/data/futures/um/monthly
+          curl -fL "$base/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2022-01.zip" -o /tmp/probe/funding.zip
+          curl -fL "$base/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2022-01.zip.CHECKSUM" -o /tmp/probe/funding.CHECKSUM
+          curl -fL "$base/premiumIndexKlines/BTCUSDT/5m/BTCUSDT-5m-2022-01.zip" -o /tmp/probe/premium.zip
+          curl -fL "$base/premiumIndexKlines/BTCUSDT/5m/BTCUSDT-5m-2022-01.zip.CHECKSUM" -o /tmp/probe/premium.CHECKSUM
+          unzip -l /tmp/probe/funding.zip > /tmp/probe/funding-members.txt
+          unzip -l /tmp/probe/premium.zip > /tmp/probe/premium-members.txt
+          unzip -p /tmp/probe/funding.zip | head -n 10 > /tmp/probe/funding-head.txt
+          unzip -p /tmp/probe/premium.zip | head -n 10 > /tmp/probe/premium-head.txt
+          sha256sum /tmp/probe/funding.zip /tmp/probe/premium.zip > /tmp/probe/actual-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: funding-premium-schema-probe-${{ github.run_id }}
+          path: /tmp/probe
+          compression-level: 0
+          retention-days: 2
