@@ -126,7 +126,8 @@ def read_zip_csv(payload: bytes, spec: DownloadSpec) -> tuple[pd.DataFrame, str]
         raw = archive.read(member)
 
     frame = pd.read_csv(io.BytesIO(raw), header=None, low_memory=False)
-    if pd.to_numeric(frame.iloc[0, 0], errors="coerce") != pd.to_numeric(frame.iloc[0, 0], errors="coerce"):
+    first_value = pd.to_numeric(frame.iloc[0, 0], errors="coerce")
+    if pd.isna(first_value):
         frame = frame.iloc[1:].reset_index(drop=True)
     if frame.shape[1] < len(KLINE_COLUMNS):
         raise ValueError(f"unexpected kline schema in {spec.url}: {frame.shape[1]} columns")
@@ -186,8 +187,20 @@ def download_one(spec: DownloadSpec, output: Path, interval_minutes: int) -> Par
 
     frame, member = read_zip_csv(payload, spec)
     audit = validate_partition(frame, interval_minutes)
-    if audit["duplicate_timestamps"] or audit["internal_gap_count"] or audit["invalid_ohlc_rows"]:
+    hard_failure = (
+        audit["duplicate_timestamps"]
+        or audit["invalid_ohlc_rows"]
+        or (spec.dataset == "klines" and audit["internal_gap_count"])
+    )
+    if hard_failure:
         raise ValueError(f"partition integrity failure for {spec.url}: {audit}")
+    if spec.dataset == "markPriceKlines" and audit["internal_gap_count"]:
+        print(
+            f"OUTAGE markPriceKlines {spec.symbol} {spec.label} "
+            f"gaps={audit['internal_gap_count']} missing={audit['internal_missing_bars']}; "
+            "the replay engine must prohibit entries and flatten safely across this interval",
+            flush=True,
+        )
 
     destination = partition_path(output, spec)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -249,6 +262,11 @@ def coverage(records: list[PartitionRecord], interval_minutes: int) -> list[dict
             "boundary_missing_bars": boundary_missing_bars,
             "duplicate_timestamps": int(sum(item.duplicate_timestamps for item in items)),
             "invalid_ohlc_rows": int(sum(item.invalid_ohlc_rows for item in items)),
+            "replay_policy": (
+                "fatal_on_any_gap"
+                if dataset == "klines"
+                else "explicit_outage_no_entry_no_interpolation"
+            ),
         })
     return rows
 
@@ -287,6 +305,10 @@ def main() -> None:
         "interval": args.interval,
         "daily_end": args.daily_end.isoformat(),
         "partitioned": True,
+        "replay_policy": {
+            "trade_klines": "any duplicate, invalid OHLC, or missing minute is fatal",
+            "mark_price": "gaps are recorded; no interpolation; no new entry and safe flattening across outage",
+        },
         "archives": [asdict(record) for record in records],
         "coverage": coverage(records, 1),
     }
