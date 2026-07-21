@@ -1,0 +1,264 @@
+name: Export Binance prehistory 2019-2021
+
+on:
+  push:
+    branches:
+      - agent/easychart-v3-fivefold-rebuild
+    paths:
+      - .github/workflows/export-binance-prehistory-2019-2021.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install pandas numpy
+      - name: Download official monthly archives and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-prehistory/raw
+          python - <<'PY'
+          from __future__ import annotations
+
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import hashlib
+          import io
+          import json
+          from pathlib import Path
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+
+          import pandas as pd
+
+          ROOT = "https://data.binance.vision/data/futures/um/monthly"
+          OUT = Path("/tmp/binance-prehistory")
+          RAW = OUT / "raw"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = (2019, 9)
+          END = (2021, 12)
+          KLINE_COLUMNS = [
+              "open_time", "open", "high", "low", "close", "volume",
+              "close_time", "quote_volume", "trades", "taker_buy_base",
+              "taker_buy_quote", "ignore",
+          ]
+
+          def months():
+              year, month = START
+              while (year, month) <= END:
+                  yield year, month
+                  month += 1
+                  if month == 13:
+                      year += 1
+                      month = 1
+
+          def fetch(url: str, attempts: int = 5) -> bytes:
+              last: Exception | None = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url, headers={"User-Agent": "SMC-prehistory/1.0"}
+                      )
+                      with urllib.request.urlopen(request, timeout=180) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          raise
+                      last = exc
+                  except Exception as exc:  # noqa: BLE001
+                      last = exc
+                  time.sleep(0.5 * (2**attempt))
+              assert last is not None
+              raise last
+
+          def verified_zip(url: str) -> tuple[bytes, dict[str, object]]:
+              payload = fetch(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              checksum = fetch(url + ".CHECKSUM")
+              expected = checksum.decode("utf-8", errors="replace").strip().split()[0]
+              if actual.lower() != expected.lower():
+                  raise RuntimeError(f"checksum mismatch: {url}: {expected} != {actual}")
+              return payload, {
+                  "url": url,
+                  "sha256": actual,
+                  "checksum_expected": expected,
+                  "checksum_ok": True,
+              }
+
+          def read_one_csv(payload: bytes) -> bytes:
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected CSV members: {members}")
+                  return archive.read(members[0])
+
+          def parse_kline(payload: bytes) -> pd.DataFrame:
+              frame = pd.read_csv(
+                  io.BytesIO(read_one_csv(payload)),
+                  header=None,
+                  names=KLINE_COLUMNS,
+                  dtype=str,
+              )
+              first = str(frame.iloc[0]["open_time"]).strip().lower()
+              if not first.lstrip("-").isdigit():
+                  frame = frame.iloc[1:].copy()
+              raw_time = pd.to_numeric(frame["open_time"], errors="raise").astype("int64")
+              unit = "us" if int(raw_time.abs().median()) >= 10**14 else "ms"
+              frame["open_time"] = pd.to_datetime(raw_time, unit=unit, utc=True)
+              numeric = [
+                  "open", "high", "low", "close", "volume", "quote_volume",
+                  "trades", "taker_buy_base", "taker_buy_quote",
+              ]
+              for column in numeric:
+                  frame[column] = pd.to_numeric(frame[column], errors="raise")
+              return frame[[
+                  "open_time", "open", "high", "low", "close", "volume",
+                  "quote_volume", "trades", "taker_buy_base", "taker_buy_quote",
+              ]]
+
+          def parse_funding(payload: bytes) -> pd.DataFrame:
+              frame = pd.read_csv(io.BytesIO(read_one_csv(payload)))
+              normalized = {str(column).strip().lower(): column for column in frame.columns}
+              time_column = (
+                  normalized.get("calc_time")
+                  or normalized.get("fundingtime")
+                  or normalized.get("funding_time")
+              )
+              rate_column = (
+                  normalized.get("last_funding_rate")
+                  or normalized.get("fundingrate")
+                  or normalized.get("funding_rate")
+              )
+              if time_column is None or rate_column is None:
+                  raise RuntimeError(f"unexpected funding columns: {frame.columns.tolist()}")
+              raw = pd.to_numeric(frame[time_column], errors="raise").astype("int64")
+              unit = "us" if int(raw.abs().median()) >= 10**14 else "ms"
+              return pd.DataFrame({
+                  "funding_time": pd.to_datetime(raw, unit=unit, utc=True),
+                  "funding_rate": pd.to_numeric(frame[rate_column], errors="raise"),
+              })
+
+          def task(symbol: str, year: int, month: int, kind: str):
+              if kind in {"1m", "5m"}:
+                  stem = f"{symbol}-{kind}-{year:04d}-{month:02d}.zip"
+                  url = f"{ROOT}/klines/{symbol}/{kind}/{stem}"
+              elif kind == "premium_5m":
+                  stem = f"{symbol}-5m-{year:04d}-{month:02d}.zip"
+                  url = f"{ROOT}/premiumIndexKlines/{symbol}/5m/{stem}"
+              elif kind == "funding":
+                  stem = f"{symbol}-fundingRate-{year:04d}-{month:02d}.zip"
+                  url = f"{ROOT}/fundingRate/{symbol}/{stem}"
+              else:
+                  raise AssertionError(kind)
+              try:
+                  payload, meta = verified_zip(url)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return symbol, kind, year, month, None, {
+                          "symbol": symbol,
+                          "kind": kind,
+                          "year": year,
+                          "month": month,
+                          "url": url,
+                          "available": False,
+                      }
+                  raise
+              frame = parse_funding(payload) if kind == "funding" else parse_kline(payload)
+              meta.update({
+                  "symbol": symbol,
+                  "kind": kind,
+                  "year": year,
+                  "month": month,
+                  "rows": int(len(frame)),
+                  "available": True,
+              })
+              return symbol, kind, year, month, frame, meta
+
+          kinds = ("1m", "5m", "premium_5m", "funding")
+          chunks: dict[tuple[str, str], list[pd.DataFrame]] = {
+              (symbol, kind): [] for symbol in SYMBOLS for kind in kinds
+          }
+          manifest: dict[str, object] = {
+              "schema": "ictbt.binance_usdm_prehistory.v1",
+              "source": ROOT,
+              "requested_range": ["2019-09-01T00:00:00Z", "2022-01-01T00:00:00Z"],
+              "archives": [],
+              "outputs": {},
+          }
+          jobs = [
+              (symbol, year, month, kind)
+              for symbol in SYMBOLS
+              for year, month in months()
+              for kind in kinds
+          ]
+          completed = 0
+          with ThreadPoolExecutor(max_workers=16) as executor:
+              futures = {executor.submit(task, *job): job for job in jobs}
+              for future in as_completed(futures):
+                  symbol, kind, year, month, frame, meta = future.result()
+                  manifest["archives"].append(meta)
+                  if frame is not None:
+                      chunks[(symbol, kind)].append(frame)
+                  completed += 1
+                  if completed % 25 == 0 or completed == len(jobs):
+                      print(f"completed={completed}/{len(jobs)}", flush=True)
+
+          for symbol in SYMBOLS:
+              for kind in kinds:
+                  key = (symbol, kind)
+                  if not chunks[key]:
+                      manifest["outputs"][f"{symbol}:{kind}"] = {"available": False}
+                      continue
+                  frame = pd.concat(chunks[key], ignore_index=True)
+                  time_column = "funding_time" if kind == "funding" else "open_time"
+                  frame = frame.drop_duplicates(time_column, keep="last").sort_values(time_column)
+                  start = pd.Timestamp("2019-09-01", tz="UTC")
+                  end = pd.Timestamp("2022-01-01", tz="UTC")
+                  frame = frame[(frame[time_column] >= start) & (frame[time_column] < end)].reset_index(drop=True)
+                  output = OUT / f"{symbol}_{kind}_2019_2021.csv.gz"
+                  frame.to_csv(output, index=False, compression="gzip", float_format="%.12g")
+                  info: dict[str, object] = {
+                      "available": True,
+                      "rows": int(len(frame)),
+                      "first": frame[time_column].iloc[0].isoformat(),
+                      "last": frame[time_column].iloc[-1].isoformat(),
+                      "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                  }
+                  if kind in {"1m", "5m", "premium_5m"}:
+                      frequency = "1min" if kind == "1m" else "5min"
+                      expected = pd.date_range(frame[time_column].iloc[0], frame[time_column].iloc[-1], freq=frequency)
+                      actual = pd.DatetimeIndex(frame[time_column])
+                      info["missing_intervals"] = int(len(expected.difference(actual)))
+                      info["extra_intervals"] = int(len(actual.difference(expected)))
+                  manifest["outputs"][f"{symbol}:{kind}"] = info
+                  print(json.dumps({f"{symbol}:{kind}": info}, indent=2), flush=True)
+
+          manifest["archives"] = sorted(
+              manifest["archives"],
+              key=lambda item: (item["symbol"], item["kind"], item["year"], item["month"]),
+          )
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          PY
+      - name: Upload prehistory data
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-prehistory-2019-2021-${{ github.run_id }}
+          path: |
+            /tmp/binance-prehistory/*.csv.gz
+            /tmp/binance-prehistory/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
