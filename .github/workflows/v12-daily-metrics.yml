@@ -1,0 +1,78 @@
+name: V12 official daily derivatives metrics
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build daily manifest
+        run: |
+          python - <<'PY' > metric_jobs.tsv
+          from datetime import date, timedelta
+          root = "https://data.binance.vision/data/futures/um/daily/metrics"
+          current = date(2022, 1, 1)
+          end = date(2026, 7, 1)
+          while current < end:
+              stamp = current.isoformat()
+              for symbol in ("BTCUSDT", "ETHUSDT"):
+                  name = f"{symbol}-metrics-{stamp}.zip"
+                  print(symbol, stamp, f"{root}/{symbol}/{name}", sep="\t")
+              current += timedelta(days=1)
+          PY
+          echo "jobs: $(wc -l < metric_jobs.tsv)"
+
+      - name: Download and checksum-verify official daily metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-binance-daily-metrics
+          export ROOT_OUT="$PWD/official-binance-daily-metrics"
+          download_one() {
+            symbol="$1"; stamp="$2"; url="$3"
+            dir="$ROOT_OUT/$symbol"
+            mkdir -p "$dir"
+            name="${symbol}-metrics-${stamp}.zip"
+            out="$dir/$name"
+            for attempt in 1 2 3 4 5; do
+              if curl --fail --location --connect-timeout 30 --max-time 180 "$url" -o "$out.part" && \
+                 curl --fail --location --connect-timeout 30 --max-time 60 "$url.CHECKSUM" -o "$out.CHECKSUM.part"; then
+                expected="$(awk '{print tolower($1)}' "$out.CHECKSUM.part")"
+                actual="$(sha256sum "$out.part" | awk '{print tolower($1)}')"
+                if [ "$actual" = "$expected" ]; then
+                  mv "$out.part" "$out"
+                  mv "$out.CHECKSUM.part" "$out.CHECKSUM"
+                  return 0
+                fi
+              fi
+              rm -f "$out.part" "$out.CHECKSUM.part"
+              sleep "$((attempt * 2))"
+            done
+            echo "FAILED $url" >&2
+            return 1
+          }
+          export -f download_one
+          xargs -P 16 -n 3 bash -c 'download_one "$@"' _ < metric_jobs.tsv
+          expected="$(wc -l < metric_jobs.tsv)"
+          actual="$(find official-binance-daily-metrics -type f -name '*.zip' | wc -l)"
+          test "$actual" = "$expected"
+          find official-binance-daily-metrics -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-binance-daily-metrics/MANIFEST.sha256
+          echo "verified archives: $actual"
+
+      - name: Upload verified daily metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-daily-metrics-2022-2026-${{ github.run_id }}
+          path: official-binance-daily-metrics
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
