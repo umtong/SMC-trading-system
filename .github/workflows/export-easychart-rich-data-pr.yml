@@ -1,0 +1,53 @@
+name: Export EasyChart rich data for PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/export_official_binance_1m.py"
+      - ".github/workflows/export-easychart-rich-data-pr.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Export checksum-verified official one-minute data
+        run: |
+          python scripts/export_official_binance_1m.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start 2022-01 \
+            --end 2026-06 \
+            --output-dir rich-data \
+            --workers 8
+
+      - name: Package normalized data and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C rich-data -caf easychart-rich-1m-data.tar.zst normalized manifest.json
+          sha256sum easychart-rich-1m-data.tar.zst > easychart-rich-1m-data.tar.zst.sha256
+          ls -lh easychart-rich-1m-data.tar.zst rich-data/normalized/*
+
+      - name: Upload normalized one-minute research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: easychart-rich-1m-data
+          path: |
+            easychart-rich-1m-data.tar.zst
+            easychart-rich-1m-data.tar.zst.sha256
+            rich-data/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
