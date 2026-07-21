@@ -1,0 +1,38 @@
+name: Export V12 reproducibility source tree
+
+on:
+  push:
+    branches:
+      - agent/export-v12-repro-source-20260722
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Archive exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v12-repro-source
+          git rev-parse HEAD > v12-repro-source/GIT_COMMIT.txt
+          git ls-files -s > v12-repro-source/GIT_INDEX.txt
+          find . -path './.git' -prune -o -type f -print | sort > v12-repro-source/FILE_LIST.txt
+          tar --exclude='./.git' --exclude='./v12-repro-source/source-tree.tar.gz' -czf v12-repro-source/source-tree.tar.gz .
+          sha256sum v12-repro-source/source-tree.tar.gz > v12-repro-source/source-tree.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v12-reproducibility-source-${{ github.run_id }}
+          path: v12-repro-source
+          retention-days: 30
+          compression-level: 0
