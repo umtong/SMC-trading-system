@@ -55,14 +55,25 @@ jobs:
             actual="$(sha256sum "$dir/$name" | awk '{print tolower($1)}')"
             test "$actual" = "$expected"
           done < jobs.tsv
-          find official-aggtrades -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-aggtrades/MANIFEST.sha256
+          for symbol in BTCUSDT ETHUSDT; do
+            find "official-aggtrades/${symbol}" -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > "official-aggtrades/${symbol}/MANIFEST.sha256"
+          done
           echo "verified: $(find official-aggtrades -type f -name '*.zip' | wc -l)"
 
-      - name: Upload official replay sample
+      - name: Upload BTC replay sample
         uses: actions/upload-artifact@v4
         with:
-          name: official-binance-usdm-aggtrades-sample-${{ github.run_id }}
-          path: official-aggtrades
+          name: official-binance-usdm-btc-aggtrades-${{ github.run_id }}
+          path: official-aggtrades/BTCUSDT
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload ETH replay sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-eth-aggtrades-${{ github.run_id }}
+          path: official-aggtrades/ETHUSDT
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
