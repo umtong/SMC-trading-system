@@ -1,0 +1,82 @@
+name: V13 official derivatives context data
+
+on:
+  push:
+    branches:
+      - agent/v12-one-minute-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify official USD-M context archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/monthly"
+          mkdir -p official-derivatives-context
+          python - <<'PY' > months.txt
+          year, month = 2022, 1
+          while (year, month) < (2026, 7):
+              print(f"{year:04d}-{month:02d}")
+              month += 1
+              if month == 13:
+                  year += 1
+                  month = 1
+          PY
+
+          fetch_one() {
+            local endpoint="$1"
+            local symbol="$2"
+            local interval="$3"
+            local month="$4"
+            local dir name url
+            if [[ -n "$interval" ]]; then
+              dir="official-derivatives-context/${endpoint}/${symbol}/${interval}"
+              name="${symbol}-${interval}-${month}.zip"
+              url="${root}/${endpoint}/${symbol}/${interval}/${name}"
+            else
+              dir="official-derivatives-context/${endpoint}/${symbol}"
+              name="${symbol}-${endpoint}-${month}.zip"
+              url="${root}/${endpoint}/${symbol}/${name}"
+            fi
+            mkdir -p "$dir"
+            if ! curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 300 "$url" -o "$dir/$name"; then
+              rm -f "$dir/$name"
+              echo "MISSING $url" >> official-derivatives-context/MISSING.txt
+              return 0
+            fi
+            curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 120 "${url}.CHECKSUM" -o "$dir/${name}.CHECKSUM"
+            expected="$(awk '{print tolower($1)}' "$dir/${name}.CHECKSUM")"
+            actual="$(sha256sum "$dir/$name" | awk '{print tolower($1)}')"
+            test "$actual" = "$expected"
+          }
+
+          for symbol in BTCUSDT ETHUSDT; do
+            while read -r month; do
+              fetch_one metrics "$symbol" "" "$month"
+              fetch_one fundingRate "$symbol" "" "$month"
+              fetch_one premiumIndexKlines "$symbol" 5m "$month"
+              fetch_one markPriceKlines "$symbol" 5m "$month"
+            done < months.txt
+          done
+
+          find official-derivatives-context -type f -name '*.zip' | sort | wc -l
+          find official-derivatives-context -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-derivatives-context/MANIFEST.sha256
+          du -sh official-derivatives-context
+
+      - name: Upload verified context archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-context-2022-2026-${{ github.run_id }}
+          path: official-derivatives-context
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
