@@ -7,6 +7,12 @@ on:
     paths:
       - scripts/download_official_binance_5m.py
       - .github/workflows/binance-5m-pre2021-history.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_official_binance_5m.py
+      - .github/workflows/binance-5m-pre2021-history.yml
   workflow_dispatch:
 
 permissions:
