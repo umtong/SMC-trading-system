@@ -1,0 +1,96 @@
+name: V14 official 2021 training data
+
+on:
+  push:
+    branches:
+      - agent/v14-2021-training-data
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build official archive manifest
+        shell: bash
+        run: |
+          python - <<'PY' > jobs.tsv
+          from datetime import date, timedelta
+          root = "https://data.binance.vision/data/futures/um"
+          symbols = ("BTCUSDT", "ETHUSDT")
+          for month in range(1, 13):
+              stamp = f"2021-{month:02d}"
+              for symbol in symbols:
+                  for interval in ("1m", "5m"):
+                      name = f"{symbol}-{interval}-{stamp}.zip"
+                      print("monthly-klines", symbol, interval, stamp,
+                            f"{root}/monthly/klines/{symbol}/{interval}/{name}", sep="\t")
+                  name = f"{symbol}-fundingRate-{stamp}.zip"
+                  print("fundingRate", symbol, "none", stamp,
+                        f"{root}/monthly/fundingRate/{symbol}/{name}", sep="\t")
+                  for dataset in ("premiumIndexKlines", "markPriceKlines"):
+                      name = f"{symbol}-5m-{stamp}.zip"
+                      print(dataset, symbol, "5m", stamp,
+                            f"{root}/monthly/{dataset}/{symbol}/5m/{name}", sep="\t")
+          current = date(2021, 1, 1)
+          end = date(2022, 1, 1)
+          while current < end:
+              stamp = current.isoformat()
+              for symbol in symbols:
+                  name = f"{symbol}-metrics-{stamp}.zip"
+                  print("metrics", symbol, "none", stamp,
+                        f"{root}/daily/metrics/{symbol}/{name}", sep="\t")
+              current += timedelta(days=1)
+          PY
+          echo "archive jobs: $(wc -l < jobs.tsv)"
+
+      - name: Download and checksum-verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-2021
+          export ROOT_OUT="$PWD/official-2021"
+          download_one() {
+            dataset="$1"; symbol="$2"; interval="$3"; stamp="$4"; url="$5"
+            dir="$ROOT_OUT/$dataset/$symbol/$interval"
+            mkdir -p "$dir"
+            name="${url##*/}"
+            out="$dir/$name"
+            for attempt in 1 2 3 4 5; do
+              if curl --fail --location --retry 2 --retry-all-errors --connect-timeout 30 --max-time 240 "$url" -o "$out.part" && \
+                 curl --fail --location --retry 2 --retry-all-errors --connect-timeout 30 --max-time 90 "$url.CHECKSUM" -o "$out.CHECKSUM.part"; then
+                expected="$(awk '{print tolower($1)}' "$out.CHECKSUM.part")"
+                actual="$(sha256sum "$out.part" | awk '{print tolower($1)}')"
+                if [ "$actual" = "$expected" ]; then
+                  mv "$out.part" "$out"
+                  mv "$out.CHECKSUM.part" "$out.CHECKSUM"
+                  return 0
+                fi
+              fi
+              rm -f "$out.part" "$out.CHECKSUM.part"
+              sleep "$((attempt * 2))"
+            done
+            echo "FAILED $url" >&2
+            return 1
+          }
+          export -f download_one
+          xargs -P 16 -n 5 bash -c 'download_one "$@"' _ < jobs.tsv
+          expected="$(wc -l < jobs.tsv)"
+          actual="$(find official-2021 -type f -name '*.zip' | wc -l)"
+          test "$actual" = "$expected"
+          find official-2021 -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-2021/MANIFEST.sha256
+          echo "verified archives: $actual"
+
+      - name: Upload verified training archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-2021-training-${{ github.run_id }}
+          path: official-2021
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
