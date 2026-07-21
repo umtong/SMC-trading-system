@@ -1,0 +1,72 @@
+name: probe-official-microstructure-archives
+
+on:
+  push:
+    branches:
+      - agent/probe-1s-microstructure-20260722
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Probe official Binance Vision archive paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe
+          report=probe/archive-probe.tsv
+          printf 'symbol\ttype\tperiod\turl\thttp_code\tcontent_length\tlast_modified\n' > "$report"
+          probe_url() {
+            local symbol="$1" type="$2" period="$3" url="$4"
+            local headers code length modified
+            headers="$(curl -sSIL --retry 3 --connect-timeout 20 --max-time 120 "$url" || true)"
+            code="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {c=$2} END {print c+0}')"
+            length="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub("\r",""); x=$2} END {print x+0}')"
+            modified="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {gsub("\r",""); sub(/^[^:]+:[ ]*/,""); x=$0} END {print x}')"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$symbol" "$type" "$period" "$url" "$code" "$length" "$modified" >> "$report"
+          }
+          for symbol in BTCUSDT ETHUSDT; do
+            for month in 2023-01 2024-01 2025-01 2026-01; do
+              base="https://data.binance.vision/data/futures/um/monthly/klines/${symbol}/1s/${symbol}-1s-${month}.zip"
+              probe_url "$symbol" 1s-kline "$month" "$base"
+              probe_url "$symbol" 1s-checksum "$month" "${base}.CHECKSUM"
+            done
+            for day in 2023-01-03 2024-01-03 2025-01-03 2026-01-03; do
+              base="https://data.binance.vision/data/futures/um/daily/aggTrades/${symbol}/${symbol}-aggTrades-${day}.zip"
+              probe_url "$symbol" aggTrades "$day" "$base"
+              probe_url "$symbol" aggTrades-checksum "$day" "${base}.CHECKSUM"
+              base="https://data.binance.vision/data/futures/um/daily/trades/${symbol}/${symbol}-trades-${day}.zip"
+              probe_url "$symbol" trades "$day" "$base"
+            done
+          done
+          column -t -s $'\t' "$report" | tee probe/archive-probe.txt
+
+      - name: Download one available 1s sample for schema audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe/sample
+          url="https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1s/BTCUSDT-1s-2024-01.zip"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -L "$url")"
+          if [ "$code" = "200" ]; then
+            curl -sSL --retry 3 "$url" -o probe/sample/BTCUSDT-1s-2024-01.zip
+            curl -sSL --retry 3 "${url}.CHECKSUM" -o probe/sample/BTCUSDT-1s-2024-01.zip.CHECKSUM
+            (cd probe/sample && sha256sum -c BTCUSDT-1s-2024-01.zip.CHECKSUM)
+            unzip -l probe/sample/BTCUSDT-1s-2024-01.zip > probe/sample/listing.txt
+            unzip -p probe/sample/BTCUSDT-1s-2024-01.zip | head -n 5 > probe/sample/head.csv || true
+            du -h probe/sample/BTCUSDT-1s-2024-01.zip > probe/sample/size.txt
+          else
+            printf '1s monthly archive unavailable; HTTP %s\n' "$code" > probe/sample/unavailable.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-microstructure-archive-probe
+          path: probe
+          if-no-files-found: error
+          retention-days: 30
