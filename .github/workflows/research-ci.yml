@@ -45,3 +45,38 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  build-official-binance-data:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/binance-5m-research-data'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "pyarrow>=17"
+
+      - name: Download, checksum, normalize and audit
+        run: |
+          python scripts/download_official_binance_5m.py \
+            --output research_data/binance_official_5m \
+            --symbols BTCUSDT ETHUSDT \
+            --interval 5m \
+            --daily-end 2026-07-20 \
+            --workers 10
+
+      - name: Upload normalized research data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-5m-2021-2026-${{ github.run_id }}
+          path: research_data/binance_official_5m
+          if-no-files-found: error
+          retention-days: 7
