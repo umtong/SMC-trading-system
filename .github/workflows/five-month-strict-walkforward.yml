@@ -1,0 +1,102 @@
+name: Five-Month Strict Walk-Forward
+
+on:
+  push:
+    branches:
+      - agent/five-month-strict-walkforward-v1
+    paths:
+      - "research/five_month/**"
+      - ".github/workflows/five-month-strict-walkforward.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: five-month-strict-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  strict-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore checksum-verified Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/five_month
+          key: binance-usdm-official-m1-2021-01-2026-06-v1
+
+      - name: Assemble and verify research engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/five_month/parts/part_*.b64 \
+            | tr -d '[:space:]' \
+            | base64 --decode > research/five_month/research_five_month.py
+          echo "7d8686c9a60c14807a4e1c0b88fbe5c304ea416980fa7cd71227316280803419  research/five_month/research_five_month.py" \
+            | sha256sum -c -
+          python -m py_compile research/five_month/research_five_month.py
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas numba lightgbm pyarrow
+
+      - name: Run strict five-calendar-month research
+        id: research
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/five_month_strict
+          python research/five_month/research_five_month.py \
+            --start 2021-01 \
+            --end 2026-07 \
+            --cache .cache/five_month \
+            --output results/five_month_strict \
+            --policy-trials 1800 \
+            --seed 20260722 \
+            2>&1 | tee results/five_month_strict/run.log
+
+      - name: Require leakage audit and summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s results/five_month_strict/run.log
+          if test -f results/five_month_strict/summary.json; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('results/five_month_strict')
+          summary = json.loads((root / 'summary.json').read_text(encoding='utf-8'))
+          audit = json.loads((root / 'leakage_audit.json').read_text(encoding='utf-8'))
+          if not audit.get('passed'):
+              raise SystemExit(f"leakage audit failed: {audit}")
+          print(json.dumps({
+              'gate': summary.get('five_month_gate'),
+              'holdout': summary.get('holdout'),
+              'leakage_audit': audit,
+          }, indent=2, ensure_ascii=False))
+          PY
+          fi
+
+      - name: Upload strict research artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: five-month-strict-${{ github.run_id }}
+          path: |
+            results/five_month_strict
+            research/five_month/research_five_month.py
+          if-no-files-found: error
+          retention-days: 30
