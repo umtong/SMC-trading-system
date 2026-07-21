@@ -1,0 +1,55 @@
+name: Build Official Binance 1m Replay Data
+
+on:
+  push:
+    branches:
+      - agent/binance-5m-research-data
+    paths:
+      - scripts/download_official_binance_1m_partitioned.py
+      - .github/workflows/binance-1m-replay-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_official_binance_1m_partitioned.py
+      - .github/workflows/binance-1m-replay-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-1m-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "pyarrow>=17"
+
+      - name: Download, checksum, normalize and audit
+        run: |
+          python scripts/download_official_binance_1m_partitioned.py \
+            --output research_data/binance_official_1m \
+            --symbols BTCUSDT ETHUSDT \
+            --interval 1m \
+            --daily-end 2026-07-20 \
+            --workers 6
+
+      - name: Upload normalized replay data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-1m-replay-2021-2026-${{ github.run_id }}
+          path: research_data/binance_official_1m
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
