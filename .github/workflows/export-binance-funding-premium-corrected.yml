@@ -1,0 +1,80 @@
+name: Export Binance funding premium corrected
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pandas
+      - name: Download verified official derivatives context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/context/raw
+          python -u - <<'PY' 2>&1 | tee /tmp/context/export.log
+          import hashlib, io, json, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+          ROOT='https://data.binance.vision/data/futures/um/monthly';OUT=Path('/tmp/context');RAW=OUT/'raw'
+          symbols=('BTCUSDT','ETHUSDT');cols=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_base','taker_buy_quote','ignore']
+          def months():
+              y,m=2022,1
+              while (y,m)<=(2026,6):
+                  yield y,m;m+=1
+                  if m==13:y+=1;m=1
+          def get(url,path):
+              req=urllib.request.Request(url,headers={'User-Agent':'SMC-research/1.1'})
+              with urllib.request.urlopen(req,timeout=180) as r:data=r.read()
+              path.write_bytes(data);return data
+          def verified(url,stem):
+              print('GET',url,flush=True);blob=get(url,RAW/stem);actual=hashlib.sha256(blob).hexdigest();expected=get(url+'.CHECKSUM',RAW/(stem+'.CHECKSUM')).decode().strip().split()[0]
+              if actual.lower()!=expected.lower():raise RuntimeError(f'checksum mismatch {stem}')
+              with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                  names=[n for n in z.namelist() if n.lower().endswith('.csv')]
+                  if len(names)!=1:raise RuntimeError(f'members {stem}: {names}')
+                  return z.read(names[0]),actual
+          manifest={'schema':'ictbt.binance_usdm_context.v2','source':ROOT,'range':['2022-01-01T00:00:00Z','2026-07-01T00:00:00Z'],'archives':[],'symbols':{}}
+          for symbol in symbols:
+              funding=[];premium=[]
+              for y,m in months():
+                  fs=f'{symbol}-fundingRate-{y:04d}-{m:02d}.zip';raw,sha=verified(f'{ROOT}/fundingRate/{symbol}/{fs}',fs);f=pd.read_csv(io.BytesIO(raw))
+                  names={str(c).strip().lower():c for c in f.columns};tc=names.get('calc_time') or names.get('fundingtime') or names.get('funding_time');rc=names.get('last_funding_rate') or names.get('fundingrate') or names.get('funding_rate')
+                  if tc is None or rc is None:raise RuntimeError(f'funding columns {fs}: {f.columns.tolist()}')
+                  rawtime=pd.to_numeric(f[tc],errors='raise').astype('int64');unit='us' if int(rawtime.abs().median())>=10**14 else 'ms'
+                  q=pd.DataFrame({'funding_time':pd.to_datetime(rawtime,unit=unit,utc=True),'funding_interval_hours':pd.to_numeric(f[names.get('funding_interval_hours')],errors='coerce') if names.get('funding_interval_hours') is not None else float('nan'),'funding_rate':pd.to_numeric(f[rc],errors='raise')});funding.append(q);manifest['archives'].append({'kind':'funding','symbol':symbol,'year':y,'month':m,'unit':unit,'sha256':sha,'rows':len(q)})
+                  ps=f'{symbol}-5m-{y:04d}-{m:02d}.zip';raw,sha=verified(f'{ROOT}/premiumIndexKlines/{symbol}/5m/{ps}',ps);p=pd.read_csv(io.BytesIO(raw),header=None,names=cols,dtype=str)
+                  if not str(p.iloc[0].open_time).strip().lstrip('-').isdigit():p=p.iloc[1:].copy()
+                  rawtime=pd.to_numeric(p.open_time,errors='raise').astype('int64');unit='us' if int(rawtime.abs().median())>=10**14 else 'ms';p.open_time=pd.to_datetime(rawtime,unit=unit,utc=True)
+                  for c in ('open','high','low','close'):p[c]=pd.to_numeric(p[c],errors='raise')
+                  p=p[['open_time','open','high','low','close']];premium.append(p);manifest['archives'].append({'kind':'premium_5m','symbol':symbol,'year':y,'month':m,'unit':unit,'sha256':sha,'rows':len(p)});print('OK',symbol,y,m,len(q),len(p),flush=True)
+              lo=pd.Timestamp('2022-01-01',tz='UTC');hi=pd.Timestamp('2026-07-01',tz='UTC')
+              f=pd.concat(funding,ignore_index=True).drop_duplicates('funding_time',keep='last').sort_values('funding_time');f=f[(f.funding_time>=lo)&(f.funding_time<hi)].reset_index(drop=True)
+              p=pd.concat(premium,ignore_index=True).drop_duplicates('open_time',keep='last').sort_values('open_time');p=p[(p.open_time>=lo)&(p.open_time<hi)].reset_index(drop=True)
+              expected=pd.date_range(lo,hi-pd.Timedelta(minutes=5),freq='5min');actual=pd.DatetimeIndex(p.open_time);missing=expected.difference(actual);extra=actual.difference(expected)
+              fp=OUT/f'{symbol}_funding.csv.gz';pp=OUT/f'{symbol}_premium_index_5m.csv.gz';f.to_csv(fp,index=False,compression='gzip',float_format='%.12g');p.to_csv(pp,index=False,compression='gzip',float_format='%.12g')
+              manifest['symbols'][symbol]={'funding_rows':len(f),'funding_first':f.funding_time.iloc[0].isoformat(),'funding_last':f.funding_time.iloc[-1].isoformat(),'funding_sha256':hashlib.sha256(fp.read_bytes()).hexdigest(),'premium_rows':len(p),'premium_first':p.open_time.iloc[0].isoformat(),'premium_last':p.open_time.iloc[-1].isoformat(),'premium_missing_5m':len(missing),'premium_extra_5m':len(extra),'premium_sha256':hashlib.sha256(pp.read_bytes()).hexdigest()}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2));print(json.dumps(manifest['symbols'],indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binance-funding-premium-corrected-${{ github.run_id }}
+          path: |
+            /tmp/context/*.csv.gz
+            /tmp/context/manifest.json
+            /tmp/context/export.log
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
