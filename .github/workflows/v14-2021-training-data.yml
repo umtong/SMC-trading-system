@@ -19,46 +19,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build official archive manifest
+      - name: Build official archive manifests
         shell: bash
         run: |
-          python - <<'PY' > jobs.tsv
+          python - <<'PY'
           from datetime import date, timedelta
           root = "https://data.binance.vision/data/futures/um"
           symbols = ("BTCUSDT", "ETHUSDT")
-          for month in range(1, 13):
-              stamp = f"2021-{month:02d}"
-              for symbol in symbols:
-                  for interval in ("1m", "5m"):
-                      name = f"{symbol}-{interval}-{stamp}.zip"
-                      print("monthly-klines", symbol, interval, stamp,
-                            f"{root}/monthly/klines/{symbol}/{interval}/{name}", sep="\t")
-                  name = f"{symbol}-fundingRate-{stamp}.zip"
-                  print("fundingRate", symbol, "none", stamp,
-                        f"{root}/monthly/fundingRate/{symbol}/{name}", sep="\t")
-                  for dataset in ("premiumIndexKlines", "markPriceKlines"):
-                      name = f"{symbol}-5m-{stamp}.zip"
-                      print(dataset, symbol, "5m", stamp,
-                            f"{root}/monthly/{dataset}/{symbol}/5m/{name}", sep="\t")
-          current = date(2021, 1, 1)
-          end = date(2022, 1, 1)
-          while current < end:
-              stamp = current.isoformat()
-              for symbol in symbols:
-                  name = f"{symbol}-metrics-{stamp}.zip"
-                  print("metrics", symbol, "none", stamp,
-                        f"{root}/daily/metrics/{symbol}/{name}", sep="\t")
-              current += timedelta(days=1)
+          with open("required.tsv", "w", encoding="utf-8") as required, open("optional.tsv", "w", encoding="utf-8") as optional:
+              for month in range(1, 13):
+                  stamp = f"2021-{month:02d}"
+                  for symbol in symbols:
+                      for interval in ("1m", "5m"):
+                          name = f"{symbol}-{interval}-{stamp}.zip"
+                          print("monthly-klines", symbol, interval, stamp,
+                                f"{root}/monthly/klines/{symbol}/{interval}/{name}",
+                                sep="\t", file=required)
+                      name = f"{symbol}-fundingRate-{stamp}.zip"
+                      print("fundingRate", symbol, "none", stamp,
+                            f"{root}/monthly/fundingRate/{symbol}/{name}",
+                            sep="\t", file=optional)
+                      for dataset in ("premiumIndexKlines", "markPriceKlines"):
+                          name = f"{symbol}-5m-{stamp}.zip"
+                          print(dataset, symbol, "5m", stamp,
+                                f"{root}/monthly/{dataset}/{symbol}/5m/{name}",
+                                sep="\t", file=optional)
+              current = date(2021, 1, 1)
+              end = date(2022, 1, 1)
+              while current < end:
+                  stamp = current.isoformat()
+                  for symbol in symbols:
+                      name = f"{symbol}-metrics-{stamp}.zip"
+                      print("metrics", symbol, "none", stamp,
+                            f"{root}/daily/metrics/{symbol}/{name}",
+                            sep="\t", file=optional)
+                  current += timedelta(days=1)
           PY
-          echo "archive jobs: $(wc -l < jobs.tsv)"
+          echo "required jobs: $(wc -l < required.tsv)"
+          echo "optional jobs: $(wc -l < optional.tsv)"
 
-      - name: Download and checksum-verify
+      - name: Download and checksum-verify required OHLCV
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p official-2021
           export ROOT_OUT="$PWD/official-2021"
-          download_one() {
+          download_required() {
             dataset="$1"; symbol="$2"; interval="$3"; stamp="$4"; url="$5"
             dir="$ROOT_OUT/$dataset/$symbol/$interval"
             mkdir -p "$dir"
@@ -78,16 +84,50 @@ jobs:
               rm -f "$out.part" "$out.CHECKSUM.part"
               sleep "$((attempt * 2))"
             done
-            echo "FAILED $url" >&2
+            echo "REQUIRED_FAILED $url" >&2
             return 1
           }
-          export -f download_one
-          xargs -P 16 -n 5 bash -c 'download_one "$@"' _ < jobs.tsv
-          expected="$(wc -l < jobs.tsv)"
-          actual="$(find official-2021 -type f -name '*.zip' | wc -l)"
+          export -f download_required
+          xargs -P 12 -n 5 bash -c 'download_required "$@"' _ < required.tsv
+          expected="$(wc -l < required.tsv)"
+          actual="$(find official-2021/monthly-klines -type f -name '*.zip' | wc -l)"
           test "$actual" = "$expected"
+          echo "verified required OHLCV: $actual"
+
+      - name: Download available optional derivatives context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ROOT_OUT="$PWD/official-2021"
+          : > official-2021/MISSING_OPTIONAL.txt
+          download_optional() {
+            dataset="$1"; symbol="$2"; interval="$3"; stamp="$4"; url="$5"
+            dir="$ROOT_OUT/$dataset/$symbol/$interval"
+            mkdir -p "$dir"
+            name="${url##*/}"
+            out="$dir/$name"
+            for attempt in 1 2 3; do
+              if curl --fail --location --retry 1 --retry-all-errors --connect-timeout 30 --max-time 180 "$url" -o "$out.part" && \
+                 curl --fail --location --retry 1 --retry-all-errors --connect-timeout 30 --max-time 60 "$url.CHECKSUM" -o "$out.CHECKSUM.part"; then
+                expected="$(awk '{print tolower($1)}' "$out.CHECKSUM.part")"
+                actual="$(sha256sum "$out.part" | awk '{print tolower($1)}')"
+                if [ "$actual" = "$expected" ]; then
+                  mv "$out.part" "$out"
+                  mv "$out.CHECKSUM.part" "$out.CHECKSUM"
+                  return 0
+                fi
+              fi
+              rm -f "$out.part" "$out.CHECKSUM.part"
+              sleep "$attempt"
+            done
+            printf '%s\n' "$url" >> "$ROOT_OUT/MISSING_OPTIONAL.txt"
+            return 0
+          }
+          export -f download_optional
+          xargs -P 16 -n 5 bash -c 'download_optional "$@"' _ < optional.tsv
           find official-2021 -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-2021/MANIFEST.sha256
-          echo "verified archives: $actual"
+          echo "verified optional archives: $(find official-2021 -type f -name '*.zip' | wc -l)"
+          echo "missing optional archives: $(wc -l < official-2021/MISSING_OPTIONAL.txt)"
 
       - name: Upload verified training archives
         uses: actions/upload-artifact@v4
