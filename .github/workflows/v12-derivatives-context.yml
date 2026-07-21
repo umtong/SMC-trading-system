@@ -1,6 +1,9 @@
 name: V12 official derivatives context data
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - agent/v12-one-minute-validation
@@ -54,23 +57,24 @@ jobs:
               done < months.txt
             done
 
-            dataset="premiumIndexKlines"
-            interval="5m"
-            mkdir -p "official-binance-context/${dataset}/${symbol}/${interval}"
-            while read -r month; do
-              name="${symbol}-${interval}-${month}.zip"
-              url="${root}/${dataset}/${symbol}/${interval}/${name}"
-              out="official-binance-context/${dataset}/${symbol}/${interval}/${name}"
-              if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 "${url}" --output "${out}"; then
-                curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 120 "${url}.CHECKSUM" --output "${out}.CHECKSUM"
-                expected="$(awk '{print tolower($1)}' "${out}.CHECKSUM")"
-                actual="$(sha256sum "${out}" | awk '{print tolower($1)}')"
-                test "${actual}" = "${expected}"
-              else
-                rm -f "${out}"
-                echo "${url}" >> official-binance-context/MISSING.txt
-              fi
-            done < months.txt
+            for dataset in premiumIndexKlines markPriceKlines; do
+              interval="5m"
+              mkdir -p "official-binance-context/${dataset}/${symbol}/${interval}"
+              while read -r month; do
+                name="${symbol}-${interval}-${month}.zip"
+                url="${root}/${dataset}/${symbol}/${interval}/${name}"
+                out="official-binance-context/${dataset}/${symbol}/${interval}/${name}"
+                if curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 "${url}" --output "${out}"; then
+                  curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 120 "${url}.CHECKSUM" --output "${out}.CHECKSUM"
+                  expected="$(awk '{print tolower($1)}' "${out}.CHECKSUM")"
+                  actual="$(sha256sum "${out}" | awk '{print tolower($1)}')"
+                  test "${actual}" = "${expected}"
+                else
+                  rm -f "${out}"
+                  echo "${url}" >> official-binance-context/MISSING.txt
+                fi
+              done < months.txt
+            done
           done
           find official-binance-context -type f -name '*.zip' -print0 | sort -z | xargs -0 -r sha256sum > official-binance-context/MANIFEST.sha256
           echo "verified archives: $(find official-binance-context -type f -name '*.zip' | wc -l)"
