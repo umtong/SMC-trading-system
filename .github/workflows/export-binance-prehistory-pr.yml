@@ -1,0 +1,147 @@
+name: Export Binance prehistory PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/export-binance-prehistory-pr.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install pandas numpy
+      - name: Download official monthly archives and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-prehistory
+          python - <<'PY'
+          from __future__ import annotations
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import hashlib, io, json, time, urllib.error, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+
+          ROOT = "https://data.binance.vision/data/futures/um/monthly"
+          OUT = Path("/tmp/binance-prehistory")
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START, END = (2019, 9), (2021, 12)
+          COLUMNS = ["open_time","open","high","low","close","volume","close_time","quote_volume","trades","taker_buy_base","taker_buy_quote","ignore"]
+
+          def months():
+              y, m = START
+              while (y, m) <= END:
+                  yield y, m
+                  m += 1
+                  if m == 13: y, m = y + 1, 1
+
+          def fetch(url: str, attempts: int = 5) -> bytes:
+              last = None
+              for attempt in range(attempts):
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent":"SMC-prehistory/1.0"})
+                      with urllib.request.urlopen(req, timeout=180) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404: raise
+                      last = exc
+                  except Exception as exc:
+                      last = exc
+                  time.sleep(0.5 * 2**attempt)
+              raise last
+
+          def verified(url: str):
+              payload = fetch(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              expected = fetch(url + ".CHECKSUM").decode("utf-8", errors="replace").strip().split()[0]
+              if actual.lower() != expected.lower():
+                  raise RuntimeError(f"checksum mismatch: {url}")
+              return payload, {"url":url,"sha256":actual,"checksum_expected":expected,"checksum_ok":True}
+
+          def member(payload: bytes) -> bytes:
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  names = [n for n in z.namelist() if n.lower().endswith(".csv")]
+                  if len(names) != 1: raise RuntimeError(names)
+                  return z.read(names[0])
+
+          def kline(payload: bytes) -> pd.DataFrame:
+              f = pd.read_csv(io.BytesIO(member(payload)), header=None, names=COLUMNS, dtype=str)
+              if not str(f.iloc[0].open_time).strip().lstrip("-").isdigit(): f = f.iloc[1:].copy()
+              raw = pd.to_numeric(f.open_time, errors="raise").astype("int64")
+              unit = "us" if int(raw.abs().median()) >= 10**14 else "ms"
+              f["open_time"] = pd.to_datetime(raw, unit=unit, utc=True)
+              for col in ["open","high","low","close","volume","quote_volume","trades","taker_buy_base","taker_buy_quote"]:
+                  f[col] = pd.to_numeric(f[col], errors="raise")
+              return f[["open_time","open","high","low","close","volume","quote_volume","trades","taker_buy_base","taker_buy_quote"]]
+
+          def funding(payload: bytes) -> pd.DataFrame:
+              f = pd.read_csv(io.BytesIO(member(payload)))
+              names = {str(c).strip().lower():c for c in f.columns}
+              tc = names.get("calc_time") or names.get("fundingtime") or names.get("funding_time")
+              rc = names.get("last_funding_rate") or names.get("fundingrate") or names.get("funding_rate")
+              if tc is None or rc is None: raise RuntimeError(f.columns.tolist())
+              raw = pd.to_numeric(f[tc], errors="raise").astype("int64")
+              unit = "us" if int(raw.abs().median()) >= 10**14 else "ms"
+              return pd.DataFrame({"funding_time":pd.to_datetime(raw,unit=unit,utc=True),"funding_rate":pd.to_numeric(f[rc],errors="raise")})
+
+          def task(symbol, year, month, kind):
+              if kind in {"1m","5m"}:
+                  stem=f"{symbol}-{kind}-{year:04d}-{month:02d}.zip"; url=f"{ROOT}/klines/{symbol}/{kind}/{stem}"
+              elif kind == "premium_5m":
+                  stem=f"{symbol}-5m-{year:04d}-{month:02d}.zip"; url=f"{ROOT}/premiumIndexKlines/{symbol}/5m/{stem}"
+              else:
+                  stem=f"{symbol}-fundingRate-{year:04d}-{month:02d}.zip"; url=f"{ROOT}/fundingRate/{symbol}/{stem}"
+              try: payload, meta = verified(url)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404: return symbol,kind,None,{"symbol":symbol,"kind":kind,"year":year,"month":month,"url":url,"available":False}
+                  raise
+              frame = funding(payload) if kind == "funding" else kline(payload)
+              meta.update({"symbol":symbol,"kind":kind,"year":year,"month":month,"rows":len(frame),"available":True})
+              return symbol,kind,frame,meta
+
+          kinds=("1m","5m","premium_5m","funding")
+          chunks={(s,k):[] for s in SYMBOLS for k in kinds}
+          manifest={"schema":"ictbt.binance_usdm_prehistory.v1","archives":[],"outputs":{}}
+          jobs=[(s,y,m,k) for s in SYMBOLS for y,m in months() for k in kinds]
+          with ThreadPoolExecutor(max_workers=16) as pool:
+              futures=[pool.submit(task,*job) for job in jobs]
+              for i,future in enumerate(as_completed(futures),1):
+                  s,k,frame,meta=future.result(); manifest["archives"].append(meta)
+                  if frame is not None: chunks[(s,k)].append(frame)
+                  if i%25==0 or i==len(jobs): print(f"completed={i}/{len(jobs)}",flush=True)
+
+          start=pd.Timestamp("2019-09-01",tz="UTC"); end=pd.Timestamp("2022-01-01",tz="UTC")
+          for s in SYMBOLS:
+              for k in kinds:
+                  if not chunks[(s,k)]: manifest["outputs"][f"{s}:{k}"]={"available":False}; continue
+                  f=pd.concat(chunks[(s,k)],ignore_index=True); tc="funding_time" if k=="funding" else "open_time"
+                  f=f.drop_duplicates(tc,keep="last").sort_values(tc); f=f[(f[tc]>=start)&(f[tc]<end)].reset_index(drop=True)
+                  path=OUT/f"{s}_{k}_2019_2021.csv.gz"; f.to_csv(path,index=False,compression="gzip",float_format="%.12g")
+                  info={"available":True,"rows":len(f),"first":f[tc].iloc[0].isoformat(),"last":f[tc].iloc[-1].isoformat(),"sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+                  if k in {"1m","5m","premium_5m"}:
+                      expected=pd.date_range(f[tc].iloc[0],f[tc].iloc[-1],freq="1min" if k=="1m" else "5min"); actual=pd.DatetimeIndex(f[tc]); info["missing_intervals"]=len(expected.difference(actual)); info["extra_intervals"]=len(actual.difference(expected))
+                  manifest["outputs"][f"{s}:{k}"]=info; print(json.dumps({f"{s}:{k}":info},indent=2),flush=True)
+          manifest["archives"]=sorted(manifest["archives"],key=lambda x:(x["symbol"],x["kind"],x["year"],x["month"]))
+          (OUT/"manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-prehistory-pr-${{ github.run_id }}
+          path: |
+            /tmp/binance-prehistory/*.csv.gz
+            /tmp/binance-prehistory/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
