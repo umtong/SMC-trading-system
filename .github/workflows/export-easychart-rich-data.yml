@@ -1,0 +1,225 @@
+name: Export EasyChart rich public data
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - ".github/workflows/export-easychart-rich-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, and normalize official Binance USD-M one-minute klines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from datetime import date
+          from pathlib import Path
+
+          ROOT = Path("rich-data")
+          CACHE = ROOT / "archives"
+          OUTPUT = ROOT / "normalized"
+          CACHE.mkdir(parents=True, exist_ok=True)
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = (2022, 1)
+          END = (2026, 6)
+          BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
+          HEADER = (
+              "open_time",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "close_time",
+              "quote_volume",
+              "trade_count",
+              "taker_buy_base_volume",
+              "taker_buy_quote_volume",
+              "ignore",
+          )
+
+          def months():
+              year, month = START
+              while (year, month) <= END:
+                  yield year, month
+                  month += 1
+                  if month == 13:
+                      month = 1
+                      year += 1
+
+          def fetch(url: str, path: Path) -> None:
+              if path.exists() and path.stat().st_size > 0:
+                  return
+              error: Exception | None = None
+              for attempt in range(6):
+                  try:
+                      request = urllib.request.Request(
+                          url,
+                          headers={"User-Agent": "easychart-causal-research/1.0"},
+                      )
+                      with urllib.request.urlopen(request, timeout=90) as response:
+                          data = response.read()
+                      tmp = path.with_suffix(path.suffix + ".tmp")
+                      tmp.write_bytes(data)
+                      tmp.replace(path)
+                      return
+                  except Exception as exc:  # noqa: BLE001
+                      error = exc
+                      time.sleep(min(30, 2**attempt))
+              raise RuntimeError(f"failed to download {url}: {error}")
+
+          def download_one(item: tuple[str, int, int]) -> dict[str, object]:
+              symbol, year, month = item
+              name = f"{symbol}-1m-{year:04d}-{month:02d}.zip"
+              folder = f"{BASE}/{symbol}/1m"
+              archive = CACHE / name
+              checksum_path = CACHE / f"{name}.CHECKSUM"
+              fetch(f"{folder}/{name}", archive)
+              fetch(f"{folder}/{name}.CHECKSUM", checksum_path)
+              expected = checksum_path.read_text(encoding="utf-8").split()[0].lower()
+              actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if expected != actual:
+                  raise RuntimeError(
+                      f"checksum mismatch for {name}: expected {expected}, got {actual}"
+                  )
+              with zipfile.ZipFile(archive) as zf:
+                  members = [member for member in zf.namelist() if not member.endswith("/")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected archive members in {name}: {members}")
+                  with zf.open(members[0]) as source:
+                      first = source.readline().decode("utf-8").strip().split(",")
+                  if len(first) != len(HEADER):
+                      raise RuntimeError(f"unexpected column count in {name}: {len(first)}")
+              return {
+                  "symbol": symbol,
+                  "year": year,
+                  "month": month,
+                  "archive": str(archive),
+                  "sha256": actual,
+                  "bytes": archive.stat().st_size,
+              }
+
+          jobs = [
+              (symbol, year, month)
+              for symbol in SYMBOLS
+              for year, month in months()
+          ]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+              manifest_rows = list(executor.map(download_one, jobs))
+
+          summaries: dict[str, dict[str, object]] = {}
+          for symbol in SYMBOLS:
+              output_path = OUTPUT / f"{symbol}_1m_full.csv.gz"
+              rows = 0
+              first_open: int | None = None
+              last_open: int | None = None
+              previous_open: int | None = None
+              with gzip.open(output_path, "wt", encoding="utf-8", newline="") as target:
+                  writer = csv.writer(target)
+                  writer.writerow(HEADER)
+                  for year, month in months():
+                      archive = CACHE / f"{symbol}-1m-{year:04d}-{month:02d}.zip"
+                      with zipfile.ZipFile(archive) as zf:
+                          member = [name for name in zf.namelist() if not name.endswith("/")][0]
+                          with zf.open(member) as source:
+                              text = (line.decode("utf-8") for line in source)
+                              reader = csv.reader(text)
+                              for row in reader:
+                                  if not row:
+                                      continue
+                                  # Some newer archives may include a header; reject it explicitly.
+                                  if row[0] == "open_time":
+                                      continue
+                                  if len(row) != len(HEADER):
+                                      raise RuntimeError(
+                                          f"unexpected row width for {symbol} {year}-{month:02d}"
+                                      )
+                                  open_time = int(row[0])
+                                  if previous_open is not None and open_time - previous_open != 60_000:
+                                      raise RuntimeError(
+                                          f"non-contiguous interval for {symbol}: "
+                                          f"{previous_open} -> {open_time}"
+                                      )
+                                  if first_open is None:
+                                      first_open = open_time
+                                  previous_open = open_time
+                                  last_open = open_time
+                                  writer.writerow(row)
+                                  rows += 1
+              summaries[symbol] = {
+                  "path": str(output_path),
+                  "rows": rows,
+                  "first_open_time_ms": first_open,
+                  "last_open_time_ms": last_open,
+                  "sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+                  "bytes": output_path.stat().st_size,
+              }
+
+          manifest = {
+              "source": "Binance Public Data USD-M monthly klines",
+              "market": "futures/um",
+              "interval": "1m",
+              "start_inclusive": "2022-01-01T00:00:00Z",
+              "end_inclusive": "2026-06-30T23:59:00Z",
+              "symbols": list(SYMBOLS),
+              "columns": list(HEADER),
+              "archives": sorted(
+                  manifest_rows,
+                  key=lambda row: (str(row["symbol"]), int(row["year"]), int(row["month"])),
+              ),
+              "normalized": summaries,
+          }
+          (ROOT / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+          print(json.dumps({"normalized": summaries}, indent=2))
+          PY
+
+      - name: Package normalized data and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C rich-data -caf easychart-rich-1m-data.tar.zst normalized manifest.json
+          sha256sum easychart-rich-1m-data.tar.zst > easychart-rich-1m-data.tar.zst.sha256
+          ls -lh easychart-rich-1m-data.tar.zst rich-data/normalized/*
+
+      - name: Upload normalized one-minute research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: easychart-rich-1m-data
+          path: |
+            easychart-rich-1m-data.tar.zst
+            easychart-rich-1m-data.tar.zst.sha256
+            rich-data/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
