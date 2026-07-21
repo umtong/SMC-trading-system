@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - agent/binance-5m-research-data
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_official_binance_5m.py
+      - .github/workflows/binance-5m-research-data.yml
   workflow_dispatch:
 
 permissions:
