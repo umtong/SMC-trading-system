@@ -6,6 +6,11 @@ on:
       - agent/easychart-fresh-causal-rebuild
     paths:
       - ".github/workflows/export-worst-window-aggtrades.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/export-worst-window-aggtrades.yml"
   workflow_dispatch:
 
 permissions:
