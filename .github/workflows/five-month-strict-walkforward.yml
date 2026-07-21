@@ -47,6 +47,27 @@ jobs:
           cat research/five_month/parts/part_*.b64 \
             | tr -d '[:space:]' \
             | base64 --decode > research/five_month/research_five_month.py
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import json
+
+          target = Path('research/five_month/research_five_month.py')
+          patch = json.loads(Path('research/five_month/assembly_patch.json').read_text(encoding='utf-8'))
+          source = target.read_bytes()
+          digest = hashlib.sha256(source).hexdigest()
+          if digest != patch['source_sha256'] or len(source) != patch['source_size']:
+              raise SystemExit(f"unexpected assembled source: sha={digest} size={len(source)}")
+          data = bytearray(source)
+          for op in reversed(patch['operations']):
+              replacement = base64.b64decode(op['data'])
+              data[op['i1']:op['i2']] = replacement
+          target.write_bytes(data)
+          final_digest = hashlib.sha256(data).hexdigest()
+          if final_digest != patch['target_sha256'] or len(data) != patch['target_size']:
+              raise SystemExit(f"patched source mismatch: sha={final_digest} size={len(data)}")
+          PY
           echo "7d8686c9a60c14807a4e1c0b88fbe5c304ea416980fa7cd71227316280803419  research/five_month/research_five_month.py" \
             | sha256sum -c -
           python -m py_compile research/five_month/research_five_month.py
