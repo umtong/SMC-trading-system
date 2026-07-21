@@ -62,13 +62,17 @@ def fetch(url: str, attempts: int = 7) -> bytes:
         try:
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": "easychart-causal-basis/1.0"},
+                headers={"User-Agent": "easychart-causal-basis/1.1"},
             )
             with urllib.request.urlopen(request, timeout=120) as response:
                 return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise FileNotFoundError(url) from exc
+            last = exc
         except Exception as exc:  # noqa: BLE001
             last = exc
-            time.sleep(min(30, 2**attempt))
+        time.sleep(min(30, 2**attempt))
     raise RuntimeError(f"failed to download {url}: {last}")
 
 
@@ -111,20 +115,29 @@ def download_one(
     symbol: str,
     month: Month,
     series: str,
-) -> tuple[str, Month, dict[int, tuple[float, ...]], dict[str, object]]:
+) -> tuple[str, dict[int, tuple[float, ...]] | None, dict[str, object]]:
     url, name = archive_spec(symbol, month, series)
-    archive = fetch(url)
-    checksum = fetch(f"{url}.CHECKSUM").decode("utf-8").split()[0].lower()
+    try:
+        archive = fetch(url)
+        checksum = fetch(f"{url}.CHECKSUM").decode("utf-8").split()[0].lower()
+    except FileNotFoundError:
+        return series, None, {
+            "series": series,
+            "month": month.token,
+            "url": url,
+            "status": "missing",
+        }
     actual = hashlib.sha256(archive).hexdigest()
     if actual != checksum:
         raise RuntimeError(
             f"checksum mismatch for {name}: expected {checksum}, got {actual}"
         )
     rows = parse_klines(archive)
-    return series, month, rows, {
+    return series, rows, {
         "series": series,
         "month": month.token,
         "url": url,
+        "status": "verified",
         "sha256": actual,
         "archive_bytes": len(archive),
         "rows": len(rows),
@@ -140,16 +153,19 @@ def safe_basis(numerator: float, denominator: float) -> float:
 def write_month(
     writer: csv.writer,
     datasets: dict[str, dict[int, tuple[float, ...]]],
-) -> int:
-    common = sorted(set.intersection(*(set(rows) for rows in datasets.values())))
+) -> tuple[int, int]:
+    common = set.intersection(*(set(rows) for rows in datasets.values()))
     if not common:
-        return 0
-    if any(right - left != 60_000 for left, right in zip(common, common[1:])):
-        raise RuntimeError("non-contiguous common one-minute grid")
+        return 0, 0
+    first_bucket = min(common) // 300_000
+    last_bucket = max(common) // 300_000
     count = 0
-    for offset in range(0, len(common) - 4, 5):
-        block = common[offset : offset + 5]
-        if block[-1] - block[0] != 240_000:
+    skipped = 0
+    for bucket_number in range(first_bucket, last_bucket + 1):
+        bucket = bucket_number * 300_000
+        block = [bucket + offset * 60_000 for offset in range(5)]
+        if not all(timestamp in common for timestamp in block):
+            skipped += 1
             continue
         spot = [datasets["spot"][timestamp] for timestamp in block]
         mark = [datasets["mark"][timestamp] for timestamp in block]
@@ -168,7 +184,7 @@ def write_month(
         spot_index = [safe_basis(s[3], i[3]) for s, i in zip(spot, index)]
         writer.writerow(
             [
-                block[0],
+                bucket,
                 spot[0][0],
                 max(row[1] for row in spot),
                 min(row[2] for row in spot),
@@ -193,7 +209,7 @@ def write_month(
             ]
         )
         count += 1
-    return count
+    return count, skipped
 
 
 def main() -> int:
@@ -201,7 +217,7 @@ def main() -> int:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--start", default="2020-01")
     parser.add_argument("--end", default="2026-06")
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--output-dir", type=Path, default=Path("basis-output"))
     args = parser.parse_args()
 
@@ -210,21 +226,8 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     target = args.output_dir / f"{symbol}_spot_perp_basis_5m.csv.gz"
     manifest_rows: list[dict[str, object]] = []
-    rows_by_month: dict[Month, dict[str, dict[int, tuple[float, ...]]]] = {
-        month: {} for month in months
-    }
-
-    jobs = [
-        (symbol, month, series)
-        for month in months
-        for series in SERIES
-    ]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(download_one, *job) for job in jobs]
-        for future in concurrent.futures.as_completed(futures):
-            series, month, rows, manifest = future.result()
-            rows_by_month[month][series] = rows
-            manifest_rows.append(manifest)
+    skipped_months: list[dict[str, object]] = []
+    skipped_buckets = 0
 
     columns = (
         "open_time",
@@ -255,23 +258,53 @@ def main() -> int:
         writer = csv.writer(output)
         writer.writerow(columns)
         for month in months:
-            datasets = rows_by_month[month]
+            datasets: dict[str, dict[int, tuple[float, ...]]] = {}
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(args.workers, len(SERIES))
+            ) as executor:
+                futures = [
+                    executor.submit(download_one, symbol, month, series)
+                    for series in SERIES
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    series, rows, manifest = future.result()
+                    manifest_rows.append(manifest)
+                    if rows is not None:
+                        datasets[series] = rows
             missing = sorted(set(SERIES) - set(datasets))
             if missing:
-                raise RuntimeError(f"missing {month.token}: {missing}")
-            total_rows += write_month(writer, datasets)
-            rows_by_month[month].clear()
+                skipped_months.append({"month": month.token, "missing": missing})
+                continue
+            written, skipped = write_month(writer, datasets)
+            total_rows += written
+            skipped_buckets += skipped
+            print(
+                json.dumps(
+                    {
+                        "symbol": symbol,
+                        "month": month.token,
+                        "written_5m": written,
+                        "skipped_5m": skipped,
+                    }
+                ),
+                flush=True,
+            )
+            datasets.clear()
 
+    if total_rows == 0:
+        raise RuntimeError("no complete causal five-minute basis rows were produced")
     manifest = {
         "source": "Binance Public Data spot and USD-M monthly one-minute klines",
         "symbol": symbol,
         "start": args.start,
         "end": args.end,
         "causality": (
-            "Each output row aggregates exactly five completed one-minute rows. "
-            "Strategy code may expose it only after open_time + 5 minutes."
+            "Each output row aggregates exactly five common completed one-minute "
+            "rows. Strategy code may expose it only after open_time + 5 minutes."
         ),
         "rows": total_rows,
+        "skipped_incomplete_five_minute_buckets": skipped_buckets,
+        "skipped_months": skipped_months,
         "columns": columns,
         "normalized_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "archives": sorted(
@@ -281,7 +314,15 @@ def main() -> int:
     }
     manifest_path = args.output_dir / f"{symbol}_spot_perp_basis_5m.manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(json.dumps({"target": str(target), "rows": total_rows}))
+    print(
+        json.dumps(
+            {
+                "target": str(target),
+                "rows": total_rows,
+                "skipped_months": len(skipped_months),
+            }
+        )
+    )
     return 0
 
 
