@@ -44,12 +44,53 @@ jobs:
             --daily-end 2026-07-20 \
             --workers 6
 
-      - name: Upload normalized replay data
+      - name: Upload audit manifest
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: official-binance-1m-replay-2021-2026-${{ github.run_id }}
-          path: research_data/binance_official_1m
+          name: official-binance-1m-audit-${{ github.run_id }}
+          path: |
+            research_data/binance_official_1m/manifest.json
+            research_data/binance_official_1m/coverage.csv
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload BTC trade-price replay partitions
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-1m-klines-BTCUSDT-${{ github.run_id }}
+          path: research_data/binance_official_1m/klines/BTCUSDT
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload ETH trade-price replay partitions
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-1m-klines-ETHUSDT-${{ github.run_id }}
+          path: research_data/binance_official_1m/klines/ETHUSDT
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload BTC mark-price replay partitions
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-1m-mark-BTCUSDT-${{ github.run_id }}
+          path: research_data/binance_official_1m/markPriceKlines/BTCUSDT
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload ETH mark-price replay partitions
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-1m-mark-ETHUSDT-${{ github.run_id }}
+          path: research_data/binance_official_1m/markPriceKlines/ETHUSDT
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
