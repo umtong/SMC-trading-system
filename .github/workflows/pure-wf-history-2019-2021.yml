@@ -1,0 +1,229 @@
+name: Pure walk-forward history 2019-2021
+
+on:
+  push:
+    branches:
+      - agent/pure-walkforward-2019-history
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  klines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - symbol: BTCUSDT
+            intervals: "1m 5m"
+          - symbol: ETHUSDT
+            intervals: "1m 5m"
+          - symbol: BNBUSDT
+            intervals: "5m"
+          - symbol: SOLUSDT
+            intervals: "5m"
+          - symbol: XRPUSDT
+            intervals: "5m"
+          - symbol: DOGEUSDT
+            intervals: "5m"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download checksum-verified monthly klines
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          INTERVALS: ${{ matrix.intervals }}
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/monthly/klines"
+          out="official-history/klines/${SYMBOL}"
+          mkdir -p "$out"
+          : > "$out/MANIFEST.tsv"
+          for interval in $INTERVALS; do
+            mkdir -p "$out/$interval"
+            year=2019; month=1
+            while [ "$year" -lt 2022 ]; do
+              stamp=$(printf '%04d-%02d' "$year" "$month")
+              name="${SYMBOL}-${interval}-${stamp}.zip"
+              url="${root}/${SYMBOL}/${interval}/${name}"
+              target="$out/$interval/$name"
+              code=$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+                --connect-timeout 30 --max-time 300 --output "$target.part" \
+                --write-out '%{http_code}' "$url" || true)
+              if [ "$code" = "200" ]; then
+                ccode=$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+                  --connect-timeout 30 --max-time 120 --output "$target.CHECKSUM.part" \
+                  --write-out '%{http_code}' "$url.CHECKSUM" || true)
+                test "$ccode" = "200"
+                expected=$(awk '{print tolower($1)}' "$target.CHECKSUM.part")
+                actual=$(sha256sum "$target.part" | awk '{print tolower($1)}')
+                test "$actual" = "$expected"
+                mv "$target.part" "$target"
+                mv "$target.CHECKSUM.part" "$target.CHECKSUM"
+                printf '%s\t%s\t%s\t%s\n' "$SYMBOL" "$interval" "$stamp" "$actual" >> "$out/MANIFEST.tsv"
+              elif [ "$code" = "404" ]; then
+                rm -f "$target.part" "$target.CHECKSUM.part"
+              else
+                echo "unexpected HTTP $code for $url" >&2
+                exit 1
+              fi
+              month=$((month + 1))
+              if [ "$month" -eq 13 ]; then year=$((year + 1)); month=1; fi
+            done
+          done
+          test -s "$out/MANIFEST.tsv"
+          cat "$out/MANIFEST.tsv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pure-wf-klines-${{ matrix.symbol }}-2019-2021-${{ github.run_id }}
+          path: official-history/klines/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  monthly-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download checksum-verified funding, premium and mark history
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/monthly"
+          out="official-history/context/${SYMBOL}"
+          mkdir -p "$out"
+          : > "$out/MANIFEST.tsv"
+          year=2019; month=1
+          while [ "$year" -lt 2022 ]; do
+            stamp=$(printf '%04d-%02d' "$year" "$month")
+            for spec in "fundingRate:none" "premiumIndexKlines:5m" "markPriceKlines:5m"; do
+              dataset=${spec%%:*}; interval=${spec##*:}
+              if [ "$interval" = "none" ]; then
+                name="${SYMBOL}-${dataset}-${stamp}.zip"
+                url="${root}/${dataset}/${SYMBOL}/${name}"
+                target="$out/${dataset}/${name}"
+              else
+                name="${SYMBOL}-${interval}-${stamp}.zip"
+                url="${root}/${dataset}/${SYMBOL}/${interval}/${name}"
+                target="$out/${dataset}/${interval}/${name}"
+              fi
+              mkdir -p "$(dirname "$target")"
+              code=$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+                --connect-timeout 30 --max-time 300 --output "$target.part" \
+                --write-out '%{http_code}' "$url" || true)
+              if [ "$code" = "200" ]; then
+                ccode=$(curl --silent --show-error --location --retry 4 --retry-all-errors \
+                  --connect-timeout 30 --max-time 120 --output "$target.CHECKSUM.part" \
+                  --write-out '%{http_code}' "$url.CHECKSUM" || true)
+                test "$ccode" = "200"
+                expected=$(awk '{print tolower($1)}' "$target.CHECKSUM.part")
+                actual=$(sha256sum "$target.part" | awk '{print tolower($1)}')
+                test "$actual" = "$expected"
+                mv "$target.part" "$target"
+                mv "$target.CHECKSUM.part" "$target.CHECKSUM"
+                printf '%s\t%s\t%s\t%s\t%s\n' "$SYMBOL" "$dataset" "$interval" "$stamp" "$actual" >> "$out/MANIFEST.tsv"
+              elif [ "$code" = "404" ]; then
+                rm -f "$target.part" "$target.CHECKSUM.part"
+              else
+                echo "unexpected HTTP $code for $url" >&2
+                exit 1
+              fi
+            done
+            month=$((month + 1))
+            if [ "$month" -eq 13 ]; then year=$((year + 1)); month=1; fi
+          done
+          test -s "$out/MANIFEST.tsv"
+          cat "$out/MANIFEST.tsv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pure-wf-context-${{ matrix.symbol }}-2019-2021-${{ github.run_id }}
+          path: official-history/context/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  daily-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download available checksum-verified daily metrics
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/daily/metrics"
+          out="$PWD/official-history/metrics/${SYMBOL}"
+          mkdir -p "$out"
+          : > "$out/MANIFEST.tsv"
+          python - <<'PY' > dates.txt
+          from datetime import date, timedelta
+          d=date(2019,1,1)
+          end=date(2022,1,1)
+          while d < end:
+              print(d.isoformat())
+              d += timedelta(days=1)
+          PY
+          export root out SYMBOL
+          download_one() {
+            stamp="$1"
+            name="${SYMBOL}-metrics-${stamp}.zip"
+            url="${root}/${SYMBOL}/${name}"
+            target="$out/$name"
+            code=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+              --connect-timeout 30 --max-time 180 --output "$target.part" \
+              --write-out '%{http_code}' "$url" || true)
+            if [ "$code" = "200" ]; then
+              ccode=$(curl --silent --show-error --location --retry 3 --retry-all-errors \
+                --connect-timeout 30 --max-time 60 --output "$target.CHECKSUM.part" \
+                --write-out '%{http_code}' "$url.CHECKSUM" || true)
+              test "$ccode" = "200"
+              expected=$(awk '{print tolower($1)}' "$target.CHECKSUM.part")
+              actual=$(sha256sum "$target.part" | awk '{print tolower($1)}')
+              test "$actual" = "$expected"
+              mv "$target.part" "$target"
+              mv "$target.CHECKSUM.part" "$target.CHECKSUM"
+              printf '%s\t%s\t%s\n' "$SYMBOL" "$stamp" "$actual" >> "$out/MANIFEST.parts.$BASHPID.tsv"
+            elif [ "$code" = "404" ]; then
+              rm -f "$target.part" "$target.CHECKSUM.part"
+            else
+              echo "unexpected HTTP $code for $url" >&2
+              return 1
+            fi
+          }
+          export -f download_one
+          xargs -P 16 -n 1 bash -c 'download_one "$1"' _ < dates.txt
+          cat "$out"/MANIFEST.parts.*.tsv 2>/dev/null | sort > "$out/MANIFEST.tsv" || true
+          rm -f "$out"/MANIFEST.parts.*.tsv
+          test -s "$out/MANIFEST.tsv"
+          echo "verified: $(wc -l < "$out/MANIFEST.tsv")"
+          head "$out/MANIFEST.tsv"
+          tail "$out/MANIFEST.tsv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pure-wf-metrics-${{ matrix.symbol }}-2019-2021-${{ github.run_id }}
+          path: official-history/metrics/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
