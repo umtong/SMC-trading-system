@@ -35,7 +35,7 @@ jobs:
             --output research_data/binance_pre2021_5m/BTCUSDT \
             --symbols BTCUSDT \
             --interval 5m \
-            --monthly-start 2019-09 \
+            --monthly-start 2020-01 \
             --monthly-end 2020-12 \
             --no-daily \
             --datasets klines \
@@ -64,7 +64,7 @@ jobs:
             --output research_data/binance_pre2021_5m/ETHUSDT \
             --symbols ETHUSDT \
             --interval 5m \
-            --monthly-start 2019-11 \
+            --monthly-start 2020-01 \
             --monthly-end 2020-12 \
             --no-daily \
             --datasets klines \
