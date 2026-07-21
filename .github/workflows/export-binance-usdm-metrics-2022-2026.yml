@@ -1,0 +1,177 @@
+name: Export Binance USD-M metrics 2022-2026
+
+on:
+  push:
+    branches:
+      - agent/easychart-v3-fivefold-rebuild
+    paths:
+      - .github/workflows/export-binance-usdm-metrics-2022-2026.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install pandas
+      - name: Download official daily metrics and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/usdm-metrics/raw
+          python - <<'PY'
+          from __future__ import annotations
+
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import hashlib
+          import io
+          import json
+          from pathlib import Path
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+
+          import pandas as pd
+
+          ROOT = "https://data.binance.vision/data/futures/um/daily/metrics"
+          OUT = Path("/tmp/usdm-metrics")
+          RAW = OUT / "raw"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = pd.Timestamp("2022-01-01", tz="UTC")
+          END = pd.Timestamp("2026-07-01", tz="UTC")
+          DAYS = tuple(pd.date_range(START, END - pd.Timedelta(days=1), freq="1D"))
+          COLUMNS = (
+              "create_time",
+              "symbol",
+              "sum_open_interest",
+              "sum_open_interest_value",
+              "count_toptrader_long_short_ratio",
+              "sum_toptrader_long_short_ratio",
+              "count_long_short_ratio",
+              "sum_taker_long_short_vol_ratio",
+          )
+
+          def fetch(url: str, *, attempts: int = 5) -> bytes:
+              error: Exception | None = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url, headers={"User-Agent": "SMC-metrics-research/1.0"}
+                      )
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:  # noqa: BLE001
+                      error = exc
+                      time.sleep(0.5 * (2**attempt))
+              assert error is not None
+              raise error
+
+          def one(symbol: str, day: pd.Timestamp) -> tuple[str, pd.Timestamp, pd.DataFrame, dict[str, object]]:
+              date = day.strftime("%Y-%m-%d")
+              stem = f"{symbol}-metrics-{date}.zip"
+              url = f"{ROOT}/{symbol}/{stem}"
+              payload = fetch(url)
+              checksum_blob = fetch(url + ".CHECKSUM")
+              expected = checksum_blob.decode("utf-8", errors="replace").strip().split()[0]
+              actual = hashlib.sha256(payload).hexdigest()
+              if expected.lower() != actual.lower():
+                  raise RuntimeError(f"checksum mismatch: {stem}: {expected} != {actual}")
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected members: {stem}: {members}")
+                  with archive.open(members[0]) as handle:
+                      frame = pd.read_csv(handle)
+              normalized = {str(column).strip().lower(): column for column in frame.columns}
+              missing = set(COLUMNS).difference(normalized)
+              if missing:
+                  raise RuntimeError(f"missing columns in {stem}: {sorted(missing)}")
+              frame = frame.rename(columns={normalized[name]: name for name in COLUMNS})
+              frame = frame[list(COLUMNS)].copy()
+              frame["create_time"] = pd.to_datetime(frame["create_time"], utc=True, errors="raise")
+              for column in COLUMNS[2:]:
+                  frame[column] = pd.to_numeric(frame[column], errors="coerce")
+              frame["symbol"] = frame["symbol"].astype(str)
+              return symbol, day, frame, {
+                  "symbol": symbol,
+                  "date": date,
+                  "url": url,
+                  "sha256": actual,
+                  "checksum_expected": expected,
+                  "checksum_ok": True,
+                  "rows": int(len(frame)),
+              }
+
+          frames: dict[str, list[pd.DataFrame]] = {symbol: [] for symbol in SYMBOLS}
+          manifest: dict[str, object] = {
+              "schema": "ictbt.binance_usdm_metrics_5m.v1",
+              "source": ROOT,
+              "range": [START.isoformat(), END.isoformat()],
+              "symbols": {},
+              "archives": [],
+          }
+          tasks = [(symbol, day) for symbol in SYMBOLS for day in DAYS]
+          completed = 0
+          with ThreadPoolExecutor(max_workers=20) as executor:
+              future_map = {executor.submit(one, symbol, day): (symbol, day) for symbol, day in tasks}
+              for future in as_completed(future_map):
+                  symbol, day = future_map[future]
+                  try:
+                      result_symbol, result_day, frame, meta = future.result()
+                  except urllib.error.HTTPError as exc:
+                      raise RuntimeError(f"HTTP {exc.code}: {symbol} {day.date()}") from exc
+                  frames[result_symbol].append(frame)
+                  manifest["archives"].append(meta)
+                  completed += 1
+                  if completed % 100 == 0 or completed == len(tasks):
+                      print(f"completed={completed}/{len(tasks)}", flush=True)
+
+          for symbol in SYMBOLS:
+              frame = pd.concat(frames[symbol], ignore_index=True)
+              frame = frame.drop_duplicates("create_time", keep="last").sort_values("create_time")
+              frame = frame[(frame.create_time >= START) & (frame.create_time < END)].reset_index(drop=True)
+              expected_grid = pd.date_range(START, END - pd.Timedelta(minutes=5), freq="5min")
+              actual_grid = pd.DatetimeIndex(frame.create_time)
+              missing = expected_grid.difference(actual_grid)
+              extra = actual_grid.difference(expected_grid)
+              output = OUT / f"{symbol}_metrics_5m.csv.gz"
+              frame.to_csv(output, index=False, compression="gzip", float_format="%.12g")
+              manifest["symbols"][symbol] = {
+                  "rows": int(len(frame)),
+                  "first": frame.create_time.iloc[0].isoformat(),
+                  "last": frame.create_time.iloc[-1].isoformat(),
+                  "missing_5m": int(len(missing)),
+                  "extra_5m": int(len(extra)),
+                  "null_counts": {
+                      column: int(frame[column].isna().sum()) for column in COLUMNS[2:]
+                  },
+                  "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+              }
+              print(json.dumps(manifest["symbols"][symbol], indent=2), flush=True)
+
+          manifest["archives"] = sorted(
+              manifest["archives"], key=lambda item: (item["symbol"], item["date"])
+          )
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          PY
+      - name: Upload normalized metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-metrics-2022-2026-${{ github.run_id }}
+          path: |
+            /tmp/usdm-metrics/*_metrics_5m.csv.gz
+            /tmp/usdm-metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
