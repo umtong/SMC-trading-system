@@ -1,6 +1,10 @@
 name: Five-Month Strict Walk-Forward
 
 on:
+  pull_request:
+    paths:
+      - "research/five_month/**"
+      - ".github/workflows/five-month-strict-walkforward.yml"
   push:
     branches:
       - agent/five-month-strict-walkforward-v1
