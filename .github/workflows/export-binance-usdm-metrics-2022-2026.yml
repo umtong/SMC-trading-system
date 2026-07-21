@@ -6,6 +6,11 @@ on:
       - agent/easychart-v3-fivefold-rebuild
     paths:
       - .github/workflows/export-binance-usdm-metrics-2022-2026.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/export-binance-usdm-metrics-2022-2026.yml
   workflow_dispatch:
 
 permissions:
@@ -44,7 +49,6 @@ jobs:
 
           ROOT = "https://data.binance.vision/data/futures/um/daily/metrics"
           OUT = Path("/tmp/usdm-metrics")
-          RAW = OUT / "raw"
           SYMBOLS = ("BTCUSDT", "ETHUSDT")
           START = pd.Timestamp("2022-01-01", tz="UTC")
           END = pd.Timestamp("2026-07-01", tz="UTC")
