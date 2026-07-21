@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/pure-walkforward-2019-history
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
