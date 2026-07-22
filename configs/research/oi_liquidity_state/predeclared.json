@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T00:00:00+09:00",
+  "status": "PREDECLARED_BEFORE_METRICS_ARTIFACT_INSPECTION",
+  "research_family": "OI_CLASSIFIED_LIQUIDITY_STATE_V1",
+  "purpose": "Use causal derivatives positioning to distinguish failed liquidity raids from accepted liquidity breaks; do not optimize to the 1-3% daily challenge target.",
+  "universe": {
+    "core": ["BTCUSDT", "ETHUSDT"],
+    "optional": ["SOLUSDT", "XRPUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "data": {
+    "trade_klines": "Binance USD-M 5m checksum-verified archive",
+    "mark_price": "Binance USD-M 5m checksum-verified archive",
+    "premium_index": "Binance USD-M 5m checksum-verified archive",
+    "funding": "Binance USD-M historical funding archive",
+    "positioning_metrics": [
+      "sum_open_interest",
+      "sum_open_interest_value",
+      "count_toptrader_long_short_ratio",
+      "sum_toptrader_long_short_ratio",
+      "count_long_short_ratio",
+      "sum_taker_long_short_vol_ratio"
+    ],
+    "metrics_availability_contract": "available_at = create_time + 5 minutes; no decision may use a metric row earlier",
+    "gaps": "never interpolate; reset rolling warm-up and invalidate any episode crossing a gap"
+  },
+  "causal_event": {
+    "decision_timeframe": "completed 15m bar",
+    "entry": "actual next 5m open after completed 15m decision",
+    "levels": [
+      "previous completed UTC day high/low",
+      "completed Asia session 00:00-08:00 UTC high/low after 08:00 UTC"
+    ],
+    "reversal_branch": "wick raids a known level and completed 15m close reclaims it",
+    "continuation_branch": "completed 15m close accepts beyond a known level with directional body and CLV"
+  },
+  "features": {
+    "open_interest": {
+      "changes": ["15m", "1h"],
+      "normalization": "rolling 30-day median/MAD or mean/std shifted one available observation",
+      "reversal_thresholds": [-0.5, -1.0],
+      "continuation_thresholds": [0.5, 1.0]
+    },
+    "flow": {
+      "sources": ["kline taker-buy imbalance", "metrics taker long/short volume ratio"],
+      "directional_thresholds": [0.10, 0.20]
+    },
+    "acceptance": {
+      "minimum_body_atr15": [0.40, 0.60],
+      "minimum_directional_clv": [0.55, 0.65]
+    },
+    "crowding": {
+      "premium_z_max_in_trade_direction": [1.0, 1.5],
+      "top_trader_and_global_long_short_ratios": "decision-time diagnostics and optional predeclared divergence confirmation; never selected from future PnL"
+    }
+  },
+  "rule_neighborhood": {
+    "branches": ["DELEVERAGING_REVERSAL", "NEW_POSITION_ACCEPTANCE"],
+    "levels": ["PDH_PDL", "ASIA_HIGH_LOW"],
+    "oi_threshold_index": [0, 1],
+    "flow_threshold_index": [0, 1],
+    "acceptance_body_index": [0, 1],
+    "acceptance_clv_index": [0, 1],
+    "premium_limit_index": [0, 1],
+    "selection_requires_adjacent_passes": 2
+  },
+  "execution": {
+    "canonical": {
+      "stop": "event extreme plus 0.10 ATR15 buffer",
+      "target_r": 1.5,
+      "max_hold_hours": 8
+    },
+    "sensitivity": {
+      "stop_buffer_atr15": [0.05, 0.10, 0.15],
+      "target_r": [1.25, 1.50, 1.75],
+      "max_hold_hours": [6, 8, 12]
+    },
+    "ambiguous_bar": "stop first",
+    "costs": {
+      "entry_fee_bps": 6,
+      "exit_fee_bps": 6,
+      "entry_slippage_bps": 2,
+      "target_slippage_bps": 3,
+      "stop_slippage_bps": 8,
+      "time_exit_slippage_bps": 5,
+      "historical_funding": true
+    }
+  },
+  "development_selection": {
+    "development": ["2020-09-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "minimum_development_trades": 80,
+    "minimum_validation_trades": 25,
+    "minimum_pf_each": 1.10,
+    "after_top5_positive_each": true,
+    "minimum_positive_quarter_ratio_each": 0.55,
+    "selection_score": "maximum of min(development_lb80_mean_R, validation_lb80_mean_R) among stable adjacent neighborhoods",
+    "daily_return_target_used": false
+  },
+  "retrospective_wfo": {
+    "start": "2024-01-01",
+    "end": "2026-07-22",
+    "frequency": "quarterly",
+    "optional_asset_admission": "past expanding and recent-8-quarter evidence only",
+    "cash_gate": "expanding and recent performance, concentration and one-sided lower-confidence checks",
+    "past_decisions_rewritten": false,
+    "pristine_oos": false,
+    "true_unseen_start": "2026-07-22"
+  },
+  "promotion": {
+    "historical_research_only": true,
+    "live_risk_until_shadow_gate": 0,
+    "required_shadow_days": 90,
+    "required_shadow_fills": 100
+  }
+}
