@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "required_clock_fields": {
+    "event_time": "UTC timestamp when the market event occurred",
+    "available_at": "UTC timestamp when the system could first consume the value",
+    "observed_at": "UTC timestamp of this exact snapshot",
+    "revision_id": "source revision identifier; immutable within a snapshot"
+  },
+  "bar_fields": {
+    "open_time": "UTC",
+    "close_time": "UTC",
+    "is_final": "boolean",
+    "open": "positive decimal",
+    "high": "positive decimal",
+    "low": "positive decimal",
+    "close": "positive decimal",
+    "volume": "non-negative decimal"
+  },
+  "bar_admission": {
+    "completed_bar": "close_time <= decision_time and is_final == true and available_at <= decision_time",
+    "partial_bar": "observed_at <= decision_time and available_at <= decision_time; snapshot must never be replaced retroactively by final OHLC",
+    "pivot": "known_at <= decision_time",
+    "feature": "maximum_source_available_at <= decision_time"
+  },
+  "label_admission": {
+    "training": "label_end <= train_cutoff",
+    "selection": "label_end <= selection_cutoff",
+    "same_trade_features": "forbidden: pnl, final MFE, final MAE, final exit reason, future stop/target outcome"
+  },
+  "revision_policy": {
+    "raw_files": "append-only; retain original checksum and replacement checksum",
+    "old_decisions": "never overwritten",
+    "revised_history": "new snapshot branch plus revision-impact report",
+    "silent_backfill": "forbidden"
+  },
+  "minimum_validation": [
+    "timezone aware",
+    "strict monotonic event time within source partition",
+    "duplicate identifier check",
+    "expected interval/gap report",
+    "OHLC ordering",
+    "non-negative volume",
+    "source checksum",
+    "prefix/future-mutation invariance"
+  ]
+}
