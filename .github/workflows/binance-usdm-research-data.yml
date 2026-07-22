@@ -48,7 +48,9 @@ jobs:
           echo "daily_end=$(date -u -d 'yesterday' +%F)" >> "$GITHUB_OUTPUT"
 
       - name: Download and freeze verified archives
+        shell: bash
         run: |
+          set -o pipefail
           python scripts/download_binance_usdm_research_data.py \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --start-month 2020-01 \
@@ -56,7 +58,8 @@ jobs:
             --daily-start "${{ steps.range.outputs.daily_start }}" \
             --daily-end "${{ steps.range.outputs.daily_end }}" \
             --workers 12 \
-            --output artifacts/binance_usdm_research_data
+            --output artifacts/binance_usdm_research_data \
+            2>&1 | tee market-data-download.log
 
       - name: Validate manifest and package contents
         run: |
@@ -145,3 +148,12 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+      - name: Upload downloader log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-log-${{ github.run_id }}
+          path: market-data-download.log
+          if-no-files-found: warn
+          retention-days: 14
