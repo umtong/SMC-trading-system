@@ -105,15 +105,11 @@ jobs:
           python - <<'PY'
           import base64
           import gzip
-          import re
           from pathlib import Path
 
-          source = Path('.github/workflows/causal-wf-v3.yml').read_text(encoding='utf-8')
-          match = re.search(r'^\s*SCRIPT_B64:\s*(\S+)\s*$', source, flags=re.MULTILINE)
-          if match is None:
-              raise RuntimeError('SCRIPT_B64 was not found in causal-wf-v3.yml')
+          payload = Path('scripts/research_causal_wf_v3.py.gz.b64').read_text(encoding='ascii').strip()
           target = Path('scripts/research_causal_wf_v3.py')
-          target.write_bytes(gzip.decompress(base64.b64decode(match.group(1))))
+          target.write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
           print(f'materialized {target} ({target.stat().st_size} bytes)')
           PY
           python -m py_compile scripts/research_causal_wf_v3.py
