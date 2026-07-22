@@ -42,12 +42,14 @@ jobs:
 
       - name: Download and verify daily metrics
         run: |
+          set -o pipefail
           python scripts/download_binance_usdm_metrics.py \
             --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --start 2020-09-01 \
             --end 2026-07-21 \
             --workers 32 \
-            --output artifacts/binance_usdm_metrics
+            --output artifacts/binance_usdm_metrics \
+            2>&1 | tee metrics-download.log
 
       - name: Validate output
         run: |
@@ -69,6 +71,15 @@ jobs:
               'datasets': manifest['datasets'],
           }, indent=2))
           PY
+
+      - name: Upload metrics log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-metrics-log-${{ github.run_id }}
+          path: metrics-download.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload immutable metrics snapshot
         uses: actions/upload-artifact@v4
