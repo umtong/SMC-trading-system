@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "created_before_metrics_artifact_inspection": true,
+  "parent_event_clock_sha256": "7da506337f407903d4f00d143c98685e17a81b24515f66518c9e5cc96ffc37cf",
+  "indicator_details": {
+    "atr15": "simple mean of true range over the latest 20 completed continuous 15m bars, including the decision bar; unavailable until 20 bars exist in the current continuity segment",
+    "directional_body": "trade_side * (close-open) / ATR15",
+    "directional_clv": "LONG: (close-low)/(high-low); SHORT: (high-close)/(high-low); zero-range bars are ineligible",
+    "premium_z": "latest completed 5m premium close minus rolling 30-day mean divided by rolling 30-day standard deviation; baseline is shifted one 5m row and requires seven continuous days",
+    "normalizer_std_floor": "values with rolling standard deviation <= 1e-12 are unavailable"
+  },
+  "statistics": {
+    "profit_factor": "sum(positive R) / abs(sum(negative R))",
+    "maximum_drawdown_R": "maximum peak-to-trough decline of chronological cumulative net R",
+    "positive_quarter_ratio": "fraction of UTC calendar quarters with positive summed net R among quarters containing at least one trade",
+    "after_top5_R": "total net R after removing the five largest positive-R trades",
+    "lb80_mean_R": "mean net R minus 0.8416212335729143 times the ordinary sample standard error; used only for deterministic screening/ranking",
+    "final_uncertainty": "quarter-block bootstrap is reported for the selected candidate but is not used to relax any deterministic gate"
+  },
+  "quarterly_optional_asset_cash_gate": {
+    "universes": ["BTC_ETH", "BTC_ETH_SOL", "BTC_ETH_XRP", "BTC_ETH_SOL_XRP"],
+    "expanding": {
+      "minimum_trades": 80,
+      "minimum_pf": 1.05,
+      "minimum_positive_quarter_ratio": 0.55,
+      "after_top5_positive": true,
+      "lb80_mean_R_positive": true
+    },
+    "recent_8_quarters": {
+      "minimum_trades": 40,
+      "minimum_pf": 1.10,
+      "minimum_positive_quarter_ratio": 0.50,
+      "after_top3_positive": true,
+      "lb80_mean_R_positive": true
+    },
+    "selection": "maximize min(expanding lb80 mean R, recent-8-quarter lb80 mean R), then min PF, then trade count; if none pass, select CASH",
+    "deployment": "selected universe applies only to the next quarter; no prior decision is rewritten"
+  },
+  "slot_clock_clarification": {
+    "stop_or_target": "global slot becomes free at the close of the touching 5m bar",
+    "time_exit": "exit is priced at the max-hold 5m open, but the global slot is conservatively unavailable for a new entry at that same timestamp and becomes free five minutes later"
+  }
+}
