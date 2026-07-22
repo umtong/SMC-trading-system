@@ -2,6 +2,10 @@ name: Binance USD-M Metrics Data
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_metrics.py
+      - .github/workflows/binance-usdm-metrics-data.yml
   push:
     branches:
       - agent/long-lived-research-cycle
@@ -16,6 +20,7 @@ jobs:
   fetch-metrics-data:
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
       contains(github.event.head_commit.message, '[fetch-metrics-data]')
     runs-on: ubuntu-latest
     timeout-minutes: 180
