@@ -1,0 +1,84 @@
+name: V0.8 Target Ownership Research
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  v08-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run full strategy tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest tests/easychart_v0 -q 2>&1 | tee v08-pytest.log
+
+      - name: Download and verify locked Binance windows with warm-up
+        shell: bash
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee v08-download.log
+          import sys
+          import pandas as pd
+          from scripts import download_binance_um_5m_windows as downloader
+          from scripts.v08_windows import ALL_WINDOWS, WARMUP_DAYS
+
+          downloader.ALL_WINDOWS = tuple(
+              (
+                  symbol,
+                  environment,
+                  (pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d"),
+                  end,
+                  tick_size,
+              )
+              for symbol, environment, start, end, tick_size in ALL_WINDOWS
+          )
+          sys.argv = [
+              "download_binance_um_5m_windows",
+              "--output-dir",
+              "data/s4_continuous_2021_2026",
+          ]
+          raise SystemExit(downloader.main())
+          PY
+
+      - name: Run V0.8 development and locked holdout comparison
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.compare_easychart_v08_target_ownership \
+            --data-dir data/s4_continuous_2021_2026 \
+            --output-dir results/easychart_v08_target_ownership \
+            --initial-equity 10000 \
+            --risk-fraction 0.03 \
+            2>&1 | tee v08-research.log
+
+      - name: Upload V0.8 research artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v08-target-ownership-${{ github.run_id }}
+          path: |
+            v08-pytest.log
+            v08-download.log
+            v08-research.log
+            data/s4_continuous_2021_2026/v08_data_manifest.json
+            results/easychart_v08_target_ownership
+          if-no-files-found: warn
+          retention-days: 14
