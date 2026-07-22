@@ -123,8 +123,6 @@ jobs:
           assert math.isnan(module.finite_mean((math.nan, math.nan)))
           assert module.finite_mean((1.0, math.nan)) == 1.0
 
-          # The time exit is executed at the open of fi+hold. The high/low of
-          # that minute cannot be used before the market exit.
           import numpy as np
           count = 80
           ts = np.arange(count, dtype=np.int64) * module.NS_MIN
@@ -141,7 +139,6 @@ jobs:
           assert resolved[6][0, 0] == ts[15]
           assert resolved[5][0, 0] < module.PLAN_TARGETS[0]
 
-          # A gap through the stop uses stop-specific fee/slippage.
           o[1], h[1], l[1], c[1] = 98.0, 98.1, 97.9, 98.0
           resolved = module.resolve_events(
               np.array([0], np.int64), np.array([1], np.int8),
@@ -154,7 +151,7 @@ jobs:
           PY
           rm -rf research/five_month/__pycache__
 
-      - name: Run strict five-calendar-month research
+      - name: Run strict five-calendar-month causal baseline
         id: research
         shell: bash
         run: |
@@ -165,7 +162,7 @@ jobs:
             --end 2026-07 \
             --cache .cache/five_month \
             --output results/five_month_strict \
-            --policy-trials 350 \
+            --policy-trials 0 \
             --seed 20260722 \
             2>&1 | tee results/five_month_strict/run.log
 
