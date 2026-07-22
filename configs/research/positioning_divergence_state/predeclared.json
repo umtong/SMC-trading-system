@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "created_before_oi_liquidity_phase1_result_inspection": true,
+  "research_family": "POSITIONING_DIVERGENCE_LIQUIDITY_STATE_V1",
+  "relationship_to_phase1": "independent challenger using the previously unused top-trader/global positioning columns; phase1 thresholds and results may not be used to change this grid",
+  "universe": {
+    "core": ["BTCUSDT", "ETHUSDT"],
+    "optional": ["SOLUSDT", "XRPUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "causal_clock": "identical to configs/research/oi_liquidity_state/event_clock.json",
+  "features": {
+    "top_position_z": "shifted rolling-30-day z score of log(sum_toptrader_long_short_ratio)",
+    "top_account_z": "shifted rolling-30-day z score of log(count_toptrader_long_short_ratio)",
+    "global_account_z": "shifted rolling-30-day z score of log(count_long_short_ratio)",
+    "smart_positioning_state": "mean(top_position_z-global_account_z, top_account_z-global_account_z), clipped to [-6,6]",
+    "directional_smart_thresholds": [0.5, 1.0],
+    "oi_state_thresholds": [0.0, 0.5],
+    "flow_thresholds": [0.10, 0.20],
+    "premium_limits": [1.0, 1.5]
+  },
+  "branches": {
+    "DELEVERAGING_REVERSAL": {
+      "event": "first PDH/PDL or completed Asia high/low raid and completed 15m reclaim",
+      "base_confirmation": "directional body >=0.20 ATR15 and directional CLV >=0.55",
+      "positioning": "trade_side * smart_positioning_state >= threshold",
+      "open_interest": "oi_state <= -threshold, where threshold is 0.0 or 0.5",
+      "flow": "-trade_side * flow_state >= threshold"
+    },
+    "NEW_POSITION_ACCEPTANCE": {
+      "event": "first PDH/PDL or completed Asia high/low crossing with completed 15m acceptance",
+      "body_thresholds": [0.40, 0.60],
+      "clv_thresholds": [0.55, 0.65],
+      "positioning": "trade_side * smart_positioning_state >= threshold",
+      "open_interest": "oi_state >= threshold, where threshold is 0.0 or 0.5",
+      "flow": "trade_side * flow_state >= threshold"
+    }
+  },
+  "rule_grid": {
+    "reversal": "level(2) x smart(2) x OI(2) x flow(2) x premium(2) = 32",
+    "continuation": "level(2) x smart(2) x OI(2) x flow(2) x body(2) x CLV(2) x premium(2) = 128",
+    "total": 160,
+    "adjacency": "same branch and level; exactly one threshold-index step differs",
+    "stable_rule": "passes unchanged development/internal-validation gates and has a passing adjacent rule"
+  },
+  "execution": {
+    "canonical": "event extreme plus 0.10 ATR15 stop, 1.50R target, 8h max hold",
+    "costs_and_funding": "same as phase1",
+    "sensitivity": "same 27 geometry neighborhood as phase1"
+  },
+  "selection_and_wfo": {
+    "development": "2020-09-01..2022-12-31",
+    "internal_validation": "2023-01-01..2023-12-31",
+    "gates": "identical to phase1",
+    "optional_asset_and_cash_gate": "identical to phase1 statistics contract",
+    "2024_plus": "retrospective quarterly WFO only",
+    "true_unseen_start": "2026-07-22"
+  },
+  "daily_return_target_used": false,
+  "live_risk_until_shadow_gate": 0
+}
