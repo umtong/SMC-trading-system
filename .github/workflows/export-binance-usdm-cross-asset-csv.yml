@@ -1,0 +1,99 @@
+name: Export Binance USD-M Cross-Asset CSV
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/export-binance-usdm-cross-asset-csv.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  export-portable-cross-asset-snapshot:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      contains(github.event.head_commit.message, '[export-cross-asset-data]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install conversion dependencies
+        run: python -m pip install "pandas>=2.2" "pyarrow>=17"
+
+      - name: Download verified cross-asset Parquet snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: binance-usdm-cross-asset-949972917dd954fdd7c394d55fcb464b94e48597
+          path: source_snapshot
+          github-token: ${{ github.token }}
+          repository: umtong/SMC-trading-system
+          run-id: 29918665142
+
+      - name: Export deterministic gzip CSV files
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+
+          source = Path('source_snapshot')
+          output = Path('portable_cross_asset_snapshot')
+          output.mkdir(parents=True, exist_ok=True)
+          manifest_path = next(source.rglob('manifest.json'))
+          original = json.loads(manifest_path.read_text(encoding='utf-8'))
+          exported = {}
+          for parquet in sorted(manifest_path.parent.glob('*.parquet')):
+              frame = pd.read_parquet(parquet)
+              target = output / f'{parquet.stem}.csv.gz'
+              frame.to_csv(
+                  target,
+                  index=False,
+                  compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0},
+                  float_format='%.12g',
+              )
+              exported[parquet.stem] = {
+                  'path': target.name,
+                  'rows': len(frame),
+                  'bytes': target.stat().st_size,
+                  'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+              }
+              print(parquet.name, len(frame), target.stat().st_size, flush=True)
+          payload = {
+              'source_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+              'source_artifact_run_id': 29918665142,
+              'source_artifact_name': 'binance-usdm-cross-asset-949972917dd954fdd7c394d55fcb464b94e48597',
+              'source': original,
+              'exported': exported,
+          }
+          (output / 'portable_manifest.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          if len(exported) != 16:
+              raise SystemExit(f'expected 16 datasets, exported {len(exported)}')
+          PY
+
+      - name: Upload portable immutable cross-asset snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-cross-asset-csv-${{ github.sha }}
+          path: portable_cross_asset_snapshot
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
