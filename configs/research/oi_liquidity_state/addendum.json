@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "created_before_metrics_artifact_inspection": true,
+  "parent_predeclared_sha256": "b5b66ddd1726e51393a3eb850a7773cabaec221ce1df3ebde4e92398a1d5aa08",
+  "exact_feature_contract": {
+    "oi_change": "log(sum_open_interest) change on completed 15m decision rows at 15m and 1h horizons",
+    "oi_normalization": "rolling 30-day mean and standard deviation, both shifted one completed 15m row",
+    "oi_state": "arithmetic mean of the 15m and 1h OI-change z scores, clipped to [-6, 6]",
+    "kline_flow": "(2*taker_buy_base-volume)/volume over the completed 15m bar",
+    "metrics_flow": "(sum_taker_long_short_vol_ratio-1)/(sum_taker_long_short_vol_ratio+1) from the latest causally available metrics row",
+    "flow_state": "arithmetic mean of kline_flow and metrics_flow, clipped to [-1, 1]",
+    "premium_z": "latest completed 5m premium-index close standardized by a shifted 30-day rolling mean/std",
+    "reversal_flow": "failed raid direction must have been aggressive: -trade_side*flow_state >= threshold",
+    "continuation_flow": "trade direction must have been aggressive: trade_side*flow_state >= threshold",
+    "reversal_confirmation": "completed 15m reclaim plus trade-side body >=0.20 ATR15 and directional CLV >=0.55",
+    "continuation_confirmation": "body and directional CLV use their predeclared threshold grids"
+  },
+  "exact_rule_library": {
+    "reversal_rules": "level(2) x OI threshold(2) x flow threshold(2) x premium limit(2) = 16",
+    "continuation_rules": "level(2) x OI threshold(2) x flow threshold(2) x body threshold(2) x CLV threshold(2) x premium limit(2) = 64",
+    "total_rules": 80,
+    "adjacency": "same branch and level, differing by one adjacent threshold index in exactly one dimension",
+    "stable_rule": "passes all development/internal-validation gates and has at least one passing adjacent rule"
+  },
+  "final_candidate_selection": {
+    "candidates": [
+      "best stable deleveraging-reversal rule",
+      "best stable new-position-acceptance rule",
+      "union of both if both exist"
+    ],
+    "selection_periods": ["2020-09-01..2022-12-31", "2023-01-01..2023-12-31"],
+    "selection_score": "maximize min(development_lb80_mean_R, validation_lb80_mean_R), then min PF, then trade count",
+    "global_slot_tie_break": "largest threshold-normalized event strength, then BTC, ETH, SOL, XRP deterministic order"
+  },
+  "wfo_contract": {
+    "fixed_selected_rules_after_2023": true,
+    "quarterly_optional_asset_and_cash_gates": true,
+    "CASH_is_formal_champion": true,
+    "2024_plus_is_retrospective_diagnostic": true
+  }
+}
