@@ -70,8 +70,7 @@ jobs:
                   )
               data = bytearray(source)
               for op in reversed(patch['operations']):
-                  replacement = base64.b64decode(op['data'])
-                  data[op['i1']:op['i2']] = replacement
+                  data[op['i1']:op['i2']] = base64.b64decode(op['data'])
               target.write_bytes(data)
               final_digest = hashlib.sha256(data).hexdigest()
               if final_digest != patch['target_sha256'] or len(data) != patch['target_size']:
@@ -81,14 +80,17 @@ jobs:
           PY
           echo "cd20c78504203bab86961f9a914ec8460d393749c2f9ad389be64f3da92c977a  research/five_month/research_five_month.py" \
             | sha256sum -c -
-          python -m py_compile research/five_month/research_five_month.py
+          python -m py_compile \
+            research/five_month/research_five_month.py \
+            research/five_month/build_execution_ledger.py \
+            research/five_month/run_selector_baseline.py
 
       - name: Install research dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy pandas numba lightgbm scikit-learn pyarrow
 
-      - name: Run causality and cold-start self-tests
+      - name: Run causality, cold-start, and execution-order self-tests
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +98,7 @@ jobs:
           import importlib.util
           import math
           from pathlib import Path
-
+          import numpy as np
           import pandas as pd
 
           path = Path('research/five_month/research_five_month.py')
@@ -109,7 +111,6 @@ jobs:
           for plan in module.PLAN_NAMES:
               data[f'exit_{plan}'] = [30]
           events = pd.DataFrame(data)
-
           clean = module.leakage_audit(events, ['hour_sin', 'hour_cos', 'body_atr'])
           assert clean['passed'], clean
           blocked = module.leakage_audit(
@@ -123,7 +124,6 @@ jobs:
           assert math.isnan(module.finite_mean((math.nan, math.nan)))
           assert module.finite_mean((1.0, math.nan)) == 1.0
 
-          import numpy as np
           count = 80
           ts = np.arange(count, dtype=np.int64) * module.NS_MIN
           o = np.full(count, 100.0)
@@ -151,16 +151,39 @@ jobs:
           PY
           rm -rf research/five_month/__pycache__
 
-      - name: Run strict five-calendar-month causal baseline
-        id: research
+      - name: Build checksum-verified one-minute execution ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/five_month_execution
+          python research/five_month/build_execution_ledger.py \
+            --engine research/five_month/research_five_month.py \
+            --start 2021-01 \
+            --end 2026-07 \
+            --cache .cache/five_month \
+            --output results/five_month_execution \
+            2>&1 | tee results/five_month_execution/run.log
+          rm -rf research/five_month/__pycache__
+
+      - name: Upload causal execution ledger immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: five-month-execution-${{ github.run_id }}
+          path: |
+            results/five_month_execution
+            research/five_month/research_five_month.py
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Run monthly past-only selector baseline
+        id: selector
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p results/five_month_strict
-          python research/five_month/research_five_month.py \
-            --start 2021-01 \
-            --end 2026-07 \
-            --cache .cache/five_month \
+          python research/five_month/run_selector_baseline.py \
+            --engine research/five_month/research_five_month.py \
+            --ledger results/five_month_execution/execution_ledger.pkl.gz \
             --output results/five_month_strict \
             --policy-trials 0 \
             --seed 20260722 \
@@ -171,7 +194,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s results/five_month_strict/run.log
           if test -f results/five_month_strict/summary.json; then
             python - <<'PY'
           import json
@@ -189,13 +211,13 @@ jobs:
           PY
           fi
 
-      - name: Upload strict research artifacts
+      - name: Upload strict selector artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: five-month-strict-${{ github.run_id }}
+          name: five-month-selector-${{ github.run_id }}
           path: |
             results/five_month_strict
             research/five_month/research_five_month.py
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
