@@ -42,10 +42,19 @@ jobs:
         id: range
         shell: bash
         run: |
-          set -euo pipefail
-          echo "end_month=$(date -u -d 'first day of this month - 1 day' +%Y-%m)" >> "$GITHUB_OUTPUT"
-          echo "daily_start=$(date -u +%Y-%m-01)" >> "$GITHUB_OUTPUT"
-          echo "daily_end=$(date -u -d 'yesterday' +%F)" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          import os
+
+          today = datetime.now(timezone.utc).date()
+          first = today.replace(day=1)
+          previous_month_last = first - timedelta(days=1)
+          yesterday = today - timedelta(days=1)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'end_month={previous_month_last:%Y-%m}\n')
+              output.write(f'daily_start={first:%Y-%m-%d}\n')
+              output.write(f'daily_end={yesterday:%Y-%m-%d}\n')
+          PY
 
       - name: Download and freeze verified archives
         shell: bash
