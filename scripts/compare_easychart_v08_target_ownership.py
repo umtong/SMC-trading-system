@@ -126,7 +126,12 @@ def _prepare(name: str, windows: Sequence[tuple[object, ...]], data_dir: Path) -
         diagnostics.append({"split": name, "window_index": index, "symbol": symbol, "environment": environment, "policy": "v07_baseline", **asdict(v07_result.diagnostics)})
 
         for target, context in _policies():
-            result = build_v08_scene_family_result(book, target_policy=target, context_policy=context)
+            result = build_v08_scene_family_result(
+                book,
+                target_policy=target,
+                context_policy=context,
+                baseline=v07_result,
+            )
             selected = tuple(item for item in result.authorities if _in_evaluation(item, evaluation_start, evaluation_end))
             sets[_policy_key(target, context)][index] = selected
             diagnostics.append({"split": name, "window_index": index, "symbol": symbol, "environment": environment, "policy": _policy_key(target, context), **asdict(result.diagnostics), "evaluation_authorities": len(selected)})
