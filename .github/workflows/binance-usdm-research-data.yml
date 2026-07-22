@@ -1,0 +1,88 @@
+name: Binance USD-M Research Data
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_research_data.py
+      - .github/workflows/binance-usdm-research-data.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+  schedule:
+    - cron: "25 2 2 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-research-data:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      contains(github.event.head_commit.message, '[fetch-market-data]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "requests>=2.32" "pyarrow>=17"
+
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_usdm_research_data.py
+
+      - name: Download and freeze verified archives
+        run: |
+          python scripts/download_binance_usdm_research_data.py \
+            --symbols BTCUSDT ETHUSDT SOLUSDT \
+            --start-month 2020-01 \
+            --end-month 2026-06 \
+            --daily-start 2026-07-01 \
+            --daily-end 2026-07-21 \
+            --workers 12 \
+            --output artifacts/binance_usdm_research_data
+
+      - name: Validate manifest and package contents
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts/binance_usdm_research_data')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          required = {
+              f'{symbol}_{kind}'
+              for symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')
+              for kind in ('klines', 'markPriceKlines', 'premiumIndexKlines', 'fundingRate')
+          }
+          missing = sorted(required - set(manifest['datasets']))
+          if missing:
+              raise SystemExit(f'missing datasets: {missing}')
+          for name, info in manifest['datasets'].items():
+              path = Path(info['path'])
+              if not path.exists() or path.stat().st_size <= 0:
+                  raise SystemExit(f'invalid dataset file: {name} {path}')
+          print(json.dumps({
+              'datasets': len(manifest['datasets']),
+              'archives': len(manifest['archives']),
+              'missing_archives': len(manifest['missing_archives']),
+          }, indent=2))
+          PY
+
+      - name: Upload immutable research snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-${{ github.sha }}
+          path: artifacts/binance_usdm_research_data
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
