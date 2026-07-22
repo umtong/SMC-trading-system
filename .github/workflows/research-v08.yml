@@ -10,7 +10,7 @@ permissions:
 jobs:
   v08-research:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,6 +79,8 @@ jobs:
             v08-download.log
             v08-research.log
             data/s4_continuous_2021_2026/v08_data_manifest.json
+            data/s4_continuous_2021_2026/BTCUSDT_5m.csv
+            data/s4_continuous_2021_2026/ETHUSDT_5m.csv
             results/easychart_v08_target_ownership
           if-no-files-found: warn
           retention-days: 14
