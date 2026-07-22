@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T02:00:00+09:00",
+  "status": "PREDECLARED_BEFORE_LABEL_OR_MODEL_OUTCOME_INSPECTION",
+  "parent_predeclared_sha256": "ab00443a5bd86235d4077412e9b5acc61ae3741c8f2cbb9d7a37d7952108e937",
+  "training_universe": ["BTCUSDT", "ETHUSDT"],
+  "optional_asset_role": "SOLUSDT and XRPUSDT never affect fitted model coefficients or trees. They may be admitted only when the core-trained model passes the same past validation gates on a universe that includes them.",
+  "target": {
+    "raw": "realized conservative net R under the fixed 1.00 ATR15 stop, 1.50R target and four-hour maximum hold",
+    "fit_target": "clip raw net R to [-1.5, 1.5]",
+    "ranking_and_report": "always use unclipped raw net R"
+  },
+  "paired_sides": "LONG and SHORT rows at the same symbol and decision_time stay in the same chronological split; no random row split is allowed",
+  "nested_validation": {
+    "initial": {
+      "fit": "2022-01-01 through 2022-12-31, label matured before 2023-01-01",
+      "early_stopping": "2023-01-01 through 2023-06-30",
+      "threshold_universe_selection": "2023-07-01 through 2023-12-31"
+    },
+    "quarterly_wfo": {
+      "fit_end": "test quarter start minus six months",
+      "fit_start": "maximum of 2022-01-01 and fit_end minus three years",
+      "early_stopping": "first three months of the six-month validation window",
+      "threshold_universe_selection": "last three months of the six-month validation window",
+      "label_maturity": "each subset uses only labels whose exit_time is before its own end cutoff"
+    }
+  },
+  "score_threshold": "quantile of predicted score across all two-sided eligible validation candidates before one-slot replay; thresholds are recomputed from each past validation window",
+  "same_decision_selection": "choose the largest score; tie-break BTC, ETH, SOL, XRP, then LONG before SHORT",
+  "feature_scaling": "Ridge uses median fill zero after side coding and StandardScaler fit on the fit window only; LightGBM receives float32 with native missing handling",
+  "sample_weight": "none",
+  "class_or_target_balancing": "none"
+}
