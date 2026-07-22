@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: five-month-strict-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   strict-research:
@@ -59,6 +59,7 @@ jobs:
               Path('research/five_month/assembly_patch.json'),
               Path('research/five_month/post_assembly_hotfix.json'),
               Path('research/five_month/execution_hotfix.json'),
+              Path('research/five_month/checkpoint_hotfix.json'),
           ):
               patch = json.loads(patch_path.read_text(encoding='utf-8'))
               source = target.read_bytes()
@@ -78,7 +79,7 @@ jobs:
                       f"patched source mismatch after {patch_path.name}: sha={final_digest} size={len(data)}"
                   )
           PY
-          echo "d25a7cfa365f412e22020339d7f399512c2285c820bf79c1b91247e65a4a69c0  research/five_month/research_five_month.py" \
+          echo "cd20c78504203bab86961f9a914ec8460d393749c2f9ad389be64f3da92c977a  research/five_month/research_five_month.py" \
             | sha256sum -c -
           python -m py_compile research/five_month/research_five_month.py
 
@@ -163,7 +164,7 @@ jobs:
             --end 2026-07 \
             --cache .cache/five_month \
             --output results/five_month_strict \
-            --policy-trials 1800 \
+            --policy-trials 350 \
             --seed 20260722 \
             2>&1 | tee results/five_month_strict/run.log
 
