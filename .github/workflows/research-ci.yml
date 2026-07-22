@@ -102,16 +102,21 @@ jobs:
 
       - name: Materialize pinned causal research script
         run: |
+          cat scripts/causal_wf_v3_payload/part*.txt > /tmp/causal_wf_v3.b64
+          test "$(wc -c < /tmp/causal_wf_v3.b64)" -eq 16484
           python - <<'PY'
           import base64
           import gzip
+          import hashlib
           from pathlib import Path
 
-          payload = Path('scripts/research_causal_wf_v3.py.gz.b64').read_text(encoding='ascii').strip()
+          payload = Path('/tmp/causal_wf_v3.b64').read_text(encoding='ascii')
+          decoded = gzip.decompress(base64.b64decode(payload, validate=True))
           target = Path('scripts/research_causal_wf_v3.py')
-          target.write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
-          print(f'materialized {target} ({target.stat().st_size} bytes)')
+          target.write_bytes(decoded)
+          print(f'materialized {target} ({len(decoded)} bytes, sha256={hashlib.sha256(decoded).hexdigest()})')
           PY
+          test "$(wc -c < scripts/research_causal_wf_v3.py)" -eq 47505
           python -m py_compile scripts/research_causal_wf_v3.py
 
       - name: Build 2020 causal warm-up history
