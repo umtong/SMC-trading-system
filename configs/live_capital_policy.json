@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "allowed_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+  "global_pending_plus_open_slots": 1,
+  "position_sizing": {
+    "basis": "settled_trading_account_equity_plus_manually_recorded_bank_equity",
+    "maximum_loss": "total_equity * frozen_risk_fraction",
+    "configured_unit_loss": "abs(entry_price-stop_price) + entry_price*entry_fee_rate + stop_price*stop_fee_rate",
+    "quantity": "floor_to_exchange_step(maximum_loss/configured_unit_loss)",
+    "capacity_shortfall_action": "block_order_and_emit_manual_deposit_instruction; never shrink quantity silently",
+    "stress_only": "stop slippage is reported separately and handled by risk optimization, not inserted into the configured formula"
+  },
+  "risk_optimization": {
+    "candidate_risk_fractions": [0.0025, 0.005, 0.0075, 0.01, 0.0125, 0.015, 0.02, 0.025, 0.03],
+    "provisional_default": 0.01,
+    "venue_leverage_cap": 5.0,
+    "block_bootstrap_quarters": 2,
+    "maximum_p95_drawdown": 0.15,
+    "minimum_p05_final_multiple": 1.0,
+    "maximum_ruin_probability": 0.001,
+    "selection": "highest median final multiple among all constraints; daily-return target is excluded"
+  },
+  "treasury": {
+    "provisional_target_trading_fraction": 0.60,
+    "minimum_bank_fraction": 0.35,
+    "rebalance_hysteresis_fraction": 0.05,
+    "margin_buffer_fraction": 0.25,
+    "loss_buffer_multiples": 2.0,
+    "bank_connector_enabled": false,
+    "bank_transfer_mode": "manual_operator_action_only",
+    "transfer_while_pending_or_open": "forbidden"
+  },
+  "frequency": {
+    "recommended_completed_trades_per_complete_operating_day": 1.0,
+    "hard_gate": false,
+    "use": "diagnostic_and_candidate_ranking_penalty"
+  },
+  "venue_runtime": {
+    "supported": ["BINANCE_USDM", "BYBIT_LINEAR"],
+    "requirements": [
+      "query current wallet equity and available balance",
+      "query symbol quantity step, minimum quantity, minimum notional and current notional tier",
+      "query account commission rates",
+      "query current leverage/risk limit",
+      "reconcile all pending orders and open positions before every submission"
+    ],
+    "api_key_policy": "trade and account-read permissions only; no withdrawal permission; bind fixed IP where supported"
+  }
+}
