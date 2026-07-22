@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "created_before_metrics_artifact_inspection": true,
+  "parent_addendum_sha256": "43637b66d880e3e6ff92e947a65288bed834f6225721ad06c2f25a7cfa1e6fb5",
+  "event_clock": {
+    "decision_bar": "completed UTC-aligned 15m bar with exactly three continuous 5m trade bars",
+    "metric_row": "latest positioning snapshot whose create_time + 5 minutes is <= decision_time and whose age is <= 6 minutes",
+    "level_freshness": "only the first completed crossing/raid of each level family, day, and side is eligible; that level-side is consumed for the UTC day after the first event",
+    "PDH_PDL": "previous UTC day must contain all 96 complete 15m bars",
+    "ASIA_HIGH_LOW": "current UTC day 00:00-08:00 session must contain all 32 complete 15m bars and is usable only from 08:00 onward",
+    "price_or_metric_gap": "starts a new continuity segment; 30-day normalizers require at least seven continuous days after the gap"
+  },
+  "simulation_clock": {
+    "entry": "5m open exactly equal to 15m decision_time",
+    "stop_or_target_touch": "slot stays occupied until the touching 5m bar closes",
+    "time_exit": "first 5m open at max-hold horizon",
+    "ambiguous_bar": "stop first",
+    "future_gap": "invalidate only if the actual entry-to-exit path crosses it, not merely because a later unused horizon contains a gap"
+  }
+}
