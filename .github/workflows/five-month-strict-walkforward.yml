@@ -58,6 +58,7 @@ jobs:
           for patch_path in (
               Path('research/five_month/assembly_patch.json'),
               Path('research/five_month/post_assembly_hotfix.json'),
+              Path('research/five_month/execution_hotfix.json'),
           ):
               patch = json.loads(patch_path.read_text(encoding='utf-8'))
               source = target.read_bytes()
@@ -77,7 +78,7 @@ jobs:
                       f"patched source mismatch after {patch_path.name}: sha={final_digest} size={len(data)}"
                   )
           PY
-          echo "be3e58a88613b42172a9cc03b6ea07d14eb17fd30309985c5519fd18650bc352  research/five_month/research_five_month.py" \
+          echo "d25a7cfa365f412e22020339d7f399512c2285c820bf79c1b91247e65a4a69c0  research/five_month/research_five_month.py" \
             | sha256sum -c -
           python -m py_compile research/five_month/research_five_month.py
 
@@ -120,7 +121,35 @@ jobs:
           }
           assert math.isnan(module.finite_mean((math.nan, math.nan)))
           assert module.finite_mean((1.0, math.nan)) == 1.0
-          print({'clean': clean, 'blocked': blocked})
+
+          # The time exit is executed at the open of fi+hold. The high/low of
+          # that minute cannot be used before the market exit.
+          import numpy as np
+          count = 80
+          ts = np.arange(count, dtype=np.int64) * module.NS_MIN
+          o = np.full(count, 100.0)
+          h = np.full(count, 100.05)
+          l = np.full(count, 99.95)
+          c = np.full(count, 100.0)
+          h[15] = 110.0
+          resolved = module.resolve_events(
+              np.array([0], np.int64), np.array([1], np.int8),
+              np.array([100.0]), np.array([99.0]), ts, o, h, l, c,
+          )
+          assert resolved[7][0, 0] == 1
+          assert resolved[6][0, 0] == ts[15]
+          assert resolved[5][0, 0] < module.PLAN_TARGETS[0]
+
+          # A gap through the stop uses stop-specific fee/slippage.
+          o[1], h[1], l[1], c[1] = 98.0, 98.1, 97.9, 98.0
+          resolved = module.resolve_events(
+              np.array([0], np.int64), np.array([1], np.int8),
+              np.array([100.0]), np.array([99.0]), ts, o, h, l, c,
+          )
+          expected = module.stop_gap_r(1, resolved[2][0], 98.0, resolved[3][0])
+          assert resolved[7][0, 0] == 0
+          assert abs(float(resolved[5][0, 0]) - expected) < 1e-6
+          print({'clean': clean, 'blocked': blocked, 'execution_ordering': 'passed'})
           PY
 
       - name: Run strict five-calendar-month research
