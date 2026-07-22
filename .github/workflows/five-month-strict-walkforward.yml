@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          NUMBA_DISABLE_JIT=1 python - <<'PY'
           import importlib.util
           import math
           from pathlib import Path
@@ -152,6 +152,7 @@ jobs:
           assert abs(float(resolved[5][0, 0]) - expected) < 1e-6
           print({'clean': clean, 'blocked': blocked, 'execution_ordering': 'passed'})
           PY
+          rm -rf research/five_month/__pycache__
 
       - name: Run strict five-calendar-month research
         id: research
