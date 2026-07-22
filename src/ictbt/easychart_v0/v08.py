@@ -14,7 +14,11 @@ from .pipeline import (
     structure_snapshot,
 )
 from .strategy import select_initial_target
-from .v07 import SrFlipFvgAuthority, build_v07_scene_family_result
+from .v07 import (
+    SrFlipFvgAuthority,
+    V07BuildResult,
+    build_v07_scene_family_result,
+)
 
 
 class V08TargetPolicy(str, Enum):
@@ -215,22 +219,25 @@ def build_v08_scene_family_result(
     *,
     target_policy: V08TargetPolicy | str,
     context_policy: V08ContextPolicy | str,
+    baseline: V07BuildResult | None = None,
 ) -> V08BuildResult:
     """Re-freeze V0.7 scenes with causal target ownership and HTF context.
 
     The scene clock, boundary, FVG, stop, and entry contract are unchanged.
     Only information known by the V0.7 C-bar close may affect target/context.
+    A caller may supply the already-built V0.7 result to avoid recomputing the
+    identical causal scene set for several pre-registered policy arms.
     """
 
     target = V08TargetPolicy(target_policy)
     context = V08ContextPolicy(context_policy)
-    baseline = build_v07_scene_family_result(book)
+    source = baseline or build_v07_scene_family_result(book)
     selected: list[SrFlipFvgAuthority] = []
     context_rejections = 0
     target_missing = 0
     destination_changed = 0
 
-    for authority in baseline.authorities:
+    for authority in source.authorities:
         if not _context_allows(book, authority, context):
             context_rejections += 1
             continue
@@ -257,7 +264,7 @@ def build_v08_scene_family_result(
     return V08BuildResult(
         authorities=authorities,
         diagnostics=V08BuildDiagnostics(
-            baseline_authorities=len(baseline.authorities),
+            baseline_authorities=len(source.authorities),
             context_rejections=context_rejections,
             target_missing=target_missing,
             destination_changed=destination_changed,
