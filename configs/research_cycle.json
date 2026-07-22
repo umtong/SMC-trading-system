@@ -1,0 +1,40 @@
+{
+  "first_oos_start": "2024-01-01T00:00:00Z",
+  "evaluation_end_exclusive": "2026-08-01T00:00:00Z",
+  "cycle_months": 1,
+  "base_cost_scenario": "base",
+  "stress_cost_scenario": "stress",
+  "cost_scenarios": [
+    {"name": "low", "round_trip_bps": 8.0},
+    {"name": "base", "round_trip_bps": 14.0},
+    {"name": "stress", "round_trip_bps": 20.0},
+    {"name": "severe", "round_trip_bps": 30.0}
+  ],
+  "gates": {
+    "minimum_completed_cycles": 3,
+    "minimum_trades": 80,
+    "base_profit_factor": 1.20,
+    "stress_profit_factor": 1.00,
+    "maximum_drawdown": 0.15,
+    "minimum_positive_cycle_fraction": 0.60,
+    "maximum_top_five_profit_share": 0.35,
+    "require_leave_best_five_positive": true,
+    "minimum_base_total_return": 0.0,
+    "minimum_stress_total_return": 0.0,
+    "consecutive_passes_for_promotion": 2,
+    "consecutive_failures_for_demotion": 2
+  },
+  "operational_gates": {
+    "causality_required": true,
+    "data_quality_required": true,
+    "execution_model_required": true,
+    "minimum_shadow_days": 90,
+    "minimum_shadow_trades": 100,
+    "maximum_reconciliation_errors": 0,
+    "maximum_realized_slippage_bps_p95": 8.0
+  },
+  "score_drawdown_penalty": 0.50,
+  "score_worst_cycle_penalty": 0.25,
+  "score_cost_decay_penalty": 0.25,
+  "allow_cash": true
+}
