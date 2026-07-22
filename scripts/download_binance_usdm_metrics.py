@@ -137,10 +137,16 @@ def read_zip(blob: bytes, spec: Spec) -> pd.DataFrame:
     else:
         frame = frame[[lower[c] for c in METRIC_COLUMNS]].copy()
         frame.columns = METRIC_COLUMNS
-    times = pd.to_numeric(frame['create_time'], errors='raise')
-    frame['create_time'] = pd.to_datetime(
-        times, unit=timestamp_unit(times), utc=True
-    )
+    raw_times = frame['create_time']
+    numeric_times = pd.to_numeric(raw_times, errors='coerce')
+    if numeric_times.notna().all():
+        frame['create_time'] = pd.to_datetime(
+            numeric_times, unit=timestamp_unit(numeric_times), utc=True
+        )
+    else:
+        frame['create_time'] = pd.to_datetime(
+            raw_times.astype(str).str.strip(), utc=True, format='mixed', errors='raise'
+        )
     frame['symbol'] = frame['symbol'].astype(str).str.upper().str.strip()
     for column in METRIC_COLUMNS[2:]:
         frame[column] = pd.to_numeric(frame[column], errors='coerce')
