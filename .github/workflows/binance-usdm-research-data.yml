@@ -9,6 +9,9 @@ on:
   push:
     branches:
       - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_usdm_research_data.py
+      - .github/workflows/binance-usdm-research-data.yml
   schedule:
     - cron: "25 2 2 * *"
 
@@ -17,11 +20,6 @@ permissions:
 
 jobs:
   fetch-research-data:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
-      github.event_name == 'schedule' ||
-      contains(github.event.head_commit.message, '[fetch-market-data]')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -40,14 +38,23 @@ jobs:
       - name: Compile downloader
         run: python -m py_compile scripts/download_binance_usdm_research_data.py
 
+      - name: Resolve rolling archive range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "end_month=$(date -u -d 'first day of this month - 1 day' +%Y-%m)" >> "$GITHUB_OUTPUT"
+          echo "daily_start=$(date -u +%Y-%m-01)" >> "$GITHUB_OUTPUT"
+          echo "daily_end=$(date -u -d 'yesterday' +%F)" >> "$GITHUB_OUTPUT"
+
       - name: Download and freeze verified archives
         run: |
           python scripts/download_binance_usdm_research_data.py \
-            --symbols BTCUSDT ETHUSDT SOLUSDT \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
             --start-month 2020-01 \
-            --end-month 2026-06 \
-            --daily-start 2026-07-01 \
-            --daily-end 2026-07-21 \
+            --end-month "${{ steps.range.outputs.end_month }}" \
+            --daily-start "${{ steps.range.outputs.daily_start }}" \
+            --daily-end "${{ steps.range.outputs.daily_end }}" \
             --workers 12 \
             --output artifacts/binance_usdm_research_data
 
@@ -61,7 +68,7 @@ jobs:
           manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
           required = {
               f'{symbol}_{kind}'
-              for symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT')
+              for symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
               for kind in ('klines', 'markPriceKlines', 'premiumIndexKlines', 'fundingRate')
           }
           missing = sorted(required - set(manifest['datasets']))
@@ -78,11 +85,63 @@ jobs:
           }, indent=2))
           PY
 
-      - name: Upload immutable research snapshot
+      - name: Export deterministic gzip CSV files
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+
+          source = Path('artifacts/binance_usdm_research_data')
+          output = Path('artifacts/binance_usdm_research_csv')
+          output.mkdir(parents=True, exist_ok=True)
+          source_manifest = source / 'manifest.json'
+          original = json.loads(source_manifest.read_text(encoding='utf-8'))
+          exported = {}
+          for parquet in sorted(source.glob('*.parquet')):
+              frame = pd.read_parquet(parquet)
+              target = output / f'{parquet.stem}.csv.gz'
+              frame.to_csv(
+                  target,
+                  index=False,
+                  compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0},
+                  float_format='%.12g',
+              )
+              exported[parquet.stem] = {
+                  'path': target.name,
+                  'rows': len(frame),
+                  'bytes': target.stat().st_size,
+                  'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+              }
+          if len(exported) != 16:
+              raise SystemExit(f'expected 16 datasets, exported {len(exported)}')
+          payload = {
+              'source_manifest_sha256': hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+              'source': original,
+              'exported': exported,
+          }
+          (output / 'portable_manifest.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Upload immutable Parquet snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: binance-usdm-research-${{ github.sha }}
+          name: binance-usdm-research-parquet-${{ github.sha }}
           path: artifacts/binance_usdm_research_data
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload portable CSV snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-csv-${{ github.sha }}
+          path: artifacts/binance_usdm_research_csv
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
