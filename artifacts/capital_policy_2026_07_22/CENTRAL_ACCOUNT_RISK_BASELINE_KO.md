@@ -41,13 +41,15 @@
 
 ## 해석
 
-현재 1.25%는 전략 승격값이 아니라 5배 레버리지 상한, 25% 증거금 buffer, 최대손실 2배의 거래소 buffer, 최소 은행보유 35%를 함께 적용했을 때 이 소표본 원장에서 허용되는 연구상 용량 최적값이다. 1.50% 이상은 p99 주문 geometry에서 최소 은행보유 35%를 깨므로 제외된다.
+현재 배포 위험률은 0%이며 배포 자금배분은 은행 100%다. 아래 1.25%와 61.87%/38.13%는 전략이 별도 승격 gate를 통과했을 때만 적용할 연구상 후보다.
+
+1.25%는 전략 승격값이 아니라 5배 레버리지 상한, 25% 증거금 buffer, 최대손실 2배의 거래소 buffer, 최소 은행보유 35%를 함께 적용했을 때 이 소표본 원장에서 허용되는 연구상 용량 최적값이다. 1.50% 이상은 p99 주문 geometry에서 최소 은행보유 35%를 깨므로 제외된다.
 
 전략의 거래 수와 빈도, 독립 OOS, 체결·shadow 증거가 부족하므로 실제 배포 위험률은 0%다. 향후 동결 전략이 별도 승격 gate를 통과한 경우에만 같은 optimizer를 새 원장에 다시 적용한다.
 
 ## 재현성
 
 - `configs/live_capital_policy.json` SHA-256: `dfe1171069bfc4c4c8900ef947fb4d9bf63826c53375182cf84dbc141c328738`
-- `scripts/optimize_central_account_risk.py` SHA-256: `c8af47f7d865730a456065a2689e19ebd943188047e1443467895e7a08b32fb3`
-- 1.25R report SHA-256: `0e2dc56a836d57214cb56b57a92e672c606489b65b83c8593d79259abe0c553e`
-- 1.50R report SHA-256: `0bae1398148622b324c5661b3774eb4152d5ca42ad1f290531748a86fcc9a4cc`
+- 로컬 재현 패키지의 `scripts/optimize_central_account_risk.py` SHA-256: `13ead3c2ba9619363d6a644cb1d956fd67a4a70c3808b860d1c31a3747000b1c`
+- 1.25R report SHA-256: `e8056279cedf074f5d71b2ddbaaf2bd4dab6ad75ca8e76537dab88d2c862dcef`
+- 1.50R report SHA-256: `0857c6105f1311106b9003bb31877442d2241c3d5b33d2bbdb3566e5392c3e8a`
