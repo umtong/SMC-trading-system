@@ -8,6 +8,7 @@ on:
       - .github/workflows/causal-wf-v5-bayes.yml
       - scripts/patch_causal_wf_v4.py
       - scripts/patch_causal_wf_v5_bayes.py
+      - scripts/patch_causal_funding_alignment.py
       - scripts/causal_wf_v3_payload/**
       - scripts/download_official_binance_5m.py
   workflow_dispatch:
@@ -51,6 +52,7 @@ jobs:
           python scripts/patch_causal_wf_v4.py scripts/research_causal_wf_v5.py
           test "$(wc -c < scripts/research_causal_wf_v5.py)" -eq 50682
           python scripts/patch_causal_wf_v5_bayes.py scripts/research_causal_wf_v5.py
+          python scripts/patch_causal_funding_alignment.py scripts/research_causal_wf_v5.py
           python -m py_compile scripts/research_causal_wf_v5.py
 
       - name: Build 2020 causal warm-up history
