@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+WARMUP_DAYS = 28
+
 # The development panel is the previously examined V0.3-V0.7 benchmark.
 DEVELOPMENT_WINDOWS = (
     ("ETHUSDT", "eth_transition", "2024-12-30", "2025-01-13", 0.01),
