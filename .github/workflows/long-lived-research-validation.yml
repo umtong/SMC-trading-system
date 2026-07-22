@@ -1,0 +1,57 @@
+name: Long-Lived Research Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Independent reproducibility check, deliberately away from the top of hour.
+    # This is never the live trading scheduler.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: long-lived-research-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  causal-research-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Compile research cycle
+        run: python -m py_compile scripts/smc_ict_research_cycle.py
+
+      - name: Run strategy and research-governance tests
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests/easychart_v0 tests/research_cycle -q > long-lived-research.log 2>&1
+          status=$?
+          cat long-lived-research.log
+          exit "$status"
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-lived-research-${{ github.run_id }}
+          path: long-lived-research.log
+          if-no-files-found: error
+          retention-days: 30
