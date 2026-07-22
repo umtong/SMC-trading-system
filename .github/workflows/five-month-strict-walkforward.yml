@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - agent/five-month-strict-walkforward-v1
+      - agent/five-month-strict-walkforward-v2
     paths:
       - "research/five_month/**"
       - ".github/workflows/five-month-strict-walkforward.yml"
@@ -54,21 +55,29 @@ jobs:
           import json
 
           target = Path('research/five_month/research_five_month.py')
-          patch = json.loads(Path('research/five_month/assembly_patch.json').read_text(encoding='utf-8'))
-          source = target.read_bytes()
-          digest = hashlib.sha256(source).hexdigest()
-          if digest != patch['source_sha256'] or len(source) != patch['source_size']:
-              raise SystemExit(f"unexpected assembled source: sha={digest} size={len(source)}")
-          data = bytearray(source)
-          for op in reversed(patch['operations']):
-              replacement = base64.b64decode(op['data'])
-              data[op['i1']:op['i2']] = replacement
-          target.write_bytes(data)
-          final_digest = hashlib.sha256(data).hexdigest()
-          if final_digest != patch['target_sha256'] or len(data) != patch['target_size']:
-              raise SystemExit(f"patched source mismatch: sha={final_digest} size={len(data)}")
+          for patch_path in (
+              Path('research/five_month/assembly_patch.json'),
+              Path('research/five_month/post_assembly_hotfix.json'),
+          ):
+              patch = json.loads(patch_path.read_text(encoding='utf-8'))
+              source = target.read_bytes()
+              digest = hashlib.sha256(source).hexdigest()
+              if digest != patch['source_sha256'] or len(source) != patch['source_size']:
+                  raise SystemExit(
+                      f"unexpected source before {patch_path.name}: sha={digest} size={len(source)}"
+                  )
+              data = bytearray(source)
+              for op in reversed(patch['operations']):
+                  replacement = base64.b64decode(op['data'])
+                  data[op['i1']:op['i2']] = replacement
+              target.write_bytes(data)
+              final_digest = hashlib.sha256(data).hexdigest()
+              if final_digest != patch['target_sha256'] or len(data) != patch['target_size']:
+                  raise SystemExit(
+                      f"patched source mismatch after {patch_path.name}: sha={final_digest} size={len(data)}"
+                  )
           PY
-          echo "7d8686c9a60c14807a4e1c0b88fbe5c304ea416980fa7cd71227316280803419  research/five_month/research_five_month.py" \
+          echo "be3e58a88613b42172a9cc03b6ea07d14eb17fd30309985c5519fd18650bc352  research/five_month/research_five_month.py" \
             | sha256sum -c -
           python -m py_compile research/five_month/research_five_month.py
 
@@ -76,6 +85,43 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy pandas numba lightgbm scikit-learn pyarrow
+
+      - name: Run causality and cold-start self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import math
+          from pathlib import Path
+
+          import pandas as pd
+
+          path = Path('research/five_month/research_five_month.py')
+          spec = importlib.util.spec_from_file_location('five_month_strict', path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+
+          data = {'known': [10], 'order_end': [20], 'fill': [15]}
+          for plan in module.PLAN_NAMES:
+              data[f'exit_{plan}'] = [30]
+          events = pd.DataFrame(data)
+
+          clean = module.leakage_audit(events, ['hour_sin', 'hour_cos', 'body_atr'])
+          assert clean['passed'], clean
+          blocked = module.leakage_audit(
+              events,
+              ['hour_sin', 'future_return', 'r_r025_h15', 'exit_r025_h15'],
+          )
+          assert not blocked['passed'], blocked
+          assert set(blocked['feature_forbidden_names']) == {
+              'future_return', 'r_r025_h15', 'exit_r025_h15'
+          }
+          assert math.isnan(module.finite_mean((math.nan, math.nan)))
+          assert module.finite_mean((1.0, math.nan)) == 1.0
+          print({'clean': clean, 'blocked': blocked})
+          PY
 
       - name: Run strict five-calendar-month research
         id: research
