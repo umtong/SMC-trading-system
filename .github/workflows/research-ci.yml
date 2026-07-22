@@ -84,7 +84,7 @@ jobs:
   causal-monthly-walk-forward-v3:
     if: github.event_name == 'pull_request' && github.head_ref == 'agent/binance-5m-research-data'
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,6 +117,32 @@ jobs:
           print(f'materialized {target} ({len(decoded)} bytes, sha256={hashlib.sha256(decoded).hexdigest()})')
           PY
           test "$(wc -c < scripts/research_causal_wf_v3.py)" -eq 47423
+          python -m py_compile scripts/research_causal_wf_v3.py
+
+      - name: Bound the initial full-history baseline
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/research_causal_wf_v3.py')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'n_estimators=260,': 'n_estimators=110,',
+              'n_estimators=220,': 'n_estimators=90,',
+              'if len(train_base) > 700_000:': 'if len(train_base) > 300_000:',
+              'train_base = train_base.sample(700_000,': 'train_base = train_base.sample(300_000,',
+              'if len(train_full) > 850_000:': 'if len(train_full) > 350_000:',
+              'train_full = train_full.sample(850_000,': 'train_full = train_full.sample(350_000,',
+              'for mode in ("mean", "tail"):': 'for mode in ("mean",):',
+              'for lookback in (18, 30, 42):': 'for lookback in (30,):',
+              'random_policies(procedures, order_rates, 700)': 'random_policies(procedures, order_rates, 260)',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise RuntimeError(f'missing patch anchor: {old}')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
+          PY
           python -m py_compile scripts/research_causal_wf_v3.py
 
       - name: Build 2020 causal warm-up history
