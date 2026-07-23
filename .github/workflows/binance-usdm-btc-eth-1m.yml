@@ -55,10 +55,40 @@ jobs:
                   raise SystemExit(f'invalid dataset {symbol}')
           print(json.dumps({'archives':m['verified_archives'],'missing':len(m['missing_archives']),'datasets':m['datasets']},indent=2))
           PY
-      - name: Upload full one-minute research snapshot
+      - name: Export deterministic portable gzip CSV
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root=Path('artifacts/binance_usdm_btc_eth_1m')
+          source=json.loads((root/'manifest.json').read_text())
+          exported={}
+          keep=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_base','taker_buy_quote']
+          for symbol, info in sorted(source['datasets'].items()):
+              parquet=root/info['path']
+              frame=pd.read_parquet(parquet, columns=keep)
+              target=root/f'{symbol}_1m.csv.gz'
+              frame.to_csv(target,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0},float_format='%.12g')
+              exported[symbol]={
+                  'path':target.name,
+                  'rows':len(frame),
+                  'bytes':target.stat().st_size,
+                  'sha256':hashlib.sha256(target.read_bytes()).hexdigest(),
+                  'start':str(frame['open_time'].iloc[0]),
+                  'end':str(frame['open_time'].iloc[-1]),
+              }
+              parquet.unlink()
+          portable={'schema_version':1,'source_manifest_sha256':hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest(),'source':source,'exported':exported}
+          (root/'portable_manifest.json').write_text(json.dumps(portable,indent=2,allow_nan=False)+'\n')
+          print(json.dumps(exported,indent=2))
+          PY
+      - name: Upload portable full one-minute research snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: binance-usdm-btc-eth-full-1m-${{ github.sha }}
+          name: binance-usdm-btc-eth-full-1m-csv-${{ github.sha }}
           path: artifacts/binance_usdm_btc_eth_1m
           if-no-files-found: error
           compression-level: 0
