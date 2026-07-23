@@ -18,9 +18,11 @@ from .liquidity_delivery import (
     REVERSAL_QUANTILE,
     evaluate_fixed_flow_reversal,
 )
+from .scene_adapter import AdaptedFlowScene, adapt_authority_to_flow_scene
 
 __all__ = [
     "AGGTRADE_COLUMNS",
+    "AdaptedFlowScene",
     "EVENT_BARS",
     "EXHAUSTION_QUANTILE",
     "FLOW_COLUMNS",
@@ -31,6 +33,7 @@ __all__ = [
     "FrozenFlowScene",
     "HISTORY_BARS",
     "REVERSAL_QUANTILE",
+    "adapt_authority_to_flow_scene",
     "aggregate_trade_flow",
     "evaluate_fixed_flow_reversal",
     "normalize_aggtrades",
