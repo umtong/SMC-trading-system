@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T00:00:00Z",
+  "status": "PREDECLARED_BEFORE_MICROSTRUCTURE_OUTCOME_INSPECTION",
+  "family": "BTC_ETH_TOP_OF_BOOK_OFI_PRICE_IMPACT_DECAY_SAMPLE_V1",
+  "purpose": "Test whether top-of-book order-flow imbalance and aggressive trade flow contain net forward information after spread, fees, latency and global one-slot execution. This sample only determines whether full-history expansion is justified; it cannot itself promote a live strategy.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "sampling": {
+    "rule": "mechanical first three UTC calendar days of every quarter",
+    "development": {
+      "start": "2022-01-01",
+      "end": "2022-12-31"
+    },
+    "internal_validation": {
+      "start": "2023-01-01",
+      "end": "2023-12-31"
+    },
+    "retrospective_diagnostic": {
+      "start": "2024-01-01",
+      "end": "2026-06-30"
+    },
+    "dates": [
+      "2022-01-01", "2022-01-02", "2022-01-03",
+      "2022-04-01", "2022-04-02", "2022-04-03",
+      "2022-07-01", "2022-07-02", "2022-07-03",
+      "2022-10-01", "2022-10-02", "2022-10-03",
+      "2023-01-01", "2023-01-02", "2023-01-03",
+      "2023-04-01", "2023-04-02", "2023-04-03",
+      "2023-07-01", "2023-07-02", "2023-07-03",
+      "2023-10-01", "2023-10-02", "2023-10-03",
+      "2024-01-01", "2024-01-02", "2024-01-03",
+      "2024-04-01", "2024-04-02", "2024-04-03",
+      "2024-07-01", "2024-07-02", "2024-07-03",
+      "2024-10-01", "2024-10-02", "2024-10-03",
+      "2025-01-01", "2025-01-02", "2025-01-03",
+      "2025-04-01", "2025-04-02", "2025-04-03",
+      "2025-07-01", "2025-07-02", "2025-07-03",
+      "2025-10-01", "2025-10-02", "2025-10-03",
+      "2026-01-01", "2026-01-02", "2026-01-03",
+      "2026-04-01", "2026-04-02", "2026-04-03"
+    ]
+  },
+  "raw_data": {
+    "source": "Binance USD-M public archive",
+    "types": ["bookTicker", "aggTrades"],
+    "checksum_required": true,
+    "raw_archive_retention": false
+  },
+  "aggregation": {
+    "bucket_seconds": 10,
+    "book_ofi": "Cont-Kukanov-Stoikov best-quote OFI from bid/ask price and size changes",
+    "trade_flow": "aggressive-buy quote volume minus aggressive-sell quote volume",
+    "stored_fields": [
+      "last_bid", "last_ask", "last_mid", "spread_sum", "book_events",
+      "ofi_sum", "last_book_imbalance", "signed_trade_quote", "total_trade_quote",
+      "aggressive_buy_quote", "aggressive_sell_quote", "trade_count", "trade_vwap"
+    ]
+  },
+  "research_clock": {
+    "features": "completed 10-second buckets only",
+    "decision": "bucket close",
+    "entry": "next completed bucket first observable quote/trade proxy, with at least one bucket latency",
+    "future_features": "forbidden",
+    "cross_day_state": "reset at each sampled UTC day"
+  },
+  "promotion": {
+    "sample_result_cannot_enable_live": true,
+    "full_history_required_if_sample_passes": true,
+    "live_risk": 0
+  }
+}
