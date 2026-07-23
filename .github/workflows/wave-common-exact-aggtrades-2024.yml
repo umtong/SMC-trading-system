@@ -1,0 +1,132 @@
+name: Shared exact quarter-hour aggTrades 2024
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave-common-exact-aggtrades-2024.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shared-exact-aggtrades-2024-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  extract-month:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month:
+          - "2024-01"
+          - "2024-02"
+          - "2024-03"
+          - "2024-04"
+          - "2024-05"
+          - "2024-06"
+          - "2024-07"
+          - "2024-08"
+          - "2024-09"
+          - "2024-10"
+          - "2024-11"
+          - "2024-12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - name: Compile deterministic extractor
+        run: |
+          set -euo pipefail
+          mkdir -p build output
+          g++ -O3 -std=gnu++20 -D_GNU_SOURCE -Wall -Wextra \
+            research/wave39/extract_boundary_aggtrades.cpp -o build/extract_boundary_aggtrades
+      - name: Verify official archive and build feature-only month
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${SYMBOL}-aggTrades-${MONTH}.zip"
+          root="https://data.binance.vision/data/futures/um/monthly/aggTrades/${SYMBOL}"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}.CHECKSUM" "${root}/${file}.CHECKSUM"
+          expected="$(awk 'NR==1{print tolower($1)}' "${file}.CHECKSUM")"
+          test "${#expected}" -eq 64
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}" "${root}/${file}"
+          printf '%s  %s\n' "${expected}" "${file}" | sha256sum -c -
+          csv="output/${SYMBOL}_${MONTH}_quarterhour_exact.csv"
+          build/extract_boundary_aggtrades "${SYMBOL}" "${MONTH}" "${file}" "${csv}" \
+            2>&1 | tee "output/${SYMBOL}_${MONTH}_extract.log"
+          gzip -9 "${csv}"
+          python - <<'PY'
+          from calendar import monthrange
+          import csv,gzip,hashlib,json,os
+          from pathlib import Path
+          symbol=os.environ['SYMBOL']; month=os.environ['MONTH']; year,number=map(int,month.split('-'))
+          source=Path(f'{symbol}-aggTrades-{month}.zip'); panel=Path(f'output/{symbol}_{month}_quarterhour_exact.csv.gz')
+          expected=Path(str(source)+'.CHECKSUM').read_text(encoding='utf-8-sig').split()[0].lower()
+          actual=hashlib.sha256(source.read_bytes()).hexdigest()
+          if actual!=expected: raise RuntimeError('source hash changed')
+          rows=0; nonzero10=0; nonzero60=0; previous=None; fields=None
+          with gzip.open(panel,'rt',newline='') as handle:
+              reader=csv.DictReader(handle); fields=list(reader.fieldnames or [])
+              for row in reader:
+                  ts=int(row['boundary_time_ms'])
+                  if previous is not None and ts-previous!=900000: raise RuntimeError('boundary gap')
+                  previous=ts; rows+=1
+                  nonzero10+=int(int(row['post10s_trades'])>0)
+                  nonzero60+=int(int(row['post60s_trades'])>0)
+          if rows!=monthrange(year,number)[1]*96: raise RuntimeError('row count mismatch')
+          if nonzero10<int(rows*.95) or nonzero60!=rows: raise RuntimeError('flow coverage failure')
+          manifest={
+              'schema':'wave39-quarterhour-exact-month-v1','symbol':symbol,'month':month,
+              'source_sha256':actual,'source_bytes':source.stat().st_size,'rows':rows,
+              'nonzero_post10s_rows':nonzero10,'nonzero_post60s_rows':nonzero60,
+              'columns':fields,'output_path':panel.name,'output_bytes':panel.stat().st_size,
+              'output_sha256':hashlib.sha256(panel.read_bytes()).hexdigest(),
+              'future_outcomes_included':False,'strategy_results_included':False,
+          }
+          Path(f'output/{symbol}_{month}_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          rm -f "${file}" "${file}.CHECKSUM"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-exact-2024-${{ matrix.symbol }}-${{ matrix.month }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  combine:
+    needs: extract-month
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shared-exact-2024-*
+          path: monthly
+      - run: |
+          set -euo pipefail
+          mkdir -p combined
+          python research/wave39v2/combine_panels.py --input-dir monthly --output-dir combined --year 2024
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-exact-boundary-2024-${{ github.run_id }}
+          path: combined/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
