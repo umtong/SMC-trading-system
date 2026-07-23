@@ -1,0 +1,105 @@
+{
+  "candidate_id": "v24_cross_market_ensemble_v1",
+  "status": "FROZEN_BEFORE_FIRST_2025_OOS",
+  "frozen_at_utc": "2026-07-23T14:35:00Z",
+  "candidate_file_sha256": "117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68",
+  "evaluator_sha256": "9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1",
+  "universe": ["BTCUSDT", "ETHUSDT"],
+  "venue": "Binance USD-M perpetual futures with Binance spot confirmation",
+  "decision_clock": "each completed quarter-hour first-10-second aggregate-trade window",
+  "entry": "first actual USD-M aggregate trade after boundary+10 seconds",
+  "global_pending_plus_open_limit": 1,
+  "component_priority": ["C_basis", "A_ridge4h", "B_extra12h"],
+  "components": {
+    "C_basis": {
+      "signal": "abs(prior-only 1440-minute contract/spot basis z) >= 3, hours 12-15 UTC inclusive",
+      "side": "opposite sign of basis z",
+      "holding_minutes": 240,
+      "protective_stop_fraction": 0.02,
+      "profit_target_r": 2.0
+    },
+    "A_ridge4h": {
+      "model": "monthly walk-forward Ridge(alpha=1000), raw 240-minute return target, previous 90 days only",
+      "minimum_predicted_absolute_return_bps": 100,
+      "direction_filter": "none",
+      "holding_minutes": 240,
+      "protective_stop": "2 * prior 60-minute realized volatility * sqrt(60), clipped to 0.3%-5%",
+      "profit_target_r": 3.0
+    },
+    "B_extra12h": {
+      "model": "monthly walk-forward ExtraTrees(n_estimators=120,max_depth=6,min_samples_leaf=300,max_features=0.55,random_state=27), raw 720-minute target, previous 90 days only",
+      "minimum_predicted_absolute_return_bps": 60,
+      "direction_filter": "predicted direction agrees with first-10-second imbalance and price return; prior completed spot and futures taker flow do not oppose",
+      "holding_minutes": 720,
+      "protective_stop_fraction": 0.03,
+      "profit_target_r": 1.5
+    }
+  },
+  "screening_execution": {
+    "same_minute_collision": "protective stop before target",
+    "adverse_stop_gap": "actual minute open if beyond stop, otherwise stop",
+    "boundary_minute": "included conservatively; exact candidate-day aggregate-trade replay required after OOS pass",
+    "missing_minute": "cancel entry or reject trade; no next-available-bar substitution",
+    "segment_boundary": "no feature, entry, holding, or exit may cross",
+    "cost_scenarios_all_in_bps": [13, 20, 30]
+  },
+  "development_period": ["2023-07-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+  "development_evidence_20bps": {
+    "trades": 272,
+    "trades_per_calendar_day": 0.4945454545,
+    "net_r": 38.5147592378,
+    "expectancy_r": 0.1415983796,
+    "profit_factor": 1.6592656852,
+    "positive_month_ratio": 0.7222222222,
+    "terminal_multiple_at_1pct_risk": 1.4588094636,
+    "max_drawdown_at_1pct_risk": -0.0506237630,
+    "2023H2_net_r": 4.898072,
+    "2024H1_net_r": 20.168360,
+    "2024H2_net_r": 13.448327,
+    "BTCUSDT_net_r": 29.9537652377,
+    "ETHUSDT_net_r": 8.5609940001,
+    "A_ridge4h_net_r": 11.7516403834,
+    "B_extra12h_net_r": 17.9072230412,
+    "C_basis_net_r": 8.8558958132
+  },
+  "development_evidence_30bps": {
+    "trades": 272,
+    "net_r": 26.8328834856,
+    "expectancy_r": 0.0986503069,
+    "profit_factor": 1.4418077764,
+    "terminal_multiple_at_1pct_risk": 1.2989157743,
+    "max_drawdown_at_1pct_risk": -0.0543135123,
+    "BTCUSDT_net_r": 24.1471782190,
+    "ETHUSDT_net_r": 2.6857052666,
+    "A_ridge4h_net_r": 8.5508063858,
+    "B_extra12h_net_r": 12.6373071915,
+    "C_basis_net_r": 5.6447699083
+  },
+  "selection_disclosure": {
+    "development_is_exposed": true,
+    "multiple_hypotheses_and_models_were_screened": true,
+    "mitigation": "three economically distinct components, both symbols, all three development half-years, 20/30bp stress, unified global router, and untouched 2025 one-shot OOS",
+    "not_claimed": "development metrics are not an unbiased estimate of future performance"
+  },
+  "first_unopened_oos": ["2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
+  "oos_promotion_gate": {
+    "no_parameter_changes_after_open": true,
+    "20bps": {
+      "trades_at_least": 100,
+      "trades_per_calendar_day_at_least": 0.25,
+      "expectancy_r_greater_than": 0,
+      "profit_factor_at_least": 1.15,
+      "terminal_multiple_at_1pct_risk_greater_than": 1,
+      "positive_month_ratio_at_least": 0.5,
+      "BTCUSDT_net_r_greater_than": 0,
+      "ETHUSDT_net_r_greater_than": 0,
+      "A_ridge4h_net_r_greater_than": 0,
+      "B_extra12h_net_r_greater_than": 0,
+      "C_basis_net_r_greater_than": 0
+    },
+    "30bps_net_r_greater_than": 0,
+    "result_if_failed": "reject without refitting on 2025",
+    "result_if_passed": "exact candidate-day aggTrade protective-stop replay, exact funding accounting, external-venue shadow replay, then untouched next holdout"
+  },
+  "paper_or_live_authority": false
+}
