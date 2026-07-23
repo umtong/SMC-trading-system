@@ -1,0 +1,87 @@
+{
+  "candidate_id": "v16_cross_asset_moderate_consensus_v1",
+  "status": "FROZEN_BEFORE_2024_OOS",
+  "frozen_at_utc": "2026-07-23T12:40:00Z",
+  "evaluator_sha256": "7a81d84953a95660a8b66689e110a9cfed4b8df38c9feab2e26fd862cb23177e",
+  "discovery_data": {
+    "venue": "Binance USD-M perpetual futures public archive",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "start_inclusive": "2023-07-01T00:00:00Z",
+    "end_exclusive": "2024-01-01T00:00:00Z",
+    "sources": ["1m klines", "1m markPriceKlines", "aggTrades first 10 seconds of each quarter-hour"],
+    "checksum_required": true,
+    "missing_reference_minutes": "drop and start a new causal segment; never impute"
+  },
+  "economic_hypothesis": "Same-direction moderate aggressive flow in both BTC and ETH is a common-information repricing signal. Requiring confirmation in both assets avoids isolated liquidation flow and follows the selected asset for four hours.",
+  "signal": {
+    "decision_time": "quarter-hour boundary plus completion of the first 10 seconds",
+    "entry": "first actual aggregate trade after the first 10 seconds",
+    "own_absolute_imbalance_lower_inclusive": 0.30,
+    "own_absolute_imbalance_upper_exclusive": 0.50,
+    "counterpart_absolute_imbalance_lower_inclusive": 0.30,
+    "counterpart_absolute_imbalance_upper_exclusive": 0.50,
+    "same_sign_required": true,
+    "minimum_own_prior_only_signal_quote_volume_z": 1.0,
+    "side": "sign(own imbalance)",
+    "same_time_priority": "descending own_abs_imbalance + counterpart_abs_imbalance + 0.1 * max(own_volume_z, 0), then BTCUSDT before ETHUSDT"
+  },
+  "execution": {
+    "global_pending_plus_open_limit": 1,
+    "maximum_holding_minutes": 240,
+    "fixed_protective_stop_fraction": 0.03,
+    "profit_target": null,
+    "cross_segment_trade": false,
+    "screening_stop_policy": "minute high/low with adverse bar-open gap; exact candidate-day aggTrade replay required after an OOS pass"
+  },
+  "cost_stress_all_in_bps": [13, 20, 30],
+  "comparison_risk_fraction": 0.01,
+  "discovery_evidence_at_20bps": {
+    "trades": 133,
+    "trades_per_calendar_day": 0.7228260869565217,
+    "net_r": 7.822299199883633,
+    "expectancy_r": 0.05881427969837318,
+    "profit_factor": 1.5963378922157014,
+    "terminal_multiple_at_1pct_risk": 1.0801343961518635,
+    "max_drawdown_at_1pct_risk": -0.016463588391278705,
+    "positive_month_ratio": 0.6666666666666666,
+    "btc_net_r": 2.0103716129711766,
+    "eth_net_r": 5.811927586912455,
+    "protective_stops": 0
+  },
+  "discovery_evidence_at_30bps": {
+    "trades": 133,
+    "net_r": 3.554956799887158,
+    "expectancy_r": 0.026728998495392165,
+    "profit_factor": 1.238020796818603,
+    "terminal_multiple_at_1pct_risk": 1.0350978100563595,
+    "btc_net_r": -0.08085176924007087,
+    "eth_net_r": 3.6358085691272293
+  },
+  "selection_disclosure": {
+    "theory_driven_rule_cells_screened": 858,
+    "period_split": "required positive aggregate result in both 2023Q3 and 2023Q4, both symbols positive at 20bp over H2, PF at least 1.1, and positive aggregate 30bp H2 result",
+    "known_weaknesses": [
+      "2023Q3 BTC contribution was negative at 20bp even though Q3 aggregate and H2 BTC were positive",
+      "2023 H2 30bp BTC contribution was slightly negative",
+      "no protective stop fired in discovery, so the 3% stop is a disaster boundary rather than observed alpha management"
+    ],
+    "not_claimed": "discovery is exposed and multiple-testing affected; only the one-shot 2024 OOS can promote it"
+  },
+  "oos_policy": {
+    "first_unopened_period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "no_parameter_changes_after_open": true,
+    "minimum_requirements_at_20bps": {
+      "trades_at_least": 50,
+      "expectancy_r_greater_than": 0.0,
+      "profit_factor_at_least": 1.1,
+      "terminal_multiple_at_1pct_risk_greater_than": 1.0,
+      "btc_net_r_greater_than": 0.0,
+      "eth_net_r_greater_than": 0.0,
+      "positive_month_ratio_at_least": 0.5
+    },
+    "severe_cost_30bps_net_r_greater_than": 0.0,
+    "result_if_failed": "reject without refitting on 2024",
+    "result_if_passed": "exact candidate-day aggTrade protective-stop replay, then untouched 2025 holdout"
+  },
+  "paper_or_live_authority": false
+}
