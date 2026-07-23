@@ -1,7 +1,7 @@
 {
   "purpose": "export checksum-verified 2023 prior-only causal feature frames for local alpha research",
-  "format": "pandas_pickle_gzip",
-  "base_workflow_commit": "2cf17c93020f398d7821ca4bc2123c40d57f7def",
-  "created_at_utc": "2026-07-23T09:34:00Z",
+  "format": "gzip_csv",
+  "base_workflow_commit": "01b04f297e004c975f5338d00656afdc99355259",
+  "created_at_utc": "2026-07-23T09:42:00Z",
   "paper_or_live_authority": false
 }
