@@ -44,14 +44,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e "runner[dev]"
 
-      - name: Verify runner tests
-        run: python -m pytest runner/tests -q
+      - name: Verify frozen runner tests
+        shell: bash
+        run: |
+          mkdir -p rf-results
+          set -o pipefail
+          cd runner
+          python -m pytest tests -q 2>&1 | tee ../rf-results/pytest.log
 
       - name: Download and hash BTC/ETH perpetual inputs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p data results
+          mkdir -p rf-data rf-results
           python - <<'PY'
           from __future__ import annotations
           import hashlib
@@ -63,24 +68,24 @@ jobs:
               {
                   "name": "BTCUSDT",
                   "repo": "Torch-Trade/btcusdt_perp_1m_05_2021_to_02_2026",
-                  "dest": "data/BTCUSDT.parquet",
+                  "dest": "rf-data/BTCUSDT.parquet",
                   "expected_original_sha256": "40e0cb41e8623a49d1e7561197f0bef4c1e1cc8fb471ae8ac9dde7a116cdc4ae",
               },
               {
                   "name": "ETHUSDT",
                   "repo": "Torch-Trade/ethusdt_perp_1m_05_2021_to_02_2026",
-                  "dest": "data/ETHUSDT.parquet",
+                  "dest": "rf-data/ETHUSDT.parquet",
                   "expected_original_sha256": "369c49083c31293e6f96ef4ef8e04a0fd5cb853753464d6ec123043c17d87537",
               },
               {
                   "name": "BTCUSDT_funding",
                   "repo": "Torch-Trade/btcusdt_perp_funding_8h_05_2021_to_02_2026",
-                  "dest": "data/BTCUSDT_funding.parquet",
+                  "dest": "rf-data/BTCUSDT_funding.parquet",
               },
               {
                   "name": "ETHUSDT_funding",
                   "repo": "Torch-Trade/ethusdt_perp_funding_8h_05_2021_to_02_2026",
-                  "dest": "data/ETHUSDT_funding.parquet",
+                  "dest": "rf-data/ETHUSDT_funding.parquet",
               },
           ]
 
@@ -147,7 +152,7 @@ jobs:
               else:
                   raise RuntimeError(f"all downloads failed for {item['name']}: {errors}")
 
-          Path("data/download_manifest.json").write_text(
+          Path("rf-data/download_manifest.json").write_text(
               json.dumps({"inputs": manifest}, indent=2), encoding="utf-8"
           )
           PY
@@ -158,12 +163,12 @@ jobs:
           set -o pipefail
           python runner/scripts/run_realdata_relative_flow_research.py \
             --config runner/configs/relative_flow_raid_reversal_v0_8.yaml \
-            --btc data/BTCUSDT.parquet \
-            --eth data/ETHUSDT.parquet \
-            --btc-funding data/BTCUSDT_funding.parquet \
-            --eth-funding data/ETHUSDT_funding.parquet \
-            --output results \
-            2>&1 | tee results/workflow.log
+            --btc rf-data/BTCUSDT.parquet \
+            --eth rf-data/ETHUSDT.parquet \
+            --btc-funding rf-data/BTCUSDT_funding.parquet \
+            --eth-funding rf-data/ETHUSDT_funding.parquet \
+            --output rf-results \
+            2>&1 | tee rf-results/workflow.log
 
       - name: Upload research evidence
         if: always()
@@ -171,7 +176,7 @@ jobs:
         with:
           name: relative-flow-realdata-results-v2-${{ github.run_id }}
           path: |
-            results/**
-            data/download_manifest.json
+            rf-results/**
+            rf-data/download_manifest.json
           if-no-files-found: warn
           retention-days: 30
