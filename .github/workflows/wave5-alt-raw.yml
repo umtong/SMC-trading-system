@@ -1,0 +1,140 @@
+name: Wave5 Verified Alt Raw
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wave5-alt-raw.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verified-raw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify official monthly archives
+        shell: bash
+        run: |
+          mkdir -p wave5_alt_raw
+          set +e
+          python - <<'PY' > wave5_alt_raw/build.log 2>&1
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import time
+          import urllib.request
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+
+          symbols = ("SOLUSDT", "XRPUSDT")
+          base = "https://data.binance.vision/data/futures/um/monthly/klines"
+          root = Path("wave5_alt_raw")
+
+          def month_range():
+              year, month = 2021, 9
+              while (year, month) <= (2026, 6):
+                  yield f"{year:04d}-{month:02d}"
+                  month += 1
+                  if month == 13:
+                      year += 1
+                      month = 1
+
+          def fetch(url: str) -> bytes:
+              last = None
+              for attempt in range(5):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": "wave5-research/2.0"})
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(2 ** attempt)
+              raise RuntimeError(f"download failed: {url}: {last}")
+
+          def one(symbol: str, month: str):
+              filename = f"{symbol}-5m-{month}.zip"
+              url = f"{base}/{symbol}/5m/{filename}"
+              checksum_payload = fetch(url + ".CHECKSUM")
+              official = checksum_payload.decode("utf-8").split()[0].lower()
+              payload = fetch(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != official:
+                  raise RuntimeError(f"checksum mismatch: {filename}: {actual} != {official}")
+              directory = root / symbol
+              directory.mkdir(parents=True, exist_ok=True)
+              archive_path = directory / filename
+              archive_path.write_bytes(payload)
+              (directory / (filename + ".CHECKSUM")).write_bytes(checksum_payload)
+              with zipfile.ZipFile(archive_path) as archive:
+                  members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected members: {filename}: {members}")
+                  archive.getinfo(members[0])
+              return {
+                  "symbol": symbol,
+                  "month": month,
+                  "filename": filename,
+                  "official_sha256": official,
+                  "actual_sha256": actual,
+                  "bytes": len(payload),
+                  "member": members[0],
+              }
+
+          tasks = [(symbol, month) for symbol in symbols for month in month_range()]
+          records = []
+          with ThreadPoolExecutor(max_workers=12) as executor:
+              futures = {executor.submit(one, symbol, month): (symbol, month) for symbol, month in tasks}
+              for future in as_completed(futures):
+                  record = future.result()
+                  records.append(record)
+                  print("verified", record["symbol"], record["month"], record["bytes"], flush=True)
+          records.sort(key=lambda item: (item["symbol"], item["month"]))
+          manifest = {
+              "source": "Binance Vision USD-M monthly klines",
+              "interval": "5m",
+              "start_month": "2021-09",
+              "end_month": "2026-06",
+              "archives": records,
+              "count": len(records),
+          }
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          if len(records) != 116:
+              raise RuntimeError(f"expected 116 archives, got {len(records)}")
+          PY
+          status=$?
+          cat wave5_alt_raw/build.log
+          echo "$status" > wave5_alt_raw/status.txt
+          exit "$status"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave5-alt-raw-diagnostics-${{ github.sha }}
+          path: |
+            wave5_alt_raw/build.log
+            wave5_alt_raw/status.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload verified raw archives
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave5-alt-raw-${{ github.sha }}
+          path: |
+            wave5_alt_raw/SOLUSDT
+            wave5_alt_raw/XRPUSDT
+            wave5_alt_raw/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
