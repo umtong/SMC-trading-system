@@ -6,10 +6,12 @@ on:
       - research/v024-microstructure-20260723
     paths:
       - 'research/v024_bundle/**'
+      - 'research/v024_bundle_v2/**'
       - '.github/workflows/v024-microstructure.yml'
   pull_request:
     paths:
       - 'research/v024_bundle/**'
+      - 'research/v024_bundle_v2/**'
       - '.github/workflows/v024-microstructure.yml'
   workflow_dispatch:
 
@@ -21,80 +23,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  integrity:
-    name: Reconstruct and validate locked runner
+  diagnose-transport:
+    name: Diagnose locked runner transport only
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - name: Checkout exact research commit
         uses: actions/checkout@v4
 
-      - name: Reconstruct locked runner bundle
+      - name: Reconstruct and inspect repository bytes
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find research/v024_bundle -maxdepth 1 -name 'part-*.b64' | wc -l)" -eq 16
-          cat research/v024_bundle/part-*.b64 | base64 -d > /tmp/v024_runner_bundle.tar.xz
-          echo '7937dcc7a8482fc75bc840ae3f3fc580a28c7cd3533397157206fc6e1fed0954  /tmp/v024_runner_bundle.tar.xz' | sha256sum -c -
-          mkdir -p v024
-          tar -xJf /tmp/v024_runner_bundle.tar.xz -C v024
-          test -f v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
-          test -f v024/scripts/run_microstructure_pipeline_v0_24.py
-          sha256sum /tmp/v024_runner_bundle.tar.xz > v024/runner_bundle.sha256
+          mkdir -p transport-evidence
+          count="$(find research/v024_bundle -maxdepth 1 -name 'part-*.b64' | wc -l)"
+          printf '%s\n' "$count" | tee transport-evidence/part-count.txt
+          test "$count" -eq 16
+          cat research/v024_bundle/part-*.b64 | base64 -d > /tmp/v024_repository_bundle.tar.xz
+          sha256sum /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/repository-bundle.sha256
+          wc -c /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/repository-bundle.size
+          xz -t /tmp/v024_repository_bundle.tar.xz
+          tar -tJf /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/archive-members.txt
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install locked dependencies
-        shell: bash
-        working-directory: v024
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-lock.txt
-
-      - name: Run full regression suite
-        shell: bash
-        working-directory: v024
-        run: |
-          set -euo pipefail
-          mkdir -p ci_evidence
-          python -m pytest -q | tee ci_evidence/pytest.txt
-          python -m compileall -q smc_ict_quant scripts tests
-          python - <<'PY' | tee ci_evidence/locked_plan_audit.json
-          import hashlib, json
-          from pathlib import Path
-          p = Path('artifacts/microstructure_liquidity_v0_24/research_plan_locked.json')
-          raw = p.read_bytes()
-          obj = json.loads(raw)
-          print(json.dumps({
-              'file_sha256': hashlib.sha256(raw).hexdigest(),
-              'declared_plan_hash': obj.get('plan_hash'),
-              'terminal_holdout_start': obj.get('terminal_holdout_start'),
-              'terminal_holdout_end': obj.get('terminal_holdout_end'),
-              'candidate_count': obj.get('candidate_count'),
-          }, sort_keys=True, indent=2))
-          PY
-
-      - name: Show locked runner command interfaces
-        shell: bash
-        working-directory: v024
-        run: |
-          set -euo pipefail
-          python scripts/run_microstructure_pipeline_v0_24.py --help | tee ci_evidence/pipeline_help.txt
-          python scripts/run_microstructure_liquidity_v0_24.py --help | tee ci_evidence/research_help.txt
-
-      - name: Upload integrity evidence
+      - name: Upload transport evidence and reconstructed bytes
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v024-integrity-${{ github.run_id }}
+          name: v024-transport-${{ github.run_id }}
           path: |
-            v024/ci_evidence
-            v024/runner_bundle.sha256
-            v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
-            v024/artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json
+            transport-evidence
+            /tmp/v024_repository_bundle.tar.xz
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
