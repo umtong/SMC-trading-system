@@ -1,0 +1,94 @@
+name: V13 Causal Feature Export
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-features:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@v4
+
+      - name: Restore, patch, and verify pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_url="https://raw.githubusercontent.com/umtong/SMC-trading-system/f12718079bd05965d9e12e8829e6e7b66a9d9dbd/research/v12_liquidity_shock_bundle.tgz.b64"
+          curl --fail --location --retry 5 --retry-all-errors "$source_url" -o /tmp/v12.tgz.b64
+          base64 --decode /tmp/v12.tgz.b64 > /tmp/v12.tgz
+          echo '746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89  /tmp/v12.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/v12.tgz
+          patch --batch --forward -p1 < research/v12_gap_segments.patch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests pyarrow
+
+      - name: Restore checksum-verified Binance cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance
+          key: v12-binance-um-2023-btc-eth-v2
+
+      - name: Export prior-only causal frames
+        working-directory: research/v12_liquidity_shock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import pandas as pd
+          from core import Family, StrategyConfig, add_causal_features
+          from run_discovery import download_archives, month_keys, build_symbol_frame
+
+          start = pd.Timestamp('2023-01-01', tz='UTC')
+          end = pd.Timestamp('2024-01-01', tz='UTC')
+          symbols = ['BTCUSDT', 'ETHUSDT']
+          cache = Path('../../.cache/v12_binance')
+          output = Path('../../artifacts/v13-feature-frames-2023')
+          output.mkdir(parents=True, exist_ok=True)
+          months = month_keys(start, end)
+          manifest = download_archives(cache, symbols=symbols, months=months, workers=8)
+          manifest.to_csv(output / 'input_manifest.csv', index=False)
+          cfg = StrategyConfig(family=Family.CONTINUATION, abs_return_z=3.0, dislocation_z=1.0)
+          summary = []
+          for symbol in symbols:
+              raw = build_symbol_frame(cache, symbol, months, start, end)
+              featured = add_causal_features(raw, cfg)
+              path = output / f'{symbol}_causal_features.parquet'
+              featured.to_parquet(path, index=False, compression='zstd')
+              summary.append({
+                  'symbol': symbol,
+                  'rows': len(featured),
+                  'columns': list(featured.columns),
+                  'segments': int(featured.segment_id.nunique()),
+                  'first_open_time': str(featured.open_time.min()),
+                  'last_open_time': str(featured.open_time.max()),
+                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  'bytes': path.stat().st_size,
+              })
+          (output / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          PY
+
+      - name: Upload causal frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: v13-causal-feature-frames-2023-${{ github.run_id }}
+          path: artifacts/v13-feature-frames-2023
+          if-no-files-found: error
+          retention-days: 30
