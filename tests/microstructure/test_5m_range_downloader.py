@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from scripts.download_binance_um_5m_range import (
+    KLINE_COLUMNS,
     _archive_url,
     _months,
     _read_archive,
@@ -56,7 +57,7 @@ def archive_bytes(*, header: bool = False) -> bytes:
             0,
         ],
     ]
-    frame = pd.DataFrame(rows)
+    frame = pd.DataFrame(rows, columns=KLINE_COLUMNS)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
