@@ -1,0 +1,182 @@
+name: Wave39 exact quarter-hour aggTrades 2022 v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-quarterhour-exact-aggtrades-2022-v2.yml"
+      - "research/wave39v2/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract-month:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month:
+          - "2022-01"
+          - "2022-02"
+          - "2022-03"
+          - "2022-04"
+          - "2022-05"
+          - "2022-06"
+          - "2022-07"
+          - "2022-08"
+          - "2022-09"
+          - "2022-10"
+          - "2022-11"
+          - "2022-12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile GNU/POSIX streaming extractor
+        run: |
+          set -euo pipefail
+          mkdir -p build output
+          g++ -O3 -std=gnu++20 -D_GNU_SOURCE -Wall -Wextra \
+            research/wave39/extract_boundary_aggtrades.cpp \
+            -o build/extract_boundary_aggtrades
+
+      - name: Verify official archive and extract causal boundary flow
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${SYMBOL}-aggTrades-${MONTH}.zip"
+          root="https://data.binance.vision/data/futures/um/monthly/aggTrades/${SYMBOL}"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}.CHECKSUM" "${root}/${file}.CHECKSUM"
+          expected="$(awk 'NR==1{print tolower($1)}' "${file}.CHECKSUM")"
+          test "${#expected}" -eq 64
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}" "${root}/${file}"
+          printf '%s  %s\n' "${expected}" "${file}" | sha256sum -c -
+          csv="output/${SYMBOL}_${MONTH}_quarterhour_exact.csv"
+          build/extract_boundary_aggtrades "${SYMBOL}" "${MONTH}" "${file}" "${csv}" \
+            2>&1 | tee "output/${SYMBOL}_${MONTH}_extract.log"
+          gzip -9 "${csv}"
+
+      - name: Fail closed on schema, clock or coverage defects
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          from calendar import monthrange
+          import csv, gzip, hashlib, json, os
+          from pathlib import Path
+
+          symbol=os.environ['SYMBOL']; month=os.environ['MONTH']
+          year,month_number=map(int,month.split('-'))
+          panel=Path(f'output/{symbol}_{month}_quarterhour_exact.csv.gz')
+          source=Path(f'{symbol}-aggTrades-{month}.zip')
+          expected=Path(str(source)+'.CHECKSUM').read_text(encoding='utf-8-sig').split()[0].lower()
+          def sha(path):
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for c in iter(lambda:f.read(4*1024*1024),b''): h.update(c)
+              return h.hexdigest()
+          if sha(source)!=expected: raise RuntimeError('source checksum changed')
+          rows=0; nonzero10=0; nonzero60=0; previous=None; columns=None
+          with gzip.open(panel,'rt',newline='') as f:
+              reader=csv.DictReader(f); columns=list(reader.fieldnames or [])
+              required={'boundary_time_ms','post10s_trades','post10s_imbalance','post10s_total_quote','post60s_trades'}
+              if not required.issubset(columns): raise RuntimeError(f'missing {sorted(required-set(columns))}')
+              for row in reader:
+                  if row['symbol']!=symbol: raise RuntimeError('symbol mismatch')
+                  ts=int(row['boundary_time_ms'])
+                  if previous is not None and ts-previous!=900000: raise RuntimeError('clock gap')
+                  previous=ts; rows+=1
+                  nonzero10 += int(int(row['post10s_trades'])>0)
+                  nonzero60 += int(int(row['post60s_trades'])>0)
+          expected_rows=monthrange(year,month_number)[1]*96
+          if rows!=expected_rows: raise RuntimeError(f'rows {rows}!={expected_rows}')
+          if nonzero10 < int(rows*.95): raise RuntimeError(f'10s coverage {nonzero10}/{rows}')
+          if nonzero60 != rows: raise RuntimeError(f'60s coverage {nonzero60}/{rows}')
+          manifest={
+              'schema':'wave39-quarterhour-exact-month-v1',
+              'symbol':symbol,'month':month,'repository_commit':os.environ['COMMIT_SHA'],
+              'source_sha256':expected,'source_bytes':source.stat().st_size,
+              'rows':rows,'nonzero_post10s_rows':nonzero10,'nonzero_post60s_rows':nonzero60,
+              'columns':columns,'output_path':panel.name,'output_bytes':panel.stat().st_size,
+              'output_sha256':sha(panel),'future_outcomes_included':False,'strategy_results_included':False,
+          }
+          Path(f'output/{symbol}_{month}_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(manifest,indent=2,sort_keys=True))
+          PY
+          rm -f "${SYMBOL}-aggTrades-${MONTH}.zip" "${SYMBOL}-aggTrades-${MONTH}.zip.CHECKSUM"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-v2-2022-${{ matrix.symbol }}-${{ matrix.month }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  combine-persist:
+    needs: extract-month
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-v2-2022-*
+          path: monthly
+
+      - name: Combine and independently re-audit every boundary
+        run: |
+          set -euo pipefail
+          rm -rf combined
+          python research/wave39v2/combine_panels.py \
+            --input-dir monthly --output-dir combined --year 2022
+
+      - name: Persist feature-only panel with conflict-safe push
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="research/wave39/generated/2022"
+          mkdir -p "${destination}"
+          cp combined/*.csv.gz "${destination}/"
+          cp combined/manifest.json "${destination}/manifest.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Persist Wave39 exact 2022 boundary-flow panel v2"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/wave39-quarterhour-exact-aggtrades-20260723; then exit 0; fi
+            git fetch origin research/wave39-quarterhour-exact-aggtrades-20260723
+            git rebase origin/research/wave39-quarterhour-exact-aggtrades-20260723
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-exact-boundary-2022-v2-${{ github.run_id }}
+          path: combined/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
