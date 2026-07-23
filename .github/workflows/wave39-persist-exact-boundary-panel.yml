@@ -1,0 +1,128 @@
+name: Wave39 persist exact boundary panel
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-persist-exact-boundary-panel.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  persist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Checkout PR head branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Wait for the audited extraction workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow="wave39-quarterhour-exact-aggtrades-2022.yml"
+          mkdir -p downloaded
+          for attempt in $(seq 1 210); do
+            payload="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/workflows/${workflow}/runs?branch=${HEAD_BRANCH}&event=pull_request&per_page=10")"
+            success_id="$(python -c 'import json,sys; d=json.load(sys.stdin); print(next((r["id"] for r in d.get("workflow_runs",[]) if r.get("status")=="completed" and r.get("conclusion")=="success"), ""))' <<<"${payload}")"
+            if [[ -n "${success_id}" ]]; then
+              echo "SOURCE_RUN_ID=${success_id}" | tee source-run.env
+              break
+            fi
+            latest_status="$(python -c 'import json,sys; d=json.load(sys.stdin); r=(d.get("workflow_runs") or [{}])[0]; print(str(r.get("status"))+":"+str(r.get("conclusion"))+":"+str(r.get("id")))' <<<"${payload}")"
+            echo "attempt=${attempt} latest=${latest_status}"
+            sleep 60
+          done
+          test -s source-run.env
+          source source-run.env
+          gh run download "${SOURCE_RUN_ID}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-quarterhour-exact-aggtrades-2022-${SOURCE_RUN_ID}" \
+            --dir downloaded
+
+      - name: Verify and stage immutable panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import gzip
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("downloaded")
+          manifest_path = root / "manifest.json"
+          if not manifest_path.exists():
+              matches = list(root.rglob("manifest.json"))
+              if len(matches) != 1:
+                  raise RuntimeError(f"expected one manifest, found {matches}")
+              manifest_path = matches[0]
+              root = manifest_path.parent
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("schema") != "wave39-quarterhour-exact-aggtrades-year-v1":
+              raise RuntimeError("unexpected panel schema")
+          if manifest.get("year") != 2022:
+              raise RuntimeError("unexpected year")
+          if manifest.get("future_outcomes_included") is not False:
+              raise RuntimeError("future outcome field contract violated")
+          if manifest.get("strategy_results_included") is not False:
+              raise RuntimeError("strategy result isolation contract violated")
+
+          destination = Path("research/wave39/generated/2022")
+          destination.mkdir(parents=True, exist_ok=True)
+          for symbol, record in sorted(manifest["symbols"].items()):
+              source = root / record["path"]
+              if not source.exists():
+                  raise RuntimeError(f"missing source panel {source}")
+              actual = hashlib.sha256(source.read_bytes()).hexdigest()
+              if actual != record["sha256"]:
+                  raise RuntimeError(f"hash mismatch for {symbol}")
+              target = destination / source.name
+              target.write_bytes(source.read_bytes())
+              with gzip.open(target, "rt") as handle:
+                  header = handle.readline().strip().split(",")
+                  if "post10s_imbalance" not in header or "post10s_total_quote" not in header:
+                      raise RuntimeError(f"required exact-flow columns missing for {symbol}")
+          (destination / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          PY
+
+      - name: Commit exact feature-only panel to the research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/wave39/generated/2022
+          if git diff --cached --quiet; then
+            echo "panel already persisted"
+            exit 0
+          fi
+          source source-run.env
+          git commit -m "Persist Wave39 exact 2022 boundary-flow panel"
+          git push origin "HEAD:${HEAD_BRANCH}"
+          printf 'source_run_id=%s\ncommit=%s\n' "${SOURCE_RUN_ID}" "$(git rev-parse HEAD)" > persistence-summary.txt
+
+      - name: Upload persistence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave39-boundary-panel-persistence-${{ github.run_id }}
+          path: |
+            source-run.env
+            persistence-summary.txt
+            research/wave39/generated/2022/manifest.json
+          if-no-files-found: warn
+          retention-days: 30
