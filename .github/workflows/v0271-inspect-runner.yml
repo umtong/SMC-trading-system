@@ -6,6 +6,9 @@ on:
       - research/v0271-inspect-20260724-gpt
     paths:
       - '.github/workflows/v0271-inspect-runner.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/v0271-inspect-runner.yml'
   workflow_dispatch:
 
 permissions:
