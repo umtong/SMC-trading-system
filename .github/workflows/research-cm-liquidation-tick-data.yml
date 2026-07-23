@@ -33,7 +33,9 @@ jobs:
       - name: Reconstruct and verify frozen event windows
         shell: bash
         run: |
-          cat research_tools/cm_liquidation_tick/windows.part* > /tmp/merged_windows_2023.csv.gz.b64
+          cat research_tools/cm_liquidation_tick/windows.part* \
+            | tr -d '[:space:]' \
+            > /tmp/merged_windows_2023.csv.gz.b64
           printf '\n' >> /tmp/merged_windows_2023.csv.gz.b64
           echo "e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e  /tmp/merged_windows_2023.csv.gz.b64" | shasum -a 256 -c -
       - name: Extract checksum-verified event windows
