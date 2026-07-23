@@ -1,0 +1,44 @@
+name: Research Agent Bootstrap
+
+on:
+  push:
+    branches:
+      - agent/research-snapshot-and-oos
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package reproducible repository snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > SNAPSHOT_COMMIT.txt
+          tar \
+            --exclude=.git \
+            --exclude='data/*' \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            -czf smc-trading-system-source.tar.gz \
+            README.md MAIN_AGENT_STATE.md pyproject.toml \
+            SNAPSHOT_COMMIT.txt src tests scripts artifacts results registrations .github
+          sha256sum smc-trading-system-source.tar.gz > smc-trading-system-source.tar.gz.sha256
+
+      - name: Upload repository snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: smc-trading-system-source-${{ github.sha }}
+          path: |
+            smc-trading-system-source.tar.gz
+            smc-trading-system-source.tar.gz.sha256
+            SNAPSHOT_COMMIT.txt
+          if-no-files-found: error
+          retention-days: 7
