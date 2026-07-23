@@ -45,3 +45,49 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  v24-frozen-public-2025:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v24-oos-data-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pip pandas requests
+
+      - name: Restore official public-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v24pub
+          key: v24pub-binance-spot-futures-minute-2025-2026jan-btc-eth-v1
+
+      - name: Export corrected checksum-verified 2025 public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/v24pub-2025
+          python research/v24_public_2025_export.py \
+            --cache .cache/v24pub \
+            --output artifacts/v24pub-2025 \
+            --workers 8 \
+            2>&1 | tee artifacts-v24pub.log
+
+      - name: Upload frozen V24 public inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v24-frozen-public-2025-${{ github.run_id }}
+          path: |
+            artifacts/v24pub-2025
+            artifacts-v24pub.log
+            research/v24_public_2025_export.py
+          if-no-files-found: warn
+          retention-days: 30
