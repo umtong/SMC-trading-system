@@ -1,0 +1,46 @@
+name: Research official Binance USD-M metrics bundle
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/research-binance-metrics-data.yml"
+      - "research_tools/binance_metrics_bundle.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-metrics-data-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-data-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build checksum-verified metrics research bundle
+        run: |
+          python research_tools/binance_metrics_bundle.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start-date 2023-01-01 \
+            --end-date 2026-06-30 \
+            --workers 16 \
+            --output-dir research_artifact/binance_um_metrics_5m
+      - name: Inspect outputs
+        run: |
+          python -m json.tool research_artifact/binance_um_metrics_5m/manifest.json | tail -n 220
+          sha256sum research_artifact/binance_um_metrics_5m/*
+          du -h research_artifact/binance_um_metrics_5m/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-um-metrics-5m-2023-01_2026-06
+          path: research_artifact/binance_um_metrics_5m
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
