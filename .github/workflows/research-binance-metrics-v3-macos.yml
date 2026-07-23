@@ -1,0 +1,51 @@
+name: Research Binance USD-M metrics V3 macOS
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/research-binance-metrics-v3-macos.yml'
+      - 'research_tools/binance_metrics_bundle_v3.py'
+  push:
+    branches: [agent/binance-metrics-only-20260723]
+    paths:
+      - '.github/workflows/research-binance-metrics-v3-macos.yml'
+      - 'research_tools/binance_metrics_bundle_v3.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metrics-v3-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: macos-14
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build checksum-verified causal metrics panel
+        run: |
+          python research_tools/binance_metrics_bundle_v3.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start-date 2023-01-01 \
+            --end-date 2025-12-31 \
+            --workers 16 \
+            --output-dir research_artifact/binance_metrics_v3
+      - name: Inspect
+        run: |
+          python -m json.tool research_artifact/binance_metrics_v3/manifest.json | tail -n 240
+          shasum -a 256 research_artifact/binance_metrics_v3/*
+          du -h research_artifact/binance_metrics_v3/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-metrics-v3-2023_2025-${{ github.run_id }}
+          path: research_artifact/binance_metrics_v3
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
