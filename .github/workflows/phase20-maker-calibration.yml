@@ -47,7 +47,9 @@ jobs:
           from pathlib import Path
 
           symbol = os.environ['SYMBOL']
-          days = ['2023-05-16', '2024-03-05', '2025-02-03']
+          # USD-M bookTicker public archives are available only over a limited historical span.
+          # Use separated days within that span; this workflow records missing dates as a hard failure.
+          days = ['2023-05-16', '2023-06-10', '2023-08-18', '2023-11-09']
           root = Path('artifacts/phase20-maker-calibration') / symbol
           root.mkdir(parents=True, exist_ok=True)
           manifest = {
