@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   alpha-search:
@@ -65,3 +65,18 @@ jobs:
             artifacts-v9.log
           if-no-files-found: error
           retention-days: 14
+
+      - name: Persist successful research outputs on the research branch
+        if: success() && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/v9-alpha-search artifacts-v9.log
+          if git diff --cached --quiet; then
+            echo "No result changes to commit"
+            exit 0
+          fi
+          git commit -m "Record V9 chronological alpha search results"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
