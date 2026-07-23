@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   tests:
@@ -45,3 +47,163 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  causal-orderflow-research:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/binance-flow-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/binance-flow-20260723
+          fetch-depth: 0
+
+      - name: Mark research run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## Causal Binance order-flow research\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- head_sha: \`${GITHUB_SHA}\`\n- sealed: \`2025, 2026\`\n\n_Research-only. No paper/live/testnet orders._" --edit-last --create-if-none
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore checksum-verified public-data cache
+        uses: actions/cache@v4
+        with:
+          path: research/orderflow_20260723/cache
+          key: binance-usdm-btceth-5m-funding-2021-2024-v1
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "pytest==8.3.4"
+
+      - name: Materialize and verify readable engine
+        run: |
+          python - <<'PY'
+          import base64, hashlib, zlib
+          from pathlib import Path
+          root = Path("research/orderflow_20260723")
+          expected = "80fe8ddfdc739c03e13ddffea130a796882186d33e11d9684bddb7febc3bdfda"
+          raw = zlib.decompress(base64.b64decode((root / "run_research.py.zlib.b64").read_text().strip()))
+          actual = hashlib.sha256(raw).hexdigest()
+          if actual != expected:
+              raise SystemExit(f"engine digest mismatch: expected {expected}, got {actual}")
+          (root / "run_research.py").write_bytes(raw)
+          print({"engine_sha256": actual, "bytes": len(raw)})
+          PY
+          python -m py_compile research/orderflow_20260723/run_research.py
+
+      - name: Run causal execution tests before data access
+        run: python -m pytest -q research/orderflow_20260723/tests/test_research.py
+
+      - name: Download verified archives and run registered research
+        id: alpha
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p research/orderflow_20260723/results
+          python research/orderflow_20260723/run_research.py 2>&1 | tee research/orderflow_20260723/results/console.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Audit sealed boundaries and result manifests
+        if: steps.alpha.outputs.exit_code == '0'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/orderflow_20260723")
+          registration = json.loads((root / "registration.json").read_text())
+          freeze = json.loads((root / "results/selection_freeze.json").read_text())
+          manifest = json.loads((root / "results/run_manifest.json").read_text())
+          assert registration["download_end_month_inclusive"] == "2024-12"
+          assert freeze["final_2025_status"] == "SEALED_NOT_DOWNLOADED_OR_READ"
+          assert freeze["final_2026_status"] == "SEALED_NOT_DOWNLOADED_OR_READ"
+          assert manifest["registration_digest"] == freeze["registration_digest"]
+          print({"selection_digest": freeze["content_digest"], "frozen_ensembles": len(freeze["frozen_ensembles"])})
+          PY
+
+      - name: Build PR summary
+        if: always()
+        env:
+          RESEARCH_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          root = Path("research/orderflow_20260723")
+          out = root / "results"
+          lines = ["## Causal Binance order-flow research", "", f"- run_id: `{os.environ.get('RUN_ID')}`", f"- process exit code: `{os.environ.get('RESEARCH_EXIT_CODE', 'unknown')}`"]
+          freeze_path = out / "selection_freeze.json"
+          manifest_path = out / "run_manifest.json"
+          if freeze_path.exists() and manifest_path.exists():
+              freeze = json.loads(freeze_path.read_text())
+              manifest = json.loads(manifest_path.read_text())
+              lines += [
+                  "- status: `DEVELOPMENT_COMPLETE`",
+                  f"- base candidates: `{manifest.get('base_candidate_count')}`",
+                  f"- refined candidates: `{manifest.get('refined_candidate_count')}`",
+                  f"- finalists: `{manifest.get('finalist_count')}`",
+                  f"- frozen ensembles: `{manifest.get('frozen_ensemble_count')}`",
+                  f"- selection digest: `{freeze.get('content_digest')}`",
+                  "- final 2025: `SEALED_NOT_READ`",
+                  "- final 2026: `SEALED_NOT_READ`",
+                  "",
+              ]
+              table_path = out / "ensemble_selection.csv"
+              if table_path.exists():
+                  table = pd.read_csv(table_path)
+                  if len(table):
+                      cols = [c for c in ["sel_ensemble", "dev_trades", "dev_geometric_daily_return", "sel_trades", "sel_geometric_daily_return", "sel_total_return", "sel_max_drawdown", "stress_total_return"] if c in table.columns]
+                      lines += ["### Top ensemble diagnostics", "", table.sort_values("sel_geometric_daily_return", ascending=False)[cols].head(10).to_markdown(index=False), ""]
+          else:
+              lines += ["- status: `RUN_FAILED_BEFORE_MANIFEST`", ""]
+              log = out / "console.log"
+              if log.exists():
+                  tail = "\n".join(log.read_text(errors="replace").splitlines()[-120:])
+                  lines += ["### Failure log tail", "", "```text", tail, "```", ""]
+          lines += ["_Research-only. No paper/live/testnet orders._"]
+          (out / "pr-comment.md").write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+      - name: Upload compact evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causal-binance-orderflow-${{ github.run_id }}
+          path: |
+            research/orderflow_20260723/registration.json
+            research/orderflow_20260723/run_research.py
+            research/orderflow_20260723/tests
+            research/orderflow_20260723/results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish research summary to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: gh pr comment "$PR_NUMBER" --body-file research/orderflow_20260723/results/pr-comment.md --edit-last --create-if-none
+
+      - name: Preserve research failure status
+        if: always() && steps.alpha.outputs.exit_code != '0'
+        env:
+          RESEARCH_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+        shell: bash
+        run: |
+          echo "Order-flow research failed with exit code ${RESEARCH_EXIT_CODE}"
+          exit 1
