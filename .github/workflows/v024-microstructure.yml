@@ -7,6 +7,10 @@ on:
     paths:
       - 'research/v024_bundle/**'
       - '.github/workflows/v024-microstructure.yml'
+  pull_request:
+    paths:
+      - 'research/v024_bundle/**'
+      - '.github/workflows/v024-microstructure.yml'
   workflow_dispatch:
 
 permissions:
