@@ -1,0 +1,69 @@
+s": "prior-only 1-minute rolling distribution",
+     "prior_day_volatility_percentile_min": 0.6,
+@@ -889,7 +909,7 @@
+     "terminal_holdout_start": "2025-10-01T00:00:00+00:00",
+     "warmup_start": "2024-11-01T00:00:00+00:00"
+   },
+-  "plan_payload_sha256": "bf983ac90440e3a7a73333ae7ba4514531d215986520df684b9334710f1c2c75",
++  "plan_payload_sha256": "322aa4298c403a692e4114a3165d71df5c2499720338c16a1e96b3c8b24e525c",
+   "production_enabled": false,
+   "schema_version": 1,
+   "selection": {
+@@ -907,15 +927,20 @@
+     "uses_development_only": true
+   },
+   "source_files": {
+-    "preregister_v025.py": "380317a81fcb23c912e508f1644aa83788a1c805e8af20de5885214f9b6f1f1b",
+-    "test_v025_core.py": "fe9221cf69627ff6ee635ddd41a2ede94cf2aebaf4fbad67a6919ea1d029799a",
+-    "test_v025_pipeline.py": "32be36d8e4d2c5587dac7eb4700825ac0ee87d0ed226f14993a814f1a82b3b37",
+-    "v025_core.py": "f23def6b0ea4cb9d795f77a1a2cb7752f683dc7d5890e9aaee0577f0291c33d2",
+-    "v025_pipeline.py": "506f2b287ea5103710515fdca751f982167732aeae91125c2a49f16040534180"
++    "requirements-lock.txt": "9548b06b022e96bb212a78d3e74f78bc6d9d6e12e7538e1b09ea451b916292ac",
++    "research/v025/preregister_v025.py": "c8bbf40cd019af3487f52033d2d0c9e5e0685cfb44e5699676002f1413b6dacd",
++    "research/v025/test_v025_core.py": "5aac1a1a0730ac9afe86526b0f182a7a15bbfc4560e37e8e7ffa27f66fba6702",
++    "research/v025/test_v025_pipeline.py": "c729804dec93c93d187d965b8079b53368ed3542ad0b2aabae4f5e3589dc8a30",
++    "research/v025/v025_core.py": "2e0f593c6cf0102bb4d6705f070284c35bbdd32f3a8a614d3fe1b295a6a4605f",
++    "research/v025/v025_pipeline.py": "17c68a35698c8cab5fdc42d5a3afdecd7a17ace42824f1c6c8cbf14b1a8e5d13",
++    "scripts/download_binance_um_parallel.py": "d7139d534090e974c78c8cb526900d8cb8ba280c791ffa91675b644e7ed79608",
++    "smc_ict_quant/__init__.py": "93d828f214cace66bce7fe0f9a6bbd6dfa94c0aefc1bcb6e23a366e5d8e09adf",
++    "smc_ict_quant/binance_public_data.py": "3a4e65901ab64ecbc47d65431e31fef7129a74a270a5f4d874f77234248b014a"
+   },
+-  "source_tree_manifest_sha256": "4a18a28a53f2cff9a73e1bbfb4a7d8f33f9102bfd4f0c387e91384d734485cc2",
++  "source_tree_manifest_sha256": "6d18d0d3e6b88711a65fcf8d61d58a7be65f28fd50f6188220d578dc101a4339",
+   "status": "locked_before_candidate_pnl",
+-  "study_id": "smc_event_time_liquidation_exhaustion_v0_25_a",
++  "study_id": "smc_event_time_liquidation_exhaustion_v0_25_a1",
++  "supersedes": "smc_event_time_liquidation_exhaustion_v0_25_a",
+   "symbols": [
+     "BTCUSDT",
+     "ETHUSDT"
+diff --git a/research/v025/test_v025_core.py b/research/v025/test_v025_core.py
+index f6fe3f1..a56c1ff 100644
+--- a/research/v025/test_v025_core.py
++++ b/research/v025/test_v025_core.py
+@@ -111,7 +111,8 @@ def test_short_exhaustion_signal_is_causal_and_enters_next_minute() -> None:
+     assert signal is not None
+     assert signal.side == -1
+     assert signal.signal_time == pd.Timestamp("2025-01-15T00:05:15Z")
+-    assert signal.entry_time == pd.Timestamp("2025-01-15T00:06:00Z")
++    assert signal.context_available_time == pd.Timestamp("2025-01-15T00:06:00Z")
++    assert signal.entry_time == pd.Timestamp("2025-01-15T00:07:00Z")
+     assert signal.stop_price > signal.raid_extreme
+     # Appending future data must not change an already confirmed signal.
+     future = pd.DataFrame(
+@@ -132,3 +133,29 @@ def test_robust_z_handles_zero_dispersion_without_lookahead() -> None:
+     assert robust_z(2.0, [1.0] * 12) == float("inf")
+     assert robust_z(0.0, [1.0] * 12) == float("-inf")
+     assert robust_z(1.0, [1.0] * 12) == 0.0
++
++
++def test_distinct_official_agg_trade_ids_are_not_collapsed() -> None:
++    events = pd.DataFrame(
++        [
++            (1, pd.Timestamp("2025-01-01T00:00:00Z"), 100.0, 1.0, False),
++            (2, pd.Timestamp("2025-01-01T00:00:00Z"), 100.0, 1.0, False),
++            (2, pd.Timestamp("2025-01-01T00:00:00Z"), 100.0, 1.0, False),
++        ],
++        columns=["agg_trade_id", "timestamp", "price", "quantity", "is_buyer_maker"],
++    )
++    bar
