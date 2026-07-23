@@ -1,0 +1,83 @@
+{
+  "candidate_id": "v17_one_slot_candidate_portfolio_v1",
+  "status": "FROZEN_BEFORE_2024_OOS",
+  "frozen_at_utc": "2026-07-23T12:55:00Z",
+  "purpose": "combine only independently passing alpha candidates under the user's single global pending-plus-open slot constraint",
+  "eligible_members_in_fixed_priority_order": [
+    "v15_moderate_impact_continuation_v1",
+    "v16_cross_asset_moderate_consensus_v1",
+    "v14_dual_horizon_public_state_ridge_v1"
+  ],
+  "eligibility_rule": "A member enters the portfolio only if it passes its own frozen 2024 OOS contract at 20bp and 30bp. Failed members are omitted without parameter changes or replacement.",
+  "competition_rule": {
+    "global_pending_plus_open_limit": 1,
+    "same_event_priority": "V15 before V16 before V14",
+    "different_event_priority": "earliest actual entry eligibility; any pending or open higher-priority or earlier trade occupies the sole slot until cancellation or exit",
+    "member_internal_choice": "retain each member's already-frozen symbol, horizon, score, stop, and exit logic",
+    "no_netting_or_parallel_positions": true
+  },
+  "economic_rationale": {
+    "V15": "highest-impact moderate informed-flow continuation",
+    "V16": "common BTC-ETH flow confirmation with higher opportunity supply",
+    "V14": "regularized public-state model as a lower-priority residual opportunity source"
+  },
+  "discovery_evidence_at_20bps": {
+    "period": ["2023-07-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+    "trades": 185,
+    "trades_per_calendar_day": 1.0054347826086956,
+    "net_r": 9.473507914777478,
+    "expectancy_r": 0.05120815089068907,
+    "profit_factor": 1.5166546233007974,
+    "terminal_multiple_at_1pct_risk": 1.097821121490428,
+    "max_drawdown_at_1pct_risk": -0.0278104894079354,
+    "positive_month_ratio": 0.8333333333333334,
+    "btc_net_r": 3.157869321908466,
+    "eth_net_r": 6.3156385928690115,
+    "member_net_r_after_slot_competition": {
+      "V15": 2.3898596919366693,
+      "V16": 5.072916277819181,
+      "V14": 2.0107319450216274
+    },
+    "member_trade_counts_after_slot_competition": {
+      "V15": 42,
+      "V16": 95,
+      "V14": 48
+    }
+  },
+  "discovery_evidence_at_30bps": {
+    "trades": 185,
+    "net_r": 4.1522493209622855,
+    "expectancy_r": 0.02244459092412046,
+    "profit_factor": 1.2010639805181342,
+    "terminal_multiple_at_1pct_risk": 1.0410317007007994,
+    "max_drawdown_at_1pct_risk": -0.03845024858859358,
+    "positive_month_ratio": 0.6666666666666666,
+    "btc_net_r": 0.5281265674934335,
+    "eth_net_r": 3.6241227534688507
+  },
+  "selection_disclosure": {
+    "priority_alternatives_checked": 4,
+    "priority_choice": "V15-V16-V14 was selected from economic information hierarchy; nearby tested priorities changed 20bp net R by less than 0.31R",
+    "discovery_is_exposed": true,
+    "not_claimed": "this is not an independent result and cannot rescue any failed member"
+  },
+  "oos_policy": {
+    "evaluation_period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "no_parameter_changes_after_open": true,
+    "minimum_requirements_at_20bps": {
+      "trades_at_least": 75,
+      "trades_per_calendar_day_at_least": 0.5,
+      "expectancy_r_greater_than": 0.0,
+      "profit_factor_at_least": 1.1,
+      "terminal_multiple_at_1pct_risk_greater_than": 1.0,
+      "btc_net_r_greater_than": 0.0,
+      "eth_net_r_greater_than": 0.0,
+      "positive_month_ratio_at_least": 0.5
+    },
+    "severe_cost_30bps_net_r_greater_than": 0.0,
+    "must_outperform": "the portfolio must exceed the best eligible member's 20bp terminal multiple without a worse maximum drawdown by more than 50%",
+    "result_if_failed": "retain any independently passing member but reject the combined portfolio",
+    "result_if_passed": "exact aggregate-trade protective-stop and funding replay, then untouched 2025 holdout"
+  },
+  "paper_or_live_authority": false
+}
