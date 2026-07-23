@@ -1,0 +1,151 @@
+name: v0.27.1 canonical transport repair and scout
+
+on:
+  push:
+    branches:
+      - "research/v0271-transport-repair-20260724"
+    paths:
+      - "research/v0271_bundle/**"
+      - ".github/workflows/v0271-transport-repair.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/v0271_bundle/**"
+      - ".github/workflows/v0271-transport-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair-scout:
+    runs-on: ubuntu-slim
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Diagnose canonical transport without trusting outer digest
+        id: repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence v0271
+          python - <<'PY' | tee evidence/transport_diagnostic.json
+          import base64, hashlib, json, traceback
+          from pathlib import Path
+          root = Path('research/v0271_bundle')
+          manifest = json.loads((root / 'TRANSPORT_MANIFEST.json').read_text())
+          report = {'manifest': manifest, 'parts': []}
+          encoded = []
+          try:
+              for item in manifest['parts']:
+                  raw = (root / item['name']).read_bytes()
+                  canonical = ''.join(raw.decode('ascii').split())
+                  record = {
+                      'name': item['name'],
+                      'declared_bytes': item.get('bytes'),
+                      'stored_bytes': len(raw),
+                      'declared_sha256': item.get('sha256'),
+                      'stored_sha256': hashlib.sha256(raw).hexdigest(),
+                      'canonical_characters': len(canonical),
+                      'canonical_sha256': hashlib.sha256(canonical.encode('ascii')).hexdigest(),
+                  }
+                  report['parts'].append(record)
+                  encoded.append(canonical)
+              archive = base64.b64decode(''.join(encoded), validate=True)
+              report['actual_archive_bytes'] = len(archive)
+              report['actual_archive_sha256'] = hashlib.sha256(archive).hexdigest()
+              report['declared_archive_bytes'] = manifest.get('archive_bytes')
+              report['declared_archive_sha256'] = manifest.get('archive_sha256')
+              report['outer_manifest_matches'] = (
+                  report['actual_archive_bytes'] == report['declared_archive_bytes']
+                  and report['actual_archive_sha256'] == report['declared_archive_sha256']
+              )
+              Path('/tmp/v0271.tar.xz').write_bytes(archive)
+          except Exception as exc:
+              report['error'] = repr(exc)
+              report['traceback'] = traceback.format_exc()
+          print(json.dumps(report, sort_keys=True, indent=2))
+          PY
+          if test -s /tmp/v0271.tar.xz && xz -t /tmp/v0271.tar.xz; then
+            tar -tJf /tmp/v0271.tar.xz > evidence/archive_listing.txt
+            tar -xJf /tmp/v0271.tar.xz -C v0271
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.repair.outputs.valid == 'true'
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v0271/requirements-lock.txt
+
+      - name: Verify immutable internal plan and source tree
+        if: steps.repair.outputs.valid == 'true'
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python - <<'PY' | tee evidence/internal_verification.json
+          import hashlib, json
+          from pathlib import Path
+          def canonical(x):
+              return hashlib.sha256(json.dumps(x, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          plan_path = Path('artifacts/v027/research_plan_locked.json')
+          plan = json.loads(plan_path.read_text())
+          payload = dict(plan)
+          declared_payload = payload.pop('plan_payload_sha256')
+          assert plan['study_id'] == 'quarter_hour_component_rotation_v0_27_1'
+          assert plan['candidate_count'] == 192
+          assert canonical(payload) == declared_payload
+          assert canonical(plan['source_files']) == plan['source_tree_manifest_sha256']
+          mismatches = []
+          for name, expected in plan['source_files'].items():
+              actual = digest(name)
+              if actual != expected:
+                  mismatches.append({'path': name, 'expected': expected, 'actual': actual})
+          assert not mismatches, mismatches
+          assert plan['candidate_pnl_observed_before_plan'] is False
+          assert plan['terminal_holdout_opened_before_plan'] is False
+          assert plan['production_enabled'] is False
+          print(json.dumps({
+              'study_id': plan['study_id'],
+              'candidate_count': plan['candidate_count'],
+              'plan_payload_sha256': declared_payload,
+              'source_tree_manifest_sha256': plan['source_tree_manifest_sha256'],
+              'source_file_count': len(plan['source_files']),
+              'mismatches': mismatches,
+          }, sort_keys=True, indent=2))
+          PY
+
+      - name: Install, test, and run official scout
+        if: steps.repair.outputs.valid == 'true'
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -o pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          python -m pytest -q 2>&1 | tee evidence/pytest.txt
+          python -m compileall -q research scripts tests
+          python -m research.v027.qh_pipeline scout \
+            --output evidence/scout.json \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            2>&1 | tee evidence/scout.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v0271-transport-repair-${{ github.run_id }}
+          path: |
+            evidence
+            v0271/evidence
+            v0271/artifacts/v027/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30
