@@ -1,0 +1,117 @@
+name: V14 Public Minute 2024 Export
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v14-public-2024-export.yml'
+      - 'research/v14_2024_data_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-public-2024:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore pinned causal data core
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://raw.githubusercontent.com/umtong/SMC-trading-system/f12718079bd05965d9e12e8829e6e7b66a9d9dbd/research/v12_liquidity_shock_bundle.tgz.b64 \
+            -o /tmp/v12.tgz.b64
+          base64 --decode /tmp/v12.tgz.b64 > /tmp/v12.tgz
+          echo '746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89  /tmp/v12.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/v12.tgz
+          patch --batch --forward -p1 < research/v12_gap_segments.patch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests
+
+      - name: Restore 2024 public-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance_2024
+          key: v14-public-2024-btc-eth-v1
+
+      - name: Export checksum-verified prior-only public frames
+        id: export
+        working-directory: research/v12_liquidity_shock
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee ../../artifacts-v14-public-2024.log
+          from pathlib import Path
+          import hashlib, json
+          import pandas as pd
+          from core import Family, StrategyConfig, add_causal_features
+          from run_discovery import download_archives, month_keys, build_symbol_frame
+
+          start=pd.Timestamp('2024-01-01',tz='UTC')
+          end=pd.Timestamp('2025-01-01',tz='UTC')
+          symbols=['BTCUSDT','ETHUSDT']
+          cache=Path('../../.cache/v12_binance_2024')
+          out=Path('../../artifacts/v14-public-2024')
+          out.mkdir(parents=True,exist_ok=True)
+          months=month_keys(start,end)
+          manifest=download_archives(cache,symbols=symbols,months=months,workers=8)
+          manifest.to_csv(out/'input_manifest.csv',index=False)
+          cfg=StrategyConfig(family=Family.CONTINUATION,abs_return_z=3.0,dislocation_z=1.0)
+          summary=[]
+          for symbol in symbols:
+              raw=build_symbol_frame(cache,symbol,months,start,end)
+              featured=add_causal_features(raw,cfg)
+              path=out/f'{symbol}_causal_features.csv.gz'
+              featured.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+              summary.append({
+                  'symbol':symbol,'rows':len(featured),
+                  'segments':int(featured.segment_id.nunique()),
+                  'first_open_time':str(featured.open_time.min()),
+                  'last_open_time':str(featured.open_time.max()),
+                  'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+              })
+          (out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          PY
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload public 2024 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-public-minute-2024-${{ github.run_id }}
+          path: |
+            artifacts/v14-public-2024
+            artifacts-v14-public-2024.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V14 public 2024 data export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- period: \`2024-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only; no strategy result._"
+
+      - name: Preserve export failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
