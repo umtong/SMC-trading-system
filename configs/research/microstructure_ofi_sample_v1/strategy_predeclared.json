@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T00:00:00Z",
+  "status": "PREDECLARED_BEFORE_AGGREGATED_SAMPLE_OUTCOME_INSPECTION",
+  "family": "BTC_ETH_DOLLAR_VOLUME_OFI_CONTINUATION_V1",
+  "economic_hypothesis": "A completed dollar-volume bar with unusually strong top-of-book OFI contains slowly decaying informational price impact. Trade only when spread is locally acceptable and aggressive trade flow does not contradict the book signal; avoid bars whose contemporaneous price response already appears exhausted.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "global_pending_plus_open_slots": 1,
+    "same_decision_tie_break": "largest absolute causal OFI z-score, then BTC before ETH"
+  },
+  "input": {
+    "source_contract": "configs/research/microstructure_ofi_sample_v1/predeclared.json",
+    "bucket_seconds": 10,
+    "completed_buckets_only": true,
+    "cross_day_state": "reset",
+    "sample_cannot_enable_live": true
+  },
+  "chronology": {
+    "development": ["2022-01-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "retrospective_diagnostic": ["2024-01-01", "2026-07-01"],
+    "full_history_expansion_required_after_sample_pass": true,
+    "true_unseen_shadow_begins_after": "2026-07-22"
+  },
+  "dollar_volume_bars": {
+    "day_warmup_minutes": 60,
+    "target_definition": "At each new bar, target quote volume equals the median total_trade_quote of the previous 360 completed 10-second buckets multiplied by 60 and by volume_multiplier; target remains frozen through that bar.",
+    "volume_multiplier": [0.5, 1.0, 2.0],
+    "minimum_bar_seconds": 20,
+    "clock_cap_seconds": 600,
+    "bar_close": "first completed 10-second bucket reaching target, or the 600-second clock cap",
+    "zero_trade_bar": "ineligible"
+  },
+  "causal_features": {
+    "ofi": "sum of Cont-Kukanov-Stoikov best-quote OFI within the completed dollar-volume bar",
+    "ofi_z": "robust z score against the previous 30 completed dollar-volume bars using shifted median and 1.4826*MAD; minimum 12 prior bars",
+    "trade_imbalance": "sum signed_trade_quote divided by sum total_trade_quote within the completed bar",
+    "bar_return_bps": "log(last_mid / first_mid) * 10000 within the completed bar",
+    "spread_bps": "mean quoted spread divided by last_mid * 10000",
+    "spread_percentile": "rank of current spread_bps against previous 30 completed bars only",
+    "book_imbalance": "last completed bucket best-quote imbalance",
+    "future_features": "forbidden"
+  },
+  "rule_grid": {
+    "ofi_abs_z_min": [1.0, 1.5, 2.0],
+    "trade_flow_confirmation": ["NONE", "SAME_SIGN"],
+    "maximum_directional_contemporaneous_return_bps": [5.0, 15.0, null],
+    "maximum_spread_percentile": [0.50, 0.75, 1.00],
+    "holding_minutes": [10, 30, 60, 240],
+    "position_exit": ["FIXED_HORIZON", "OPPOSITE_SIGNAL_OR_HORIZON"],
+    "total_configurations": 1296,
+    "adjacency": "same volume multiplier and exit mode; exactly one ordered threshold or horizon index differs by one step"
+  },
+  "signal": {
+    "side": "sign(ofi_z)",
+    "flow_same_sign": "side * trade_imbalance >= 0",
+    "underreaction": "side * bar_return_bps is non-negative and no greater than the configured maximum; null maximum disables the upper cap",
+    "spread": "spread_percentile no greater than configured maximum",
+    "raw_signal_consumption": "all completed eligible bars are independently evaluated; no future event deduplication"
+  },
+  "execution": {
+    "decision": "completed dollar-volume bar close",
+    "latency": "at least one completed 10-second bucket",
+    "entry": "next bucket's last ask for LONG or last bid for SHORT, then one additional adverse basis point",
+    "exit": "first bucket at or after fixed horizon, or first opposite qualifying signal for flip mode; LONG exits at last bid and SHORT at last ask, then one additional adverse basis point",
+    "fee_bps_each_side": 6.0,
+    "funding": "ignored only when holding interval contains no settlement; otherwise apply historical funding before any full-history promotion",
+    "same_timestamp_reentry": false,
+    "marking": "unfavorable side of top of book"
+  },
+  "selection": {
+    "minimum_trades_each": 100,
+    "minimum_pf_each": 1.10,
+    "after_top10_net_bps_positive_each": true,
+    "positive_sampled_day_ratio_min_each": 0.55,
+    "lb80_mean_net_bps_positive_each": true,
+    "stable_adjacent_configuration_required": true,
+    "score": "maximize the smaller development/internal-validation lb80 mean net bps, then smaller PF, then net bps per sampled day",
+    "daily_return_target_used": false
+  },
+  "next_stage_if_pass": {
+    "download": "full checksum-verified BTC and ETH bookTicker and aggTrades history",
+    "validation": "quarterly expanding walk-forward with realistic top-of-book taker execution",
+    "risk_conversion": "only after full-history pass, convert signal to fixed-loss sizing and test hard-stop variants without changing the entry signal",
+    "live_risk": 0
+  }
+}
