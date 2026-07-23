@@ -28,9 +28,9 @@ jobs:
           cache: pip
 
       - name: Install isolated conversion dependencies
-        run: python -m pip install --upgrade numpy pandas pyarrow huggingface_hub hf_xet
+        run: python -m pip install --upgrade numpy pandas
 
-      - name: Download pinned 1m data and remove 2026 before serialization
+      - name: Download official monthly archives, verify checksums, and seal 2026
         shell: bash
         run: |
           set -euo pipefail
@@ -38,81 +38,87 @@ jobs:
           from __future__ import annotations
 
           import hashlib
+          import io
           import json
+          import time
+          import urllib.request
+          import zipfile
           from datetime import datetime, timezone
           from pathlib import Path
 
           import numpy as np
           import pandas as pd
-          from huggingface_hub import HfApi, hf_hub_download
 
-          REPO_ID = "linxy/USDT-M_Perpetual_Futures"
-          PINNED_REVISION = "69ae9208fb762758b279e449684638c9e7bbd0c9"
           SYMBOLS = ("BTCUSDT", "ETHUSDT")
-          CUTOFF = pd.Timestamp("2026-01-01T00:00:00Z")
+          MONTHS = pd.period_range("2020-01", "2025-12", freq="M")
+          BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
+          CUTOFF_NS = pd.Timestamp("2026-01-01T00:00:00Z").value
           OUTPUT = Path("research_data/binance_usdm_orderflow_1m_npz_2020_2025")
-          CACHE = Path(".hf-1m-cache")
           OUTPUT.mkdir(parents=True, exist_ok=True)
+          USER_AGENT = "SMC-ICT-research-checksum-client/1.0"
 
-          def sha256(path: Path) -> str:
+          def sha256_bytes(payload: bytes) -> str:
+              return hashlib.sha256(payload).hexdigest()
+
+          def sha256_file(path: Path) -> str:
               digest = hashlib.sha256()
               with path.open("rb") as handle:
                   while chunk := handle.read(1024 * 1024):
                       digest.update(chunk)
               return digest.hexdigest()
 
-          current_revision = HfApi().dataset_info(REPO_ID).sha
-          if current_revision != PINNED_REVISION:
-              print(json.dumps({"warning": "upstream advanced; pinned revision retained", "current": current_revision, "pinned": PINNED_REVISION}))
+          def fetch(url: str, attempts: int = 5) -> bytes:
+              last_error: Exception | None = None
+              for attempt in range(1, attempts + 1):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:
+                      last_error = exc
+                      if attempt == attempts:
+                          break
+                      time.sleep(min(2 ** attempt, 20))
+              raise RuntimeError(f"failed to fetch {url}: {last_error}")
 
-          records = []
-          for symbol in SYMBOLS:
-              filename = f"{symbol}/{symbol}_1m.parquet"
-              source = Path(hf_hub_download(
-                  repo_id=REPO_ID,
-                  repo_type="dataset",
-                  filename=filename,
-                  revision=PINNED_REVISION,
-                  cache_dir=CACHE,
-              ))
-              frame = pd.read_parquet(source)
-              required = (
+          def epoch_to_ns(values: np.ndarray) -> np.ndarray:
+              numeric = np.asarray(values, dtype=np.int64)
+              magnitude = int(np.median(np.abs(numeric))) if len(numeric) else 0
+              if magnitude > 10**17:
+                  return numeric
+              if magnitude > 10**14:
+                  return numeric * 1_000
+              if magnitude > 10**11:
+                  return numeric * 1_000_000
+              return numeric * 1_000_000_000
+
+          def parse_month(zip_payload: bytes, symbol: str, month: str) -> dict[str, np.ndarray]:
+              with zipfile.ZipFile(io.BytesIO(zip_payload)) as archive:
+                  names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                  if len(names) != 1:
+                      raise RuntimeError(f"{symbol} {month}: expected one CSV, found {names}")
+                  with archive.open(names[0]) as handle:
+                      frame = pd.read_csv(handle, header=None, low_memory=False)
+              if frame.shape[1] < 11:
+                  raise RuntimeError(f"{symbol} {month}: unexpected column count {frame.shape[1]}")
+              first = str(frame.iloc[0, 0]).strip().lower()
+              if first in {"open_time", "opentime", "timestamp"} or not first.lstrip("-").isdigit():
+                  frame = frame.iloc[1:].reset_index(drop=True)
+              frame = frame.iloc[:, :12]
+              columns = [
+                  "open_time", "open", "high", "low", "close", "volume",
+                  "close_time", "quote_volume", "count", "taker_buy_volume",
+                  "taker_buy_quote_volume", "ignore",
+              ]
+              frame.columns = columns
+              for column in (
                   "open_time", "open", "high", "low", "close", "close_time",
                   "quote_volume", "count", "taker_buy_quote_volume",
-              )
-              missing = [column for column in required if column not in frame.columns]
-              if missing:
-                  raise RuntimeError(f"{symbol}: missing columns {missing}")
-              frame = frame.loc[:, required].copy()
-              frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="raise")
-              frame = frame.loc[frame["open_time"] < CUTOFF].copy()
-              frame = frame.sort_values("open_time", kind="stable")
-              duplicates = int(frame["open_time"].duplicated().sum())
-              frame = frame.drop_duplicates("open_time", keep="last").reset_index(drop=True)
-              for column in ("open", "high", "low", "close", "quote_volume", "count", "taker_buy_quote_volume"):
+              ):
                   frame[column] = pd.to_numeric(frame[column], errors="raise")
-              if pd.api.types.is_datetime64_any_dtype(frame["close_time"]):
-                  close_time_ns = pd.to_datetime(frame["close_time"], utc=True, errors="raise").astype("int64").to_numpy(dtype=np.int64)
-              else:
-                  close_numeric = pd.to_numeric(frame["close_time"], errors="raise")
-                  magnitude = float(close_numeric.abs().median())
-                  unit = "ns" if magnitude > 1e17 else "us" if magnitude > 1e14 else "ms" if magnitude > 1e11 else "s"
-                  close_time_ns = pd.to_datetime(close_numeric, unit=unit, utc=True).astype("int64").to_numpy(dtype=np.int64)
-              open_time_ns = frame["open_time"].astype("int64").to_numpy(dtype=np.int64)
-              delta = np.diff(open_time_ns)
-              missing_minutes = int(np.maximum(np.rint(delta / 60_000_000_000).astype(np.int64) - 1, 0).sum())
-              if duplicates != 0 or missing_minutes != 0:
-                  raise RuntimeError(f"{symbol}: duplicate={duplicates}, missing_minutes={missing_minutes}")
-              if np.any(frame["high"].to_numpy() < np.maximum(frame["open"].to_numpy(), frame["close"].to_numpy())):
-                  raise RuntimeError(f"{symbol}: high invariant failed")
-              if np.any(frame["low"].to_numpy() > np.minimum(frame["open"].to_numpy(), frame["close"].to_numpy())):
-                  raise RuntimeError(f"{symbol}: low invariant failed")
-              if np.any(frame["taker_buy_quote_volume"].to_numpy() > frame["quote_volume"].to_numpy() + 1e-7):
-                  raise RuntimeError(f"{symbol}: taker-buy quote volume invariant failed")
-
-              arrays = {
-                  "open_time": open_time_ns,
-                  "close_time": close_time_ns,
+              return {
+                  "open_time": epoch_to_ns(frame["open_time"].to_numpy(dtype=np.int64)),
+                  "close_time": epoch_to_ns(frame["close_time"].to_numpy(dtype=np.int64)),
                   "open": frame["open"].to_numpy(dtype=np.float64),
                   "high": frame["high"].to_numpy(dtype=np.float64),
                   "low": frame["low"].to_numpy(dtype=np.float64),
@@ -121,43 +127,119 @@ jobs:
                   "count": frame["count"].to_numpy(dtype=np.int64),
                   "taker_buy_quote_volume": frame["taker_buy_quote_volume"].to_numpy(dtype=np.float64),
               }
+
+          manifest_records: list[dict[str, object]] = []
+          for symbol in SYMBOLS:
+              chunks: dict[str, list[np.ndarray]] = {
+                  name: [] for name in (
+                      "open_time", "close_time", "open", "high", "low", "close",
+                      "quote_volume", "count", "taker_buy_quote_volume",
+                  )
+              }
+              for ordinal, period in enumerate(MONTHS, start=1):
+                  month = str(period)
+                  filename = f"{symbol}-1m-{month}.zip"
+                  url = f"{BASE}/{symbol}/1m/{filename}"
+                  checksum_payload = fetch(url + ".CHECKSUM")
+                  checksum_text = checksum_payload.decode("utf-8").strip()
+                  expected = checksum_text.split()[0].lower()
+                  if len(expected) != 64:
+                      raise RuntimeError(f"{symbol} {month}: invalid checksum response {checksum_text!r}")
+                  zip_payload = fetch(url)
+                  actual = sha256_bytes(zip_payload)
+                  if actual != expected:
+                      raise RuntimeError(f"{symbol} {month}: checksum mismatch {actual} != {expected}")
+                  parsed = parse_month(zip_payload, symbol, month)
+                  for name, values in parsed.items():
+                      chunks[name].append(values)
+                  manifest_records.append({
+                      "symbol": symbol,
+                      "month": month,
+                      "kind": "official_monthly_kline_zip",
+                      "url": url,
+                      "bytes": len(zip_payload),
+                      "official_sha256": expected,
+                      "download_sha256": actual,
+                      "checksum_sha256": sha256_bytes(checksum_payload),
+                      "rows": int(len(parsed["open_time"])),
+                  })
+                  print(json.dumps({
+                      "symbol": symbol,
+                      "downloaded_month": month,
+                      "ordinal": ordinal,
+                      "total_months": len(MONTHS),
+                      "rows": len(parsed["open_time"]),
+                  }), flush=True)
+
+              arrays = {name: np.concatenate(parts) for name, parts in chunks.items()}
+              order = np.argsort(arrays["open_time"], kind="stable")
+              arrays = {name: values[order] for name, values in arrays.items()}
+              keep = np.ones(len(arrays["open_time"]), dtype=bool)
+              keep[1:] = arrays["open_time"][1:] != arrays["open_time"][:-1]
+              duplicates_removed = int((~keep).sum())
+              arrays = {name: values[keep] for name, values in arrays.items()}
+              before_cutoff = arrays["open_time"] < CUTOFF_NS
+              arrays = {name: values[before_cutoff] for name, values in arrays.items()}
+
+              if np.any(arrays["high"] < np.maximum(arrays["open"], arrays["close"])):
+                  raise RuntimeError(f"{symbol}: high invariant failed")
+              if np.any(arrays["low"] > np.minimum(arrays["open"], arrays["close"])):
+                  raise RuntimeError(f"{symbol}: low invariant failed")
+              if np.any(arrays["quote_volume"] < 0.0):
+                  raise RuntimeError(f"{symbol}: negative quote volume")
+              if np.any(arrays["taker_buy_quote_volume"] < -1e-7):
+                  raise RuntimeError(f"{symbol}: negative taker-buy quote volume")
+              if np.any(arrays["taker_buy_quote_volume"] > arrays["quote_volume"] + 1e-6):
+                  raise RuntimeError(f"{symbol}: taker-buy exceeds quote volume")
+
+              delta_minutes = np.diff(arrays["open_time"]) / 60_000_000_000
+              missing_minutes = int(np.maximum(np.rint(delta_minutes).astype(np.int64) - 1, 0).sum())
+              nonminute_deltas = int(np.sum(np.abs(delta_minutes - np.rint(delta_minutes)) > 1e-9))
+              if nonminute_deltas:
+                  raise RuntimeError(f"{symbol}: {nonminute_deltas} non-minute timestamp deltas")
+
               symbol_dir = OUTPUT / symbol
               symbol_dir.mkdir(parents=True, exist_ok=True)
               target = symbol_dir / f"{symbol}_klines_1m_through_2025.npz"
               np.savez_compressed(target, **arrays)
-              records.append({
+              manifest_records.append({
                   "symbol": symbol,
-                  "kind": "klines_1m",
-                  "source_path": filename,
-                  "source_sha256": sha256(source),
+                  "kind": "sealed_1m_npz",
                   "output_path": str(target),
-                  "output_sha256": sha256(target),
-                  "rows": int(len(frame)),
-                  "start": frame["open_time"].iloc[0].isoformat(),
-                  "end": frame["open_time"].iloc[-1].isoformat(),
-                  "duplicates_removed": duplicates,
+                  "output_sha256": sha256_file(target),
+                  "rows": int(len(arrays["open_time"])),
+                  "start": pd.Timestamp(int(arrays["open_time"][0]), tz="UTC").isoformat(),
+                  "end": pd.Timestamp(int(arrays["open_time"][-1]), tz="UTC").isoformat(),
+                  "duplicates_removed": duplicates_removed,
                   "missing_minutes": missing_minutes,
+                  "nonminute_deltas": nonminute_deltas,
               })
-              del frame, arrays
+              del arrays, chunks
 
           manifest = {
               "schema_version": 1,
               "created_at_utc": datetime.now(timezone.utc).isoformat(),
-              "source_repository": REPO_ID,
-              "source_revision": PINNED_REVISION,
-              "source_description": "Binance USD-M 1m kline mirror generated from official data.binance.vision archives",
-              "sealed_cutoff_exclusive": CUTOFF.isoformat(),
-              "sealed_2026_status": "REMOVED_BEFORE_NPZ_SERIALIZATION",
+              "source": "Binance official data.binance.vision USD-M monthly kline archives",
+              "source_path_pattern": f"{BASE}/{{symbol}}/1m/{{symbol}}-1m-YYYY-MM.zip",
+              "official_checksums_verified": True,
+              "symbols": list(SYMBOLS),
+              "months": [str(period) for period in MONTHS],
+              "sealed_cutoff_exclusive": "2026-01-01T00:00:00+00:00",
+              "sealed_2026_status": "NO_2026_ARCHIVE_REQUESTED_AND_ROWS_FILTERED",
               "credentials_used": False,
               "orders_submitted": False,
-              "records": records,
+              "records": manifest_records,
           }
           digest_source = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
           manifest["content_digest"] = hashlib.sha256(digest_source).hexdigest()
           manifest_path = OUTPUT / "MANIFEST.json"
           manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-          (OUTPUT / "MANIFEST.sha256").write_text(f"{sha256(manifest_path)}  MANIFEST.json\n", encoding="utf-8")
-          print(json.dumps({"records": records, "manifest": str(manifest_path)}, indent=2))
+          (OUTPUT / "MANIFEST.sha256").write_text(f"{sha256_file(manifest_path)}  MANIFEST.json\n", encoding="utf-8")
+          print(json.dumps({
+              "manifest": str(manifest_path),
+              "manifest_sha256": sha256_file(manifest_path),
+              "content_digest": manifest["content_digest"],
+          }, indent=2))
           PY
 
       - name: Upload sealed 1m NumPy research dataset
