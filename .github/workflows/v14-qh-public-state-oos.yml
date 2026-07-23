@@ -25,8 +25,10 @@ jobs:
       - name: Restore and verify frozen model and exact-flow extractor
         shell: bash
         run: |
-          set -euxo pipefail
-          python - <<'PY'
+          set +e
+          set -o pipefail
+          mkdir -p artifacts
+          python - <<'PY' > artifacts/v14-restore.log 2>&1
           import base64, gzip, hashlib
           from pathlib import Path
           files = [
@@ -42,8 +44,14 @@ jobs:
                   raise SystemExit(f'hash mismatch for {source}: expected {expected}, got {actual}')
               Path(destination).write_bytes(decoded)
           PY
-          python -m py_compile /tmp/v14_quarter_hour_aggtrade.py /tmp/v14_qh_public_state_model.py
-
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            python -m py_compile /tmp/v14_quarter_hour_aggtrade.py /tmp/v14_qh_public_state_model.py >> artifacts/v14-restore.log 2>&1
+            status=$?
+          fi
+          cat artifacts/v14-restore.log
+          # Diagnostic step never blocks artifact publication; later steps fail naturally if sources are absent.
+          exit 0
       - name: Mark frozen OOS started
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,9 +247,9 @@ jobs:
               lines += ['### Symbol contribution', '', symbols.to_markdown(index=False), '']
           else:
               lines += ['- status: `FAILED_BEFORE_VERDICT`', '']
-              log = Path('artifacts-v14-oos.log')
-              if log.exists():
-                  lines += ['```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```']
+              for label, log in [('Restore log', Path('artifacts/v14-restore.log')), ('OOS log', Path('artifacts-v14-oos.log'))]:
+                  if log.exists():
+                      lines += [f'### {label}', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```', '']
           lines += ['', '_Frozen one-shot OOS. A passing screen still requires exact candidate-day protective-stop replay._']
           comment = Path('artifacts/v14-oos-pr-comment.md')
           comment.parent.mkdir(parents=True, exist_ok=True)
@@ -258,6 +266,7 @@ jobs:
             artifacts/v14-public
             artifacts/v14-exact
             artifacts-v14-oos.log
+            artifacts/v14-restore.log
             artifacts/v14-oos-pr-comment.md
             research/v14_qh_public_state_model.py.gz.b64
           if-no-files-found: warn
