@@ -15,11 +15,19 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        symbol:
-          - BTCUSDT
-          - ETHUSDT
-          - SOLUSDT
-          - XRPUSDT
+        include:
+          - symbol: BTCUSDT
+            start: 2022-01-01
+            evaluation_start: 2022-01-01
+          - symbol: ETHUSDT
+            start: 2022-01-01
+            evaluation_start: 2022-01-01
+          - symbol: SOLUSDT
+            start: 2022-03-03
+            evaluation_start: 2022-04-01
+          - symbol: XRPUSDT
+            start: 2022-03-03
+            evaluation_start: 2022-04-01
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +47,7 @@ jobs:
           set -o pipefail
           python -m scripts.download_binance_um_5m_range \
             --symbols '${{ matrix.symbol }}' \
-            --start 2022-01-01 \
+            --start '${{ matrix.start }}' \
             --end 2026-07-01 \
             --output-dir 'data/v10/${{ matrix.symbol }}' \
             2>&1 | tee 'v10-${{ matrix.symbol }}-download.log'
@@ -53,17 +61,41 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import pandas as pd
+
           symbol = os.environ['SYMBOL']
+          start = pd.Timestamp(os.environ['START'], tz='UTC')
+          end = pd.Timestamp('2026-07-01', tz='UTC')
+          evaluation_start = pd.Timestamp(os.environ['EVALUATION_START'], tz='UTC')
           root = Path('data/v10') / symbol
           manifest = json.loads((root / 'v09_5m_data_manifest.json').read_text())
           output = next(row for row in manifest['outputs'] if row['symbol'] == symbol)
-          expected = int((__import__('pandas').Timestamp('2026-07-01', tz='UTC') - __import__('pandas').Timestamp('2022-01-01', tz='UTC')) / __import__('pandas').Timedelta(minutes=5))
+          expected = int((end - start) / pd.Timedelta(minutes=5))
           if output['rows'] != expected:
               raise SystemExit(f"{symbol}: rows={output['rows']} expected={expected}")
-          print(symbol, output)
+          if evaluation_start < start + pd.Timedelta(days=28) and symbol in {'SOLUSDT', 'XRPUSDT'}:
+              raise SystemExit(f"{symbol}: optional-asset evaluation lacks 28-day clean warm-up")
+          contract = {
+              'symbol': symbol,
+              'data_start': start.isoformat(),
+              'evaluation_start': evaluation_start.isoformat(),
+              'end': end.isoformat(),
+              'excluded_source_gap': (
+                  '2022-02-26T00:00:00Z/2022-03-03T00:00:00Z'
+                  if symbol in {'SOLUSDT', 'XRPUSDT'}
+                  else None
+              ),
+              'gap_policy': 'exclude-before-evaluation; never impute',
+          }
+          (root / 'v10_panel_contract.json').write_text(
+              json.dumps(contract, ensure_ascii=False, indent=2), encoding='utf-8'
+          )
+          print(symbol, output, contract)
           PY
         env:
           SYMBOL: ${{ matrix.symbol }}
+          START: ${{ matrix.start }}
+          EVALUATION_START: ${{ matrix.evaluation_start }}
 
       - name: Upload immutable symbol panel
         if: always()
@@ -73,6 +105,7 @@ jobs:
           path: |
             data/v10/${{ matrix.symbol }}/${{ matrix.symbol }}_5m.csv
             data/v10/${{ matrix.symbol }}/v09_5m_data_manifest.json
+            data/v10/${{ matrix.symbol }}/v10_panel_contract.json
             v10-${{ matrix.symbol }}-download.log
           if-no-files-found: error
           retention-days: 14
