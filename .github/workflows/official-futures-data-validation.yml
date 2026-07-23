@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/official-futures-data-validation-20260724
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
