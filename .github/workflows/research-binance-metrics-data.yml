@@ -7,6 +7,7 @@ on:
       - ".github/workflows/research-binance-metrics-data.yml"
       - "research_tools/binance_metrics_bundle.py"
       - "research_tools/binance_metrics_bundle_v2.py"
+      - "research_tools/binance_metrics_bundle_v3.py"
   workflow_dispatch:
 
 permissions:
@@ -31,7 +32,7 @@ jobs:
         run: |
           mkdir -p research_artifact/binance_um_metrics_5m
           set +e
-          python research_tools/binance_metrics_bundle_v2.py \
+          python research_tools/binance_metrics_bundle_v3.py \
             --symbols BTCUSDT ETHUSDT \
             --start-date 2023-01-01 \
             --end-date 2026-06-30 \
