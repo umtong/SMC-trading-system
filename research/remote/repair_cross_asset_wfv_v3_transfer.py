@@ -27,12 +27,12 @@ def replace_once_or_confirm(source: str, target: str, label: str) -> None:
 
 
 replace_once_or_confirm(
-    'params["leader_oi3z_min"]',
+    'params["leader_oi3az_min"]',
     'params["leader_oi3_z_min"]',
     "leader_oi_parameter",
 )
 replace_once_or_confirm(
-    'params["follower_signed_ret3z_max"]',
+    'params["follower_signed_ret3az_max"]',
     'params["follower_signed_ret3_z_max"]',
     "follower_return_parameter",
 )
