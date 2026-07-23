@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 
+# Retrieval-only repair: the original pinned commit predated the raw 5m upload.
 if len(sys.argv) != 2:
     raise SystemExit("usage: repair_btc_state_source_revision.py SCRIPT")
 
