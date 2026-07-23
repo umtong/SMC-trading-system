@@ -6,6 +6,10 @@ on:
       - main
     paths:
       - '.github/workflows/v0271-one-shot-audit.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/v0271-one-shot-audit.yml'
+      - 'audit-trigger/**'
   workflow_dispatch:
 
 permissions:
