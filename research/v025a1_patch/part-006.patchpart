@@ -1,0 +1,73 @@
+f_series(
+             bars.index, metrics, "available_time", "oi_delta_z", tolerance=pd.Timedelta(minutes=6)
+         )
++        bars["mark_open"] = mark["open"].reindex(bars.index)
++        bars["mark_high"] = mark["high"].reindex(bars.index)
++        bars["mark_low"] = mark["low"].reindex(bars.index)
+         bars["mark_close"] = mark["close"].reindex(bars.index)
+         bars["prior_quote_volume"] = bars["quote_volume"].shift(1)
+         for lookback in (60, 240):
+@@ -777,6 +783,8 @@ def generate_signals(workspace: Path, event_root: Path) -> pd.DataFrame:
+         frame = pd.DataFrame(columns=list(ExhaustionSignal.__dataclass_fields__.keys()))
+     else:
+         frame["signal_time"] = pd.to_datetime(frame["signal_time"], utc=True)
++        if "context_available_time" in frame.columns:
++            frame["context_available_time"] = pd.to_datetime(frame["context_available_time"], utc=True)
+         frame["entry_time"] = pd.to_datetime(frame["entry_time"], utc=True)
+         frame = frame.sort_values(["candidate_id", "entry_time", "score", "symbol"], ascending=[True, True, False, True])
+         frame = frame.drop_duplicates(["candidate_id", "symbol", "entry_time"], keep="first")
+@@ -796,6 +804,27 @@ def _adverse_price(price: float, side: int, bps: float, is_entry: bool) -> float
+     return price * (1.0 + direction * bps / 10_000.0)
+ 
+ 
++def _liquidation_price(side: int, quantity: float, entry_price: float, wallet_equity: float) -> float | None:
++    """Conservative one-position cross-margin liquidation threshold.
++
++    The threshold solves wallet balance plus unrealised PnL equals a static
++    maintenance-margin envelope.  It is intentionally conservative and is
++    used only to prevent a minute-bar gap through the exchange liquidation
++    boundary from being misrepresented as an ordinary stop fill.
++    """
++
++    if side not in (-1, 1) or not (quantity > 0 and entry_price > 0 and wallet_equity > 0):
++        return None
++    if side == 1:
++        numerator = quantity * entry_price - wallet_equity
++        if numerator <= 0:
++            return None
++        price = numerator / (quantity * (1.0 - MAINTENANCE_MARGIN_RATE))
++        return price if 0 < price < entry_price else None
++    price = (wallet_equity + quantity * entry_price) / (quantity * (1.0 + MAINTENANCE_MARGIN_RATE))
++    return price if price > entry_price else None
++
++
+ def _plan_quantity(
+     symbol: str,
+     equity: float,
+@@ -836,6 +865,8 @@ def _load_workspace(workspace: Path) -> tuple[dict[str, pd.DataFrame], dict[str,
+     signals = pd.read_csv(workspace / "signals.csv")
+     if not signals.empty:
+         signals["signal_time"] = pd.to_datetime(signals["signal_time"], utc=True)
++        if "context_available_time" in signals.columns:
++            signals["context_available_time"] = pd.to_datetime(signals["context_available_time"], utc=True)
+         signals["entry_time"] = pd.to_datetime(signals["entry_time"], utc=True)
+     return bars, funding, signals
+ 
+@@ -902,8 +933,10 @@ def simulate(
+ 
+         symbol, side, entry_fill, stop, qty, initial_risk, prior_qv = plan
+         target = entry_fill + side * float(chosen["target_r"]) * abs(entry_fill - stop)
++        equity_before_entry = equity
+         entry_fee = qty * entry_fill * cost.entry_fee_rate
+         equity -= entry_fee
++        liquidation_price = _liquidation_price(side, qty, entry_fill, equity)
+         funding_pnl = 0.0
+         exit_fee = 0.0
+         exit_time: pd.Timestamp | None = None
+@@ -921,37 +954,90 @@ def simulate(
+             while f_cursor < len(f_list) and pd.Timestamp(f_list[f_cursor].timestamp) < ts + pd.Timedelta(minutes=1):
+                 ft = pd.Timestamp(f_list[f_cursor].timestamp)
+                 if ft >= entry_time:
+-                    mark = float(frame.loc[ts, "mark_close"] if math.isfinite(float(frame.loc[ts, "mark_close"])) else bar["close"])
++                    # Funding is exchanged at the funding timestamp.  When it falls on
++                    # 
