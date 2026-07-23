@@ -1,0 +1,82 @@
+{
+  "candidate_id": "v14_dual_horizon_public_state_ridge_v1",
+  "status": "FROZEN_BEFORE_FIRST_2024_OOS",
+  "frozen_at_utc": "2026-07-23T11:15:04Z",
+  "research_scope": {
+    "venue": "Binance USD-M perpetual futures public archives",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "discovery_start_inclusive": "2023-07-01T00:00:00Z",
+    "discovery_end_exclusive": "2024-01-01T00:00:00Z",
+    "training_lookback_days": 180,
+    "decision_clock": "every completed 15-minute boundary after the first 10 seconds of exact aggTrades",
+    "global_pending_plus_open_limit": 1
+  },
+  "data_contract": {
+    "exact_order_flow": "first 10 seconds of each quarter hour from checksum-verified aggTrades; aggressor side from isBuyerMaker",
+    "public_state": "contract 1-minute klines plus markPriceKlines, aggregated from completed minutes only",
+    "missing_reference_minutes": "drop; create a new segment; reset all causal rolling state; no signal or trade may cross segment",
+    "entry": "first exact aggregate trade at or after boundary+10 seconds",
+    "exit": "first exact aggregate trade at horizon boundary in production replay; current screen uses exact boundary entry series for time exit and conservative 1-minute protective stop",
+    "same_time_symbol_tie": "BTCUSDT before ETHUSDT after score tie"
+  },
+  "members": [
+    {
+      "member_id": "A_full_state_480m",
+      "feature_group": "all 74 frozen public-state and exact-flow features from evaluator hash 6394c6e...",
+      "ridge_alpha": 100.0,
+      "target_clip": null,
+      "sample_weight": null,
+      "horizon_minutes": 480,
+      "minimum_abs_prediction_bps": 60.0
+    },
+    {
+      "member_id": "B_compact_state_720m",
+      "feature_group": "exact_core plus q_ret, q_close_ret, q_imbalance, q_basis, returns 1/2/4/8/16/32/48/96, vol 4/8/16/32/96, RSI14, stochastic14, CCI20, MACD fraction, volume MACD, Bollinger z; excludes moving-average distance fields",
+      "ridge_alpha": 300.0,
+      "target_clip_fraction": 0.03,
+      "sample_weight": {"type": "exponential", "half_life_days": 90.0},
+      "horizon_minutes": 720,
+      "minimum_abs_prediction_bps": 60.0
+    }
+  ],
+  "arbitration": {
+    "within_member_same_boundary": "largest absolute prediction, then BTCUSDT before ETHUSDT",
+    "between_members_same_boundary": "largest normalized score",
+    "normalized_score_formula": "abs(prediction) / sqrt(horizon_minutes / 480)",
+    "global_slot": "earliest eligible entry; skip candidates whose entry is before occupied_until"
+  },
+  "execution": {
+    "fixed_protective_stop_fraction": 0.05,
+    "profit_target": null,
+    "time_exit_by_member_horizon": true,
+    "stop_gap_fill": "first adverse minute open if beyond the stop, otherwise stop price",
+    "intrabar_policy": "protective stop priority",
+    "cross_segment_trade": false,
+    "cost_stress_all_in_bps": [13, 20, 30],
+    "comparison_risk_fraction": 0.01,
+    "risk_note": "1% is reporting scale only, not optimized live risk"
+  },
+  "discovery_evidence": {
+    "20bps": {"trades": 60, "net_r": 6.535883, "expectancy_r": 0.108931, "profit_factor": 3.897293, "terminal_multiple_at_1pct_risk": 1.067202, "max_drawdown_at_1pct_risk": -0.008353, "positive_month_ratio": 0.833333, "btc_net_r": 2.433902, "eth_net_r": 4.101981, "member_A_net_r": 5.169539, "member_B_net_r": 1.366344},
+    "30bps": {"trades": 60, "net_r": 5.280489, "expectancy_r": 0.088008, "profit_factor": 2.888551, "terminal_multiple_at_1pct_risk": 1.053912, "max_drawdown_at_1pct_risk": -0.010945, "positive_month_ratio": 0.666667, "btc_net_r": 1.954017, "eth_net_r": 3.326472, "member_A_net_r": 4.241812, "member_B_net_r": 1.038677}
+  },
+  "selection_bias_disclosure": "Both members and the normalized arbitration rule were selected after inspecting 2023 discovery diagnostics. The first 2024 run is therefore a strict one-shot OOS; no parameter or feature changes are allowed after it is opened.",
+  "first_2024_oos_gate": {
+    "period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "minimum_trades": 30,
+    "at_20bps": {"expectancy_r_greater_than": 0.0, "profit_factor_at_least": 1.10, "terminal_multiple_at_1pct_risk_greater_than": 1.0, "btc_net_r_greater_than": 0.0, "eth_net_r_greater_than": 0.0, "positive_month_ratio_at_least": 0.50},
+    "at_30bps": {"net_r_greater_than": 0.0},
+    "on_failure": "reject the dual-horizon candidate without refitting on 2024 and rotate hypothesis",
+    "on_pass": "perform candidate-day exact aggTrade protective-stop and funding replay before opening 2025"
+  },
+  "provenance": {
+    "freeze_sha256": "1147cd3d3d80f24cfd0fd1506fe6cde2eb4dd49a5eac7873331287605b60c717",
+    "frozen_baseline_evaluator_sha256": "6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e",
+    "candidate_search_code_sha256": "4c7a24172d82ff83fdba10d9593f8d18ed8ecf2c9a79bd4c4c0c3ee3c2894279",
+    "combination_code_sha256": "23b47d5ca16b83f000d879c9d5f827f0fa854f4f9bdaca1ff83ffb14755cd6b6",
+    "discovery_frame_sha256": "79e22c3e7140e2cd584e0f3a5e855bdac33f3e1cb97640ce85259a9807ed5129",
+    "ranked_diagnostics_sha256": "955216d6ef8e06d273c97d59192dda289c3b22131514b62ed0c989a5c872cc45",
+    "combined_metrics_sha256": "6fa5ea582e24c4a244d0609b0db2aa81d558cd7f998ca4e8bc59a11cfa85d56a"
+  },
+  "paper_or_live_authority": false
+}
