@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
@@ -121,6 +121,22 @@ jobs:
         shell: bash
         run: |
           gh pr comment 48 --repo umtong/SMC-trading-system --body "## V20 spot-minute export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- event: \`${GITHUB_EVENT_NAME}\`\n- head_sha: \`${GITHUB_SHA}\`\n- exit code: \`${EXIT_CODE}\`\n- artifact: \`v20-binance-spot-minute-2023-2024-${GITHUB_RUN_ID}\`\n\n_Checksum-verified data artifact only._"
+      - name: Persist run locator on research branch
+        if: always() && github.event_name == 'push'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        shell: bash
+        run: |
+          mkdir -p research
+          printf '{\n  "workflow": "V20 Binance Spot Minute Export",\n  "run_id": %s,\n  "head_sha": "%s",\n  "exit_code": "%s",\n  "artifact": "v20-binance-spot-minute-2023-2024-%s"\n}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" "$EXIT_CODE" "$GITHUB_RUN_ID" > research/v20_spot_export_result.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/v20_spot_export_result.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record V20 spot export run"
+            git push origin HEAD:research/v12-run-20260723
+          fi
       - name: Preserve failure
         if: always() && steps.export.outputs.exit_code != '0'
         env:
