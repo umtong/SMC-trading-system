@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   collect:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
       - name: Inspect artifact
         run: |
           python -m json.tool research_artifact/deribit_dvol_1h/manifest.json | tail -n 200
-          sha256sum research_artifact/deribit_dvol_1h/*
+          shasum -a 256 research_artifact/deribit_dvol_1h/*
           du -h research_artifact/deribit_dvol_1h/*
       - uses: actions/upload-artifact@v4
         with:
