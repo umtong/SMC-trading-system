@@ -28,7 +28,25 @@ jobs:
             -o /tmp/v24_spot_quarter_hour_aggtrade.py
           echo '94d8d10dd2495d349be56606c7dbc4d42429e69f502ae07a1732f1af5faaf600  /tmp/v24_spot_quarter_hour_aggtrade.py' | sha256sum --check --strict
           sed -i 's#data/futures/um/monthly/aggTrades#data/spot/monthly/aggTrades#' /tmp/v24_spot_quarter_hour_aggtrade.py
-          echo '50cfc79042b4eafa33b4041198e8774766b8c4a9b353f8d940e678c675ad47c9  /tmp/v24_spot_quarter_hour_aggtrade.py' | sha256sum --check --strict
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/v24_spot_quarter_hour_aggtrade.py')
+          text = path.read_text()
+          text = text.replace(
+              'COLS = [\n    "agg_trade_id", "price", "quantity", "first_trade_id", "last_trade_id",\n    "transact_time", "is_buyer_maker",\n]\n',
+              'COLS = [\n    "agg_trade_id", "price", "quantity", "first_trade_id", "last_trade_id",\n    "transact_time", "is_buyer_maker",\n]\nSPOT_COLS = COLS + ["is_best_match"]\n',
+          )
+          text = text.replace(
+              'reader = pd.read_csv(raw, header=header, names=None if header == 0 else COLS, chunksize=chunksize, low_memory=False)',
+              'reader = pd.read_csv(raw, header=header, names=None if header == 0 else SPOT_COLS, chunksize=chunksize, low_memory=False)',
+          )
+          text = text.replace(
+              '                if header == 0:\n                    if len(chunk.columns) < 7:\n                        raise ValueError(f"unexpected aggTrade schema in {path}: {list(chunk.columns)}")\n                    chunk = chunk.iloc[:, :7]\n                    chunk.columns = COLS\n',
+              '                if len(chunk.columns) < 7:\n                    raise ValueError(f"unexpected aggTrade schema in {path}: {list(chunk.columns)}")\n                chunk = chunk.iloc[:, :7]\n                chunk.columns = COLS\n',
+          )
+          path.write_text(text)
+          PY
+          echo '17f42d27398a13596a9f2186dc9405079c288814802a4f0db3454c58fc9f19af  /tmp/v24_spot_quarter_hour_aggtrade.py' | sha256sum --check --strict
           python -m py_compile /tmp/v24_spot_quarter_hour_aggtrade.py
 
       - uses: actions/setup-python@v5
