@@ -2,14 +2,17 @@ name: Cross-asset WFV research
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
-      - "research/remote/cross_asset_wfv.py.b64.part*"
+      - "research/remote/cross_asset_wfv_v3.py.b64.part*"
       - ".github/workflows/cross-asset-wfv-research.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: cross-asset-wfv-v3-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   research:
@@ -19,30 +22,30 @@ jobs:
       PYTHONUNBUFFERED: "1"
       HF_HOME: ${{ github.workspace }}/.hf_cache
       HF_HUB_DISABLE_TELEMETRY: "1"
-      WORK_DIR: ${{ github.workspace }}/research_runs/cross_asset_wfv_20260723
-      SCRIPT_PATH: ${{ github.workspace }}/research/remote/cross_asset_wfv.py
-      EXPECTED_SHA256: b11c083e261d3dce87f6129e7c1c27a6d6f281dc0f27d2c3fcbcdd3563d9cb3b
+      WORK_DIR: ${{ github.workspace }}/research_runs/cross_asset_wfv_v3_20260723
+      SCRIPT_PATH: ${{ github.workspace }}/research/remote/cross_asset_wfv_v3.py
+      EXPECTED_SHA256: aaf93646d2e01842ae1d60cd4eac7ef36f1afbb4c45a4f12ca6f0c15082d53de
     steps:
-      - name: Checkout research branch
+      - name: Checkout isolated research branch
         uses: actions/checkout@v4
         with:
           ref: research/cross-asset-wfv-20260723
           fetch-depth: 1
 
-      - name: Reassemble and verify immutable research script
+      - name: Reassemble and verify immutable causal script
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$WORK_DIR"
-          cat research/remote/cross_asset_wfv.py.b64.part{00..08} > /tmp/cross_asset_wfv.py.b64
-          base64 --decode /tmp/cross_asset_wfv.py.b64 > "$SCRIPT_PATH"
+          cat research/remote/cross_asset_wfv_v3.py.b64.part{00..06} > /tmp/cross_asset_wfv_v3.py.b64
+          base64 --decode /tmp/cross_asset_wfv_v3.py.b64 > "$SCRIPT_PATH"
           cp "$SCRIPT_PATH" "$WORK_DIR/assembled_payload.py"
           actual_sha=$(sha256sum "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
           printf '%s  %s\n' "$EXPECTED_SHA256" "$SCRIPT_PATH" | sha256sum --check --strict
           python -m py_compile "$SCRIPT_PATH"
 
-      - name: Install fixed research dependencies
+      - name: Install locked research dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -54,23 +57,22 @@ jobs:
             "huggingface_hub==0.27.1" \
             "hf_xet==1.1.10"
           python - <<'PY'
-          import json, numpy, pandas, pyarrow, huggingface_hub
+          import json, sys, numpy, pandas, pyarrow, huggingface_hub
           from pathlib import Path
+          root = Path("research_runs/cross_asset_wfv_v3_20260723")
+          root.mkdir(parents=True, exist_ok=True)
           payload = {
-              "python": __import__("sys").version,
+              "python": sys.version,
               "numpy": numpy.__version__,
               "pandas": pandas.__version__,
               "pyarrow": pyarrow.__version__,
               "huggingface_hub": huggingface_hub.__version__,
           }
-          Path("research_runs/cross_asset_wfv_20260723").mkdir(parents=True, exist_ok=True)
-          Path("research_runs/cross_asset_wfv_20260723/environment.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
-          )
+          (root / "environment.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
           print(json.dumps(payload, sort_keys=True))
           PY
 
-      - name: Run causally gated development, selection, and confirmation
+      - name: Run development then causally gated selection and confirmation
         shell: bash
         run: |
           set -uo pipefail
@@ -78,19 +80,16 @@ jobs:
           cp "$SCRIPT_PATH" "$WORK_DIR/locked_research_script.py"
           printf '%s  %s\n' "$EXPECTED_SHA256" "$WORK_DIR/locked_research_script.py" > "$WORK_DIR/SCRIPT_SHA256.txt"
           STATUS="$WORK_DIR/run_status.json"
-          DEV_FROZEN="$WORK_DIR/development/development_frozen.json"
-          SEL_FROZEN="$WORK_DIR/selection/selection_frozen.json"
+          DEV="$WORK_DIR/development/development_frozen.json"
+          SEL="$WORK_DIR/selection/selection_frozen.json"
 
           development_rc=0
-          python "$SCRIPT_PATH" \
-            --stage development \
-            --work-dir "$WORK_DIR" \
-            --cache-dir "$HF_HOME" \
+          python "$SCRIPT_PATH" --stage development --work-dir "$WORK_DIR" --cache-dir "$HF_HOME" \
             2>&1 | tee "$WORK_DIR/development.log" || development_rc=$?
 
-          gate_pass=0
-          if [[ $development_rc -eq 0 && -f "$DEV_FROZEN" ]]; then
-            gate_pass=$(python - "$DEV_FROZEN" <<'PY'
+          development_pass=0
+          if [[ $development_rc -eq 0 && -f "$DEV" ]]; then
+            development_pass=$(python - "$DEV" <<'PY'
           import json, sys
           print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("gate_pass_count", 0)))
           PY
@@ -99,19 +98,14 @@ jobs:
 
           selection_rc=-1
           selected=0
-          if [[ $development_rc -eq 0 && $gate_pass -gt 0 ]]; then
+          if [[ $development_rc -eq 0 && $development_pass -gt 0 ]]; then
             selection_rc=0
-            python "$SCRIPT_PATH" \
-              --stage selection \
-              --work-dir "$WORK_DIR" \
-              --cache-dir "$HF_HOME" \
-              --predecessor "$DEV_FROZEN" \
+            python "$SCRIPT_PATH" --stage selection --work-dir "$WORK_DIR" --cache-dir "$HF_HOME" --predecessor "$DEV" \
               2>&1 | tee "$WORK_DIR/selection.log" || selection_rc=$?
-            if [[ $selection_rc -eq 0 && -f "$SEL_FROZEN" ]]; then
-              selected=$(python - "$SEL_FROZEN" <<'PY'
+            if [[ $selection_rc -eq 0 && -f "$SEL" ]]; then
+              selected=$(python - "$SEL" <<'PY'
           import json, sys
-          payload=json.load(open(sys.argv[1], encoding="utf-8"))
-          print(len(payload.get("selected", [])))
+          print(len(json.load(open(sys.argv[1], encoding="utf-8")).get("selected", [])))
           PY
               )
             fi
@@ -120,18 +114,14 @@ jobs:
           confirmation_rc=-1
           if [[ $selection_rc -eq 0 && $selected -gt 0 ]]; then
             confirmation_rc=0
-            python "$SCRIPT_PATH" \
-              --stage confirmation \
-              --work-dir "$WORK_DIR" \
-              --cache-dir "$HF_HOME" \
-              --predecessor "$SEL_FROZEN" \
+            python "$SCRIPT_PATH" --stage confirmation --work-dir "$WORK_DIR" --cache-dir "$HF_HOME" --predecessor "$SEL" \
               2>&1 | tee "$WORK_DIR/confirmation.log" || confirmation_rc=$?
           fi
 
-          python - "$STATUS" "$development_rc" "$gate_pass" "$selection_rc" "$selected" "$confirmation_rc" <<'PY'
+          python - "$STATUS" "$development_rc" "$development_pass" "$selection_rc" "$selected" "$confirmation_rc" <<'PY'
           import json, pathlib, sys
           out = pathlib.Path(sys.argv[1])
-          work = out.parent
+          root = out.parent
           payload = {
               "development_rc": int(sys.argv[2]),
               "development_gate_pass_count": int(sys.argv[3]),
@@ -143,18 +133,19 @@ jobs:
               "2026_opened": False,
               "target_gate_1pct_daily": False,
           }
-          conf = work / "confirmation" / "confirmation_frozen.json"
+          conf = root / "confirmation" / "confirmation_frozen.json"
           if conf.exists():
               c = json.loads(conf.read_text(encoding="utf-8"))
-              payload["confirmation_gate"] = bool(c.get("results", {}).get("confirmation_gate", False))
-              payload["target_gate_1pct_daily"] = bool(c.get("results", {}).get("target_gate_1pct_daily", False))
-              payload["confirmation_base"] = c.get("results", {}).get("base")
+              r = c.get("results", {})
+              payload["confirmation_gate"] = bool(r.get("confirmation_gate", False))
+              payload["target_gate_1pct_daily"] = bool(r.get("target_gate_1pct_daily", False))
+              payload["confirmation_base"] = r.get("base")
           out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
           print(json.dumps(payload, sort_keys=True))
           PY
           exit 0
 
-      - name: Record checksums of research outputs
+      - name: Record output hashes
         if: always()
         shell: bash
         run: |
@@ -163,12 +154,12 @@ jobs:
             find "$WORK_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > "$WORK_DIR/OUTPUT_SHA256SUMS.txt"
           fi
 
-      - name: Upload research evidence only
+      - name: Upload temporary research evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cross-asset-wfv-research-${{ github.sha }}
-          path: research_runs/cross_asset_wfv_20260723
+          name: cross-asset-wfv-v3-${{ github.sha }}
+          path: research_runs/cross_asset_wfv_v3_20260723
           if-no-files-found: error
           retention-days: 7
           compression-level: 6
