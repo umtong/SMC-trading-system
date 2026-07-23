@@ -1,5 +1,6 @@
 {
   "purpose": "trigger checksum-verified Binance spot BTCUSDT and ETHUSDT minute export for 2023-2024",
-  "created_at_utc": "2026-07-23T13:06:00Z",
+  "created_at_utc": "2026-07-23T13:13:00Z",
+  "base_workflow_commit": "36d8e42d96e9e1247687b7a37b1ec62972f72b1f",
   "paper_or_live_authority": false
 }
