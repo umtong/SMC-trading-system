@@ -6,10 +6,12 @@ on:
       - research/v12-discovery-20260723
     paths:
       - 'research/v12_liquidity_shock_bundle.tgz.b64'
+      - 'research/v12_cross_stream_gap_patch.py'
       - '.github/workflows/v12-liquidity-shock-discovery.yml'
   pull_request:
     paths:
       - 'research/v12_liquidity_shock_bundle.tgz.b64'
+      - 'research/v12_cross_stream_gap_patch.py'
       - '.github/workflows/v12-liquidity-shock-discovery.yml'
   workflow_dispatch:
 
@@ -43,6 +45,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Apply causal cross-stream gap patch
+        run: python research/v12_cross_stream_gap_patch.py
 
       - name: Cache checksum-verified Binance archives
         uses: actions/cache@v4
