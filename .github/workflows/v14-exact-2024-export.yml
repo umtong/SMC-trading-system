@@ -1,0 +1,89 @@
+name: V14 Exact Quarter-Hour 2024 Export
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v14-exact-2024-export.yml'
+      - 'research/v14_2024_data_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-exact-2024:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore and verify extractor
+        shell: bash
+        run: |
+          set -euo pipefail
+          encoded=$(tr -d '\r\n\t ' < research/v14_quarter_hour_aggtrade.py.gz.b64)
+          printf '%s' "$encoded" | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
+          python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests
+
+      - name: Restore 2024 aggTrade cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v14_aggtrades_2024
+          key: v14-binance-usdm-aggtrades-2024-btc-eth-v1
+
+      - name: Export checksum-verified exact first-10-second events
+        id: export
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          rm -rf artifacts/v14-quarter-hour-2024
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2024-01-01 --end 2025-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2024 \
+            --output artifacts/v14-quarter-hour-2024 \
+            --workers 4 \
+            2>&1 | tee artifacts-v14-exact-2024.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload exact 2024 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-exact-quarter-hour-2024-${{ github.run_id }}
+          path: |
+            artifacts/v14-quarter-hour-2024
+            artifacts-v14-exact-2024.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V14 exact 2024 data export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- period: \`2024-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only; no strategy result._"
+
+      - name: Preserve export failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
