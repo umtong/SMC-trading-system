@@ -1,0 +1,395 @@
+name: research-binance-aggtrade-qh-features
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/research-binance-aggtrade-qh-features.yml
+      - research/binance_aggtrade_qh_v4_preregistration.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-aggtrade-qh-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - symbol: BTCUSDT
+            segment: 2021Q4
+            start_month: 2021-10
+            end_month_exclusive: 2022-01
+          - symbol: ETHUSDT
+            segment: 2021Q4
+            start_month: 2021-10
+            end_month_exclusive: 2022-01
+          - symbol: BTCUSDT
+            segment: '2022'
+            start_month: 2022-01
+            end_month_exclusive: 2023-01
+          - symbol: ETHUSDT
+            segment: '2022'
+            start_month: 2022-01
+            end_month_exclusive: 2023-01
+          - symbol: BTCUSDT
+            segment: '2023'
+            start_month: 2023-01
+            end_month_exclusive: 2024-01
+          - symbol: ETHUSDT
+            segment: '2023'
+            start_month: 2023-01
+            end_month_exclusive: 2024-01
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install isolated aggregation dependencies
+        run: python -m pip install --upgrade numpy pandas
+
+      - name: Verify locked preregistration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "f33ccbf65127063ea68509f0858df356087959c6a9e5db1edfab02cf1933f67f  research/binance_aggtrade_qh_v4_preregistration.json" | sha256sum -c -
+
+      - name: Build checksum-verified quarter-hour event features
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          SEGMENT: ${{ matrix.segment }}
+          START_MONTH: ${{ matrix.start_month }}
+          END_MONTH_EXCLUSIVE: ${{ matrix.end_month_exclusive }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import shutil
+          import time
+          import urllib.request
+          import zipfile
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+
+          SYMBOL = os.environ["SYMBOL"]
+          SEGMENT = os.environ["SEGMENT"]
+          START_MONTH = pd.Period(os.environ["START_MONTH"], freq="M")
+          END_MONTH_EXCLUSIVE = pd.Period(os.environ["END_MONTH_EXCLUSIVE"], freq="M")
+          MONTHS = pd.period_range(START_MONTH, END_MONTH_EXCLUSIVE - 1, freq="M")
+          WINDOWS = (5, 15, 30, 60)
+          BASE = "https://data.binance.vision/data/futures/um/monthly/aggTrades"
+          PREREG_SHA = "f33ccbf65127063ea68509f0858df356087959c6a9e5db1edfab02cf1933f67f"
+          WORK = Path(".aggtrade-work") / f"{SYMBOL}_{SEGMENT}"
+          OUTPUT = Path("research_data/binance_aggtrade_qh_v4") / f"{SYMBOL}_{SEGMENT}"
+          WORK.mkdir(parents=True, exist_ok=True)
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+          USER_AGENT = "SMC-ICT-aggtrade-research/1.0"
+          COLUMNS = (
+              "aggregate_trade_id", "price", "quantity", "first_trade_id",
+              "last_trade_id", "timestamp", "is_buyer_maker",
+          )
+          FEATURE_NAMES = (
+              "taker_buy_quote_notional", "taker_sell_quote_notional",
+              "signed_quote_notional", "quote_notional", "quote_imbalance",
+              "buy_aggtrade_count", "sell_aggtrade_count", "signed_count",
+              "aggtrade_count", "count_imbalance", "first_price", "last_price",
+              "high_price", "low_price", "log_return", "range_over_first", "vwap",
+              "mean_quote_per_aggtrade", "quote_notional_second_moment",
+              "sign_change_count", "longest_same_sign_run",
+              "first_trade_offset_ms", "last_trade_offset_ms",
+          )
+
+          def sha256_file(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while chunk := handle.read(1024 * 1024):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def sha256_bytes(payload: bytes) -> str:
+              return hashlib.sha256(payload).hexdigest()
+
+          def fetch_bytes(url: str, attempts: int = 5) -> bytes:
+              last_error: Exception | None = None
+              for attempt in range(1, attempts + 1):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:
+                      last_error = exc
+                      if attempt == attempts:
+                          break
+                      time.sleep(min(2 ** attempt, 30))
+              raise RuntimeError(f"failed to fetch {url}: {last_error}")
+
+          def download(url: str, target: Path, attempts: int = 5) -> None:
+              last_error: Exception | None = None
+              for attempt in range(1, attempts + 1):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                      with urllib.request.urlopen(request, timeout=180) as response, target.open("wb") as handle:
+                          shutil.copyfileobj(response, handle, length=1024 * 1024)
+                      return
+                  except Exception as exc:
+                      last_error = exc
+                      target.unlink(missing_ok=True)
+                      if attempt == attempts:
+                          break
+                      time.sleep(min(2 ** attempt, 30))
+              raise RuntimeError(f"failed to download {url}: {last_error}")
+
+          def longest_run(signs: np.ndarray) -> int:
+              if signs.size == 0:
+                  return 0
+              changes = np.flatnonzero(signs[1:] != signs[:-1]) + 1
+              boundaries = np.concatenate(([0], changes, [len(signs)]))
+              return int(np.diff(boundaries).max())
+
+          segment_start = START_MONTH.start_time.tz_localize("UTC")
+          segment_end = END_MONTH_EXCLUSIVE.start_time.tz_localize("UTC")
+          start_ms = int(segment_start.timestamp() * 1000)
+          end_ms = int(segment_end.timestamp() * 1000)
+          event_start_ms = np.arange(start_ms, end_ms, 900_000, dtype=np.int64)
+          n_events = len(event_start_ms)
+          arrays: dict[str, np.ndarray] = {"event_start_ns": event_start_ms * 1_000_000}
+          for window in WINDOWS:
+              for name in FEATURE_NAMES:
+                  if name in {
+                      "buy_aggtrade_count", "sell_aggtrade_count", "signed_count",
+                      "aggtrade_count", "sign_change_count", "longest_same_sign_run",
+                  }:
+                      arrays[f"w{window}_{name}"] = np.zeros(n_events, dtype=np.int64)
+                  elif name in {
+                      "first_price", "last_price", "high_price", "low_price", "log_return",
+                      "range_over_first", "vwap", "mean_quote_per_aggtrade",
+                      "first_trade_offset_ms", "last_trade_offset_ms",
+                  }:
+                      arrays[f"w{window}_{name}"] = np.full(n_events, np.nan, dtype=np.float64)
+                  else:
+                      arrays[f"w{window}_{name}"] = np.zeros(n_events, dtype=np.float64)
+
+          month_records = []
+          total_selected_rows = 0
+          total_raw_rows = 0
+
+          for ordinal, period in enumerate(MONTHS, start=1):
+              month = str(period)
+              filename = f"{SYMBOL}-aggTrades-{month}.zip"
+              url = f"{BASE}/{SYMBOL}/{filename}"
+              checksum_payload = fetch_bytes(url + ".CHECKSUM")
+              expected = checksum_payload.decode("utf-8").strip().split()[0].lower()
+              if len(expected) != 64:
+                  raise RuntimeError(f"{SYMBOL} {month}: invalid checksum payload")
+              archive_path = WORK / filename
+              download(url, archive_path)
+              actual = sha256_file(archive_path)
+              if actual != expected:
+                  raise RuntimeError(f"{SYMBOL} {month}: checksum mismatch {actual} != {expected}")
+
+              selected_time: list[np.ndarray] = []
+              selected_price: list[np.ndarray] = []
+              selected_quantity: list[np.ndarray] = []
+              selected_sign: list[np.ndarray] = []
+              raw_rows = 0
+              with zipfile.ZipFile(archive_path) as archive:
+                  csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                  if len(csv_names) != 1:
+                      raise RuntimeError(f"{SYMBOL} {month}: expected one CSV, found {csv_names}")
+                  with archive.open(csv_names[0]) as handle:
+                      chunks = pd.read_csv(
+                          handle,
+                          header=None,
+                          names=COLUMNS,
+                          usecols=range(7),
+                          chunksize=1_000_000,
+                          low_memory=False,
+                      )
+                      for chunk in chunks:
+                          timestamp = pd.to_numeric(chunk["timestamp"], errors="coerce")
+                          valid = timestamp.notna()
+                          if not valid.any():
+                              continue
+                          raw_rows += int(valid.sum())
+                          timestamp = timestamp.loc[valid].to_numpy(dtype=np.int64)
+                          magnitude = int(np.median(np.abs(timestamp)))
+                          timestamp_ms = timestamp // 1000 if magnitude > 10**14 else timestamp
+                          offset_ms = np.mod(timestamp_ms, 900_000)
+                          use = offset_ms < 60_000
+                          if not np.any(use):
+                              continue
+                          price = pd.to_numeric(chunk.loc[valid, "price"], errors="raise").to_numpy(dtype=np.float64)[use]
+                          quantity = pd.to_numeric(chunk.loc[valid, "quantity"], errors="raise").to_numpy(dtype=np.float64)[use]
+                          maker_text = chunk.loc[valid, "is_buyer_maker"].astype(str).str.strip().str.lower().to_numpy()[use]
+                          if not np.isin(maker_text, ("true", "false")).all():
+                              raise RuntimeError(f"{SYMBOL} {month}: invalid maker flag")
+                          sign = np.where(maker_text == "true", -1, 1).astype(np.int8)
+                          selected_time.append(timestamp_ms[use])
+                          selected_price.append(price)
+                          selected_quantity.append(quantity)
+                          selected_sign.append(sign)
+
+              if selected_time:
+                  timestamp_ms = np.concatenate(selected_time)
+                  price = np.concatenate(selected_price)
+                  quantity = np.concatenate(selected_quantity)
+                  sign = np.concatenate(selected_sign)
+                  order = np.argsort(timestamp_ms, kind="stable")
+                  timestamp_ms = timestamp_ms[order]
+                  price = price[order]
+                  quantity = quantity[order]
+                  sign = sign[order]
+                  event_index = ((timestamp_ms - start_ms) // 900_000).astype(np.int64)
+                  in_segment = (event_index >= 0) & (event_index < n_events)
+                  timestamp_ms = timestamp_ms[in_segment]
+                  price = price[in_segment]
+                  quantity = quantity[in_segment]
+                  sign = sign[in_segment]
+                  event_index = event_index[in_segment]
+                  total_selected_rows += int(len(event_index))
+
+                  unique_events, first_positions = np.unique(event_index, return_index=True)
+                  last_positions = np.r_[first_positions[1:], len(event_index)]
+                  for event_id, begin, finish in zip(unique_events, first_positions, last_positions):
+                      event_times = timestamp_ms[begin:finish]
+                      event_prices = price[begin:finish]
+                      event_quantity = quantity[begin:finish]
+                      event_sign = sign[begin:finish]
+                      event_base = event_start_ms[event_id]
+                      for window in WINDOWS:
+                          count = int(np.searchsorted(event_times, event_base + window * 1000, side="left"))
+                          if count <= 0:
+                              continue
+                          px = event_prices[:count]
+                          qty = event_quantity[:count]
+                          sg = event_sign[:count]
+                          quote = px * qty
+                          signed_quote = quote * sg
+                          buy = sg > 0
+                          sell = ~buy
+                          total_quote = float(quote.sum())
+                          signed_total = float(signed_quote.sum())
+                          prefix = f"w{window}_"
+                          arrays[prefix + "taker_buy_quote_notional"][event_id] = float(quote[buy].sum())
+                          arrays[prefix + "taker_sell_quote_notional"][event_id] = float(quote[sell].sum())
+                          arrays[prefix + "signed_quote_notional"][event_id] = signed_total
+                          arrays[prefix + "quote_notional"][event_id] = total_quote
+                          arrays[prefix + "quote_imbalance"][event_id] = signed_total / total_quote if total_quote > 0 else 0.0
+                          arrays[prefix + "buy_aggtrade_count"][event_id] = int(buy.sum())
+                          arrays[prefix + "sell_aggtrade_count"][event_id] = int(sell.sum())
+                          arrays[prefix + "signed_count"][event_id] = int(sg.sum())
+                          arrays[prefix + "aggtrade_count"][event_id] = count
+                          arrays[prefix + "count_imbalance"][event_id] = float(sg.sum()) / count
+                          arrays[prefix + "first_price"][event_id] = float(px[0])
+                          arrays[prefix + "last_price"][event_id] = float(px[-1])
+                          arrays[prefix + "high_price"][event_id] = float(px.max())
+                          arrays[prefix + "low_price"][event_id] = float(px.min())
+                          arrays[prefix + "log_return"][event_id] = float(np.log(px[-1] / px[0])) if px[0] > 0 and px[-1] > 0 else np.nan
+                          arrays[prefix + "range_over_first"][event_id] = float((px.max() - px.min()) / px[0]) if px[0] > 0 else np.nan
+                          arrays[prefix + "vwap"][event_id] = float(np.sum(px * qty) / np.sum(qty)) if np.sum(qty) > 0 else np.nan
+                          arrays[prefix + "mean_quote_per_aggtrade"][event_id] = total_quote / count
+                          arrays[prefix + "quote_notional_second_moment"][event_id] = float(np.mean(quote * quote))
+                          arrays[prefix + "sign_change_count"][event_id] = int(np.sum(sg[1:] != sg[:-1]))
+                          arrays[prefix + "longest_same_sign_run"][event_id] = longest_run(sg)
+                          arrays[prefix + "first_trade_offset_ms"][event_id] = float(event_times[0] - event_base)
+                          arrays[prefix + "last_trade_offset_ms"][event_id] = float(event_times[count - 1] - event_base)
+
+              total_raw_rows += raw_rows
+              month_records.append({
+                  "symbol": SYMBOL,
+                  "segment": SEGMENT,
+                  "month": month,
+                  "url": url,
+                  "archive_bytes": archive_path.stat().st_size,
+                  "official_sha256": expected,
+                  "download_sha256": actual,
+                  "checksum_sha256": sha256_bytes(checksum_payload),
+                  "raw_rows": raw_rows,
+                  "selected_first_60s_rows": int(sum(len(values) for values in selected_time)),
+              })
+              archive_path.unlink(missing_ok=True)
+              print(json.dumps({
+                  "symbol": SYMBOL,
+                  "segment": SEGMENT,
+                  "month": month,
+                  "ordinal": ordinal,
+                  "total_months": len(MONTHS),
+                  "raw_rows": raw_rows,
+                  "selected_rows": month_records[-1]["selected_first_60s_rows"],
+              }), flush=True)
+
+          output_path = OUTPUT / f"{SYMBOL}_{SEGMENT}_qh_seconds_v4.npz"
+          np.savez_compressed(output_path, **arrays)
+          zero_trade_events = {
+              str(window): int(np.sum(arrays[f"w{window}_aggtrade_count"] == 0))
+              for window in WINDOWS
+          }
+          manifest = {
+              "schema_version": 1,
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "research_id": "BINANCE_USDM_AGGTRADE_QH_SECONDS_V4",
+              "preregistration_sha256": PREREG_SHA,
+              "source": "Binance official data.binance.vision USD-M monthly aggTrades",
+              "symbol": SYMBOL,
+              "segment": SEGMENT,
+              "segment_start": segment_start.isoformat(),
+              "segment_end_exclusive": segment_end.isoformat(),
+              "observation_windows_seconds": list(WINDOWS),
+              "decision_excludes_trade_at_boundary": True,
+              "event_count": n_events,
+              "raw_rows": total_raw_rows,
+              "selected_first_60s_rows": total_selected_rows,
+              "zero_trade_events": zero_trade_events,
+              "feature_names": list(FEATURE_NAMES),
+              "official_checksums_verified": True,
+              "credentials_used": False,
+              "orders_submitted": False,
+              "outcome_data_computed": False,
+              "output_path": str(output_path),
+              "output_sha256": sha256_file(output_path),
+              "months": month_records,
+          }
+          digest_source = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+          manifest["content_digest"] = hashlib.sha256(digest_source).hexdigest()
+          manifest_path = OUTPUT / "MANIFEST.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          (OUTPUT / "MANIFEST.sha256").write_text(
+              f"{sha256_file(manifest_path)}  MANIFEST.json\n", encoding="utf-8"
+          )
+          print(json.dumps({
+              "output": str(output_path),
+              "output_sha256": sha256_file(output_path),
+              "manifest": str(manifest_path),
+              "manifest_sha256": sha256_file(manifest_path),
+              "event_count": n_events,
+              "total_raw_rows": total_raw_rows,
+              "total_selected_rows": total_selected_rows,
+          }, indent=2), flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-aggtrade-qh-v4-${{ matrix.symbol }}-${{ matrix.segment }}-${{ github.run_id }}
+          path: research_data/binance_aggtrade_qh_v4/${{ matrix.symbol }}_${{ matrix.segment }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
