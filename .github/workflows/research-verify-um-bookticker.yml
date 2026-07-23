@@ -11,9 +11,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: research-verify-um-bookticker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
