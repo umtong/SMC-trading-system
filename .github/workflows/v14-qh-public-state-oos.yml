@@ -33,7 +33,7 @@ jobs:
           from pathlib import Path
           files = [
               ('research/v14_quarter_hour_aggtrade.py.gz.b64', '/tmp/v14_quarter_hour_aggtrade.py', '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f'),
-              ('research/v14_qh_public_state_model.py.gz.b64', '/tmp/v14_qh_public_state_model.py', '6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e'),
+              ('research/v14_qh_public_state_model.py.gz.b64', '/tmp/v14_qh_public_state_model.py', 'ee55026ef55d126fc8347a6641c3c9833dee5e89e152664cea9dadfc898636c6'),
           ]
           for source, destination, expected in files:
               encoded = ''.join(Path(source).read_text(encoding='ascii').split())
@@ -50,15 +50,15 @@ jobs:
             status=$?
           fi
           cat artifacts/v14-restore.log
-          # Diagnostic step never blocks artifact publication; later steps fail naturally if sources are absent.
           exit 0
+
       - name: Mark frozen OOS started
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          gh pr comment "$PR_NUMBER" --body "## V14 frozen 2024 OOS\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- train history: \`2023 plus rolling prior 180 days\`\n- evaluation: \`2024-01-01 through 2025-01-01 UTC\`\n- model hash: \`6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e\`\n\n_One-shot research-only OOS. No refit on 2024._" --edit-last --create-if-none
+          gh pr comment "$PR_NUMBER" --body "## V14 frozen 2024 OOS\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- train history: \`2023 plus rolling prior 180 days\`\n- evaluation: \`2024-01-01 through 2025-01-01 UTC\`\n- corrected model hash: \`ee55026ef55d126fc8347a6641c3c9833dee5e89e152664cea9dadfc898636c6\`\n\n_One-shot research-only OOS. No refit on 2024._" --edit-last --create-if-none
 
       - uses: actions/setup-python@v5
         with:
