@@ -1,0 +1,62 @@
+iquidation_price
++                intrabar_liquidation_precedes_stop = (
++                    liquidation_price is not None and liquidation_price <= stop and mark_high >= liquidation_price
++                )
++                if gap_liquidated:
++                    exit_fill = _adverse_price(o, side, max(cost.slippage_bps_per_side, LIQUIDATION_SLIPPAGE_BPS), False)
++                    exit_reason = "gap_liquidation"
++                elif o >= stop:
+                     exit_fill, exit_reason = _adverse_price(o, side, cost.slippage_bps_per_side, False), "gap_stop"
++                elif intrabar_liquidation_precedes_stop:
++                    exit_fill = _adverse_price(float(liquidation_price), side, max(cost.slippage_bps_per_side, LIQUIDATION_SLIPPAGE_BPS), False)
++                    exit_reason = "liquidation"
+                 elif h >= stop and l <= target:
+                     exit_fill, exit_reason = _adverse_price(stop, side, cost.slippage_bps_per_side, False), "same_bar_stop_first"
+                 elif h >= stop:
+                     exit_fill, exit_reason = _adverse_price(stop, side, cost.slippage_bps_per_side, False), "stop"
+                 elif l <= target:
+                     exit_fill, exit_reason = _adverse_price(target, side, cost.slippage_bps_per_side, False), "target"
+-                adverse_mark = h
++                adverse_mark = exit_fill if exit_reason is not None and exit_fill is not None else h
+ 
+-            estimated_exit_fee = qty * adverse_mark * cost.exit_fee_rate
+-            adverse_equity = equity + side * qty * (adverse_mark - entry_fill) - estimated_exit_fee
++            if exit_reason in {"liquidation", "gap_liquidation"} and exit_fill is not None:
++                liquidation_fee = qty * exit_fill * LIQUIDATION_FEE_RATE
++            estimated_exit_fee = qty * adverse_mark * cost.exit_fee_rate + liquidation_fee
++            adverse_equity = max(0.0, equity + side * qty * (adverse_mark - entry_fill) - estimated_exit_fee)
+             favorable_mark = h if side == 1 else l
+             favorable_equity = equity + side * qty * (favorable_mark - entry_fill) - qty * favorable_mark * cost.exit_fee_rate
+             # Intrabar ordering is unknown. For drawdown stress, assume the favorable
+@@ -965,9 +1051,9 @@ def simulate(
+             if exit_reason is not None and exit_fill is not None:
+                 exit_time = ts
+                 gross = side * qty * (exit_fill - entry_fill)
+-                exit_fee = qty * exit_fill * cost.exit_fee_rate
+-                equity += gross - exit_fee
+-                net_trade_pnl = gross - entry_fee - exit_fee + funding_pnl
++                exit_fee = qty * exit_fill * cost.exit_fee_rate + liquidation_fee
++                equity = max(0.0, equity + gross - exit_fee) if exit_reason in {"liquidation", "gap_liquidation"} else equity + gross - exit_fee
++                net_trade_pnl = equity - equity_before_entry
+                 r_value = net_trade_pnl / initial_risk if initial_risk > 0 else float("nan")
+                 ledger.append({
+                     "candidate_id": candidate.candidate_id,
+@@ -980,6 +1066,8 @@ def simulate(
+                     "exit_price": exit_fill,
+                     "stop_price": stop,
+                     "target_price": target,
++                    "liquidation_price": liquidation_price,
++                    "liquidation_fee": liquidation_fee,
+                     "quantity": qty,
+                     "prior_quote_volume": prior_qv,
+                     "initial_risk": initial_risk,
+@@ -1017,6 +1105,7 @@ def simulate(
+                 "entry_price": entry_fill,
+                 "stop_price": stop,
+                 "target_price": target,
++                "liquidation_price": liquidation_price,
+                 "quantity": qty,
+                 "funding_pnl": funding_pnl,
+                 "last_mark_time": last_ts,
+@@ -1032,10 +1121,19 @@ def simulate(
+     curve_df = curve_df[(curve_df["timestamp"] >= start) & (curve_df["timestam
