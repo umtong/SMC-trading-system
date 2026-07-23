@@ -1,0 +1,170 @@
+name: research-binance-orderflow-1m-npz
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/research-binance-orderflow-1m-npz.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-orderflow-1m-npz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install isolated conversion dependencies
+        run: python -m pip install --upgrade numpy pandas pyarrow huggingface_hub hf_xet
+
+      - name: Download pinned 1m data and remove 2026 before serialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+          from huggingface_hub import HfApi, hf_hub_download
+
+          REPO_ID = "linxy/USDT-M_Perpetual_Futures"
+          PINNED_REVISION = "69ae9208fb762758b279e449684638c9e7bbd0c9"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          CUTOFF = pd.Timestamp("2026-01-01T00:00:00Z")
+          OUTPUT = Path("research_data/binance_usdm_orderflow_1m_npz_2020_2025")
+          CACHE = Path(".hf-1m-cache")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while chunk := handle.read(1024 * 1024):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          current_revision = HfApi().dataset_info(REPO_ID).sha
+          if current_revision != PINNED_REVISION:
+              print(json.dumps({"warning": "upstream advanced; pinned revision retained", "current": current_revision, "pinned": PINNED_REVISION}))
+
+          records = []
+          for symbol in SYMBOLS:
+              filename = f"{symbol}/{symbol}_1m.parquet"
+              source = Path(hf_hub_download(
+                  repo_id=REPO_ID,
+                  repo_type="dataset",
+                  filename=filename,
+                  revision=PINNED_REVISION,
+                  cache_dir=CACHE,
+              ))
+              frame = pd.read_parquet(source)
+              required = (
+                  "open_time", "open", "high", "low", "close", "close_time",
+                  "quote_volume", "count", "taker_buy_quote_volume",
+              )
+              missing = [column for column in required if column not in frame.columns]
+              if missing:
+                  raise RuntimeError(f"{symbol}: missing columns {missing}")
+              frame = frame.loc[:, required].copy()
+              frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, errors="raise")
+              frame = frame.loc[frame["open_time"] < CUTOFF].copy()
+              frame = frame.sort_values("open_time", kind="stable")
+              duplicates = int(frame["open_time"].duplicated().sum())
+              frame = frame.drop_duplicates("open_time", keep="last").reset_index(drop=True)
+              for column in ("open", "high", "low", "close", "quote_volume", "count", "taker_buy_quote_volume"):
+                  frame[column] = pd.to_numeric(frame[column], errors="raise")
+              if pd.api.types.is_datetime64_any_dtype(frame["close_time"]):
+                  close_time_ns = pd.to_datetime(frame["close_time"], utc=True, errors="raise").astype("int64").to_numpy(dtype=np.int64)
+              else:
+                  close_numeric = pd.to_numeric(frame["close_time"], errors="raise")
+                  magnitude = float(close_numeric.abs().median())
+                  unit = "ns" if magnitude > 1e17 else "us" if magnitude > 1e14 else "ms" if magnitude > 1e11 else "s"
+                  close_time_ns = pd.to_datetime(close_numeric, unit=unit, utc=True).astype("int64").to_numpy(dtype=np.int64)
+              open_time_ns = frame["open_time"].astype("int64").to_numpy(dtype=np.int64)
+              delta = np.diff(open_time_ns)
+              missing_minutes = int(np.maximum(np.rint(delta / 60_000_000_000).astype(np.int64) - 1, 0).sum())
+              if duplicates != 0 or missing_minutes != 0:
+                  raise RuntimeError(f"{symbol}: duplicate={duplicates}, missing_minutes={missing_minutes}")
+              if np.any(frame["high"].to_numpy() < np.maximum(frame["open"].to_numpy(), frame["close"].to_numpy())):
+                  raise RuntimeError(f"{symbol}: high invariant failed")
+              if np.any(frame["low"].to_numpy() > np.minimum(frame["open"].to_numpy(), frame["close"].to_numpy())):
+                  raise RuntimeError(f"{symbol}: low invariant failed")
+              if np.any(frame["taker_buy_quote_volume"].to_numpy() > frame["quote_volume"].to_numpy() + 1e-7):
+                  raise RuntimeError(f"{symbol}: taker-buy quote volume invariant failed")
+
+              arrays = {
+                  "open_time": open_time_ns,
+                  "close_time": close_time_ns,
+                  "open": frame["open"].to_numpy(dtype=np.float64),
+                  "high": frame["high"].to_numpy(dtype=np.float64),
+                  "low": frame["low"].to_numpy(dtype=np.float64),
+                  "close": frame["close"].to_numpy(dtype=np.float64),
+                  "quote_volume": frame["quote_volume"].to_numpy(dtype=np.float64),
+                  "count": frame["count"].to_numpy(dtype=np.int64),
+                  "taker_buy_quote_volume": frame["taker_buy_quote_volume"].to_numpy(dtype=np.float64),
+              }
+              symbol_dir = OUTPUT / symbol
+              symbol_dir.mkdir(parents=True, exist_ok=True)
+              target = symbol_dir / f"{symbol}_klines_1m_through_2025.npz"
+              np.savez_compressed(target, **arrays)
+              records.append({
+                  "symbol": symbol,
+                  "kind": "klines_1m",
+                  "source_path": filename,
+                  "source_sha256": sha256(source),
+                  "output_path": str(target),
+                  "output_sha256": sha256(target),
+                  "rows": int(len(frame)),
+                  "start": frame["open_time"].iloc[0].isoformat(),
+                  "end": frame["open_time"].iloc[-1].isoformat(),
+                  "duplicates_removed": duplicates,
+                  "missing_minutes": missing_minutes,
+              })
+              del frame, arrays
+
+          manifest = {
+              "schema_version": 1,
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "source_repository": REPO_ID,
+              "source_revision": PINNED_REVISION,
+              "source_description": "Binance USD-M 1m kline mirror generated from official data.binance.vision archives",
+              "sealed_cutoff_exclusive": CUTOFF.isoformat(),
+              "sealed_2026_status": "REMOVED_BEFORE_NPZ_SERIALIZATION",
+              "credentials_used": False,
+              "orders_submitted": False,
+              "records": records,
+          }
+          digest_source = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+          manifest["content_digest"] = hashlib.sha256(digest_source).hexdigest()
+          manifest_path = OUTPUT / "MANIFEST.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          (OUTPUT / "MANIFEST.sha256").write_text(f"{sha256(manifest_path)}  MANIFEST.json\n", encoding="utf-8")
+          print(json.dumps({"records": records, "manifest": str(manifest_path)}, indent=2))
+          PY
+
+      - name: Upload sealed 1m NumPy research dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-orderflow-1m-npz-through-2025-${{ github.run_id }}
+          path: research_data/binance_usdm_orderflow_1m_npz_2020_2025
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
