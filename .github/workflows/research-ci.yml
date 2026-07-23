@@ -47,7 +47,9 @@ jobs:
           retention-days: 7
 
   phase26_liquidation_depth:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.head_ref == 'research/phase26-liquidation-depth')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -88,7 +90,7 @@ jobs:
           retention-days: 14
 
       - name: Commit compact results to research branch
-        if: success()
+        if: success() && github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
