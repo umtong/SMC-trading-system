@@ -1,6 +1,13 @@
 name: Research Data 5m
 
 on:
+  push:
+    branches:
+      - agent/research-snapshot-and-oos
+    paths:
+      - scripts/download_binance_vision_klines.py
+      - tests/easychart_v0/test_binance_vision_downloader.py
+      - .github/workflows/research-data-5m.yml
   pull_request:
     branches:
       - main
