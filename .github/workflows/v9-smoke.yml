@@ -1,0 +1,30 @@
+name: V9 Research Runner Smoke
+
+on:
+  push:
+    branches:
+      - "research/v9-alpha-search-20260723"
+    paths:
+      - ".github/workflows/v9-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write heartbeat
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/v9-smoke
+          printf '{"status":"ok","run_id":"%s","sha":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > artifacts/v9-smoke/heartbeat.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/v9-smoke/heartbeat.json
+          git commit -m "Record V9 research runner heartbeat"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
