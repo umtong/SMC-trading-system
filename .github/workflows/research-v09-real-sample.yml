@@ -1,7 +1,6 @@
 name: V0.9 Real Archive Sample
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
