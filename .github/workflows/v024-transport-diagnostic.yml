@@ -1,0 +1,41 @@
+name: v0.24.1 transport diagnostic
+
+on:
+  push:
+    branches:
+      - research/v024-microstructure-20260723
+    paths:
+      - '.github/workflows/v024-transport-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect and reconstruct v4 transport
+        shell: bash
+        run: |
+          set -u
+          mkdir -p transport-evidence
+          find research/v024_bundle_v4 -maxdepth 1 -name 'part-*.b64' -print0 | sort -z | xargs -0 sha256sum > transport-evidence/part-sha256.txt
+          find research/v024_bundle_v4 -maxdepth 1 -name 'part-*.b64' -printf '%f %s\n' | sort > transport-evidence/part-sizes.txt
+          cat research/v024_bundle_v4/part-*.b64 | base64 -d > transport-evidence/reconstructed.tar.xz
+          sha256sum transport-evidence/reconstructed.tar.xz > transport-evidence/reconstructed.sha256
+          wc -c transport-evidence/reconstructed.tar.xz > transport-evidence/reconstructed.size
+          xz -t transport-evidence/reconstructed.tar.xz > transport-evidence/xz-test.txt 2>&1
+          printf '%s\n' "$?" > transport-evidence/xz-status.txt
+          tar -tJf transport-evidence/reconstructed.tar.xz > transport-evidence/archive-members.txt 2> transport-evidence/tar-error.txt
+          printf '%s\n' "$?" > transport-evidence/tar-status.txt
+          exit 0
+      - name: Upload exact reconstructed bytes
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0241-transport-${{ github.run_id }}
+          path: transport-evidence
+          if-no-files-found: error
+          retention-days: 7
