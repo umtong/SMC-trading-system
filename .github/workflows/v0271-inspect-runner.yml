@@ -1,0 +1,71 @@
+name: v0.27.1 inspect locked runner
+
+on:
+  push:
+    branches:
+      - research/v0271-inspect-20260724-gpt
+    paths:
+      - '.github/workflows/v0271-inspect-runner.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and inspect exact locked runner without opening candidate PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v0271-locked
+          mkdir -p /tmp/v0271-locked /tmp/v0271-inspection
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import lzma
+          import tarfile
+          from io import BytesIO
+          from pathlib import Path
+
+          root = Path('research/v0271_bundle_v2')
+          manifest = json.loads((root / 'TRANSPORT_MANIFEST.json').read_text(encoding='utf-8'))
+          encoded = b''.join(b''.join((root / item['name']).read_bytes().split()) for item in manifest['parts'])
+          archive = base64.b64decode(encoded, validate=True)
+          actual_sha = hashlib.sha256(archive).hexdigest()
+          if actual_sha != manifest['archive_sha256']:
+              raise SystemExit(f'archive sha mismatch: {actual_sha} != {manifest["archive_sha256"]}')
+          tar_bytes = lzma.decompress(archive)
+          with tarfile.open(fileobj=BytesIO(tar_bytes), mode='r:') as tf:
+              tf.extractall('/tmp/v0271-locked', filter='data')
+              names = tf.getnames()
+          evidence = {
+              'archive_sha256': actual_sha,
+              'archive_bytes': len(archive),
+              'member_count': len(names),
+              'members': names,
+              'candidate_pnl_observed': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+          }
+          Path('/tmp/v0271-inspection/reconstruction.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          PY
+
+          find /tmp/v0271-locked -type f -printf '%P\t%s bytes\n' | sort | tee /tmp/v0271-inspection/file-list.txt
+          python -m compileall -q /tmp/v0271-locked
+          cp -a /tmp/v0271-locked/. /tmp/v0271-inspection/locked-runner/
+
+      - name: Upload locked runner inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0271-locked-runner-inspection-${{ github.run_id }}
+          path: /tmp/v0271-inspection
+          if-no-files-found: error
+          retention-days: 30
