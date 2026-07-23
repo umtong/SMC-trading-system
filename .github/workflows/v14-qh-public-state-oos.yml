@@ -26,10 +26,22 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          base64 --decode research/v14_quarter_hour_aggtrade.py.gz.b64 | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
-          echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
-          base64 --decode research/v14_qh_public_state_model.py.gz.b64 | gzip -d > /tmp/v14_qh_public_state_model.py
-          echo '6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e  /tmp/v14_qh_public_state_model.py' | sha256sum --check --strict
+          python - <<'PY'
+          import base64, gzip, hashlib
+          from pathlib import Path
+          files = [
+              ('research/v14_quarter_hour_aggtrade.py.gz.b64', '/tmp/v14_quarter_hour_aggtrade.py', '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f'),
+              ('research/v14_qh_public_state_model.py.gz.b64', '/tmp/v14_qh_public_state_model.py', '6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e'),
+          ]
+          for source, destination, expected in files:
+              encoded = ''.join(Path(source).read_text(encoding='ascii').split())
+              decoded = gzip.decompress(base64.b64decode(encoded, validate=True))
+              actual = hashlib.sha256(decoded).hexdigest()
+              print(source, 'bytes=', len(decoded), 'sha256=', actual, flush=True)
+              if actual != expected:
+                  raise SystemExit(f'hash mismatch for {source}: expected {expected}, got {actual}')
+              Path(destination).write_bytes(decoded)
+          PY
           python -m py_compile /tmp/v14_quarter_hour_aggtrade.py /tmp/v14_qh_public_state_model.py
 
       - name: Mark frozen OOS started
@@ -80,11 +92,9 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
           import hashlib
-          import io
           import json
           import re
           import zipfile
-          import numpy as np
           import pandas as pd
           import requests
 
@@ -116,9 +126,11 @@ jobs:
               name = f'{symbol}-1m-{month}.zip'
               path = folder / name
               url = f'{BASE}/{kind}/{symbol}/1m/{name}'
-              checksum_url = url + '.CHECKSUM'
-              checksum_bytes = get(checksum_url)
-              expected = re.search(rb'([0-9a-fA-F]{64})', checksum_bytes).group(1).decode().lower()
+              checksum_bytes = get(url + '.CHECKSUM')
+              match = re.search(rb'([0-9a-fA-F]{64})', checksum_bytes)
+              if not match:
+                  raise ValueError(f'bad checksum document: {url}.CHECKSUM')
+              expected = match.group(1).decode().lower()
               if not path.exists() or sha256(path) != expected:
                   path.write_bytes(get(url))
               actual = sha256(path)
@@ -174,14 +186,7 @@ jobs:
                   frame['symbol'] = symbol
                   path = out / f'{symbol}_causal_features.csv.gz'
                   frame.to_csv(path, index=False, compression={'method':'gzip','compresslevel':6,'mtime':0})
-                  summary.append({
-                      'symbol': symbol,
-                      'rows': len(frame),
-                      'segments': int(frame.segment_id.nunique()),
-                      'first_open_time': str(frame.open_time.min()),
-                      'last_open_time': str(frame.open_time.max()),
-                      'sha256': sha256(path),
-                  })
+                  summary.append({'symbol': symbol, 'rows': len(frame), 'segments': int(frame.segment_id.nunique()), 'first_open_time': str(frame.open_time.min()), 'last_open_time': str(frame.open_time.max()), 'sha256': sha256(path)})
               (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
           PY
 
@@ -190,24 +195,14 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf artifacts/v14-exact/2023
-          python /tmp/v14_quarter_hour_aggtrade.py \
-            --start 2023-01-01 --end 2024-01-01 \
-            --symbols BTCUSDT ETHUSDT \
-            --cache .cache/v14_aggtrades_2023 \
-            --output artifacts/v14-exact/2023 \
-            --workers 4
+          python /tmp/v14_quarter_hour_aggtrade.py --start 2023-01-01 --end 2024-01-01 --symbols BTCUSDT ETHUSDT --cache .cache/v14_aggtrades_2023 --output artifacts/v14-exact/2023 --workers 4
 
       - name: Extract exact first-10-second quarter-hour data for 2024
         shell: bash
         run: |
           set -euo pipefail
           rm -rf artifacts/v14-exact/2024
-          python /tmp/v14_quarter_hour_aggtrade.py \
-            --start 2024-01-01 --end 2025-01-01 \
-            --symbols BTCUSDT ETHUSDT \
-            --cache .cache/v14_aggtrades_2024 \
-            --output artifacts/v14-exact/2024 \
-            --workers 4
+          python /tmp/v14_quarter_hour_aggtrade.py --start 2024-01-01 --end 2025-01-01 --symbols BTCUSDT ETHUSDT --cache .cache/v14_aggtrades_2024 --output artifacts/v14-exact/2024 --workers 4
 
       - name: Run frozen 2024 OOS once
         id: oos
@@ -216,15 +211,7 @@ jobs:
           set +e
           set -o pipefail
           rm -rf artifacts/v14-oos-2024
-          python /tmp/v14_qh_public_state_model.py \
-            --public-dir artifacts/v14-public/2023 \
-            --public-dir artifacts/v14-public/2024 \
-            --exact-dir artifacts/v14-exact/2023 \
-            --exact-dir artifacts/v14-exact/2024 \
-            --evaluation-start 2024-01-01 \
-            --evaluation-end 2025-01-01 \
-            --output artifacts/v14-oos-2024 \
-            2>&1 | tee artifacts-v14-oos.log
+          python /tmp/v14_qh_public_state_model.py --public-dir artifacts/v14-public/2023 --public-dir artifacts/v14-public/2024 --exact-dir artifacts/v14-exact/2023 --exact-dir artifacts/v14-exact/2024 --evaluation-start 2024-01-01 --evaluation-end 2025-01-01 --output artifacts/v14-oos-2024 2>&1 | tee artifacts-v14-oos.log
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit 0
