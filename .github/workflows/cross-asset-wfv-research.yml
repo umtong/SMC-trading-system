@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "research/remote/cross_asset_wfv_v3.py.b64.part*"
+      - "research/remote/repair_cross_asset_wfv_v3_transfer.py"
       - ".github/workflows/cross-asset-wfv-research.yml"
 
 permissions:
@@ -24,7 +25,7 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
       WORK_DIR: ${{ github.workspace }}/research_runs/cross_asset_wfv_v3_20260723
       SCRIPT_PATH: ${{ github.workspace }}/research/remote/cross_asset_wfv_v3.py
-      EXPECTED_SHA256: aaf93646d2e01842ae1d60cd4eac7ef36f1afbb4c45a4f12ca6f0c15082d53de
+      EXPECTED_SHA256: 66b08521a6136ce26fe1c586dcd915877e874228692b03e312fa834afe9554af
     steps:
       - name: Checkout isolated research branch
         uses: actions/checkout@v4
@@ -32,13 +33,14 @@ jobs:
           ref: research/cross-asset-wfv-20260723
           fetch-depth: 1
 
-      - name: Reassemble and verify immutable causal script
+      - name: Reassemble, repair transfer, pin source, and verify script
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$WORK_DIR"
           cat research/remote/cross_asset_wfv_v3.py.b64.part{00..06} > /tmp/cross_asset_wfv_v3.py.b64
           base64 --decode /tmp/cross_asset_wfv_v3.py.b64 > "$SCRIPT_PATH"
+          python research/remote/repair_cross_asset_wfv_v3_transfer.py "$SCRIPT_PATH"
           cp "$SCRIPT_PATH" "$WORK_DIR/assembled_payload.py"
           actual_sha=$(sha256sum "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
