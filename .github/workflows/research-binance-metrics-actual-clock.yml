@@ -1,0 +1,47 @@
+name: Research Binance metrics with actual availability clock
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/research-binance-metrics-actual-clock.yml"
+      - "research_tools/binance_metrics_bundle.py"
+      - "research_tools/binance_metrics_bundle_actual_clock.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-metrics-actual-clock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-data-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build checksum-verified metrics bundle
+        run: |
+          python research_tools/binance_metrics_bundle_actual_clock.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start-date 2023-01-01 \
+            --end-date 2026-06-30 \
+            --workers 16 \
+            --output-dir research_artifact/binance_um_metrics_actual_clock
+      - name: Inspect outputs
+        run: |
+          python -m json.tool research_artifact/binance_um_metrics_actual_clock/manifest.json | tail -n 240
+          sha256sum research_artifact/binance_um_metrics_actual_clock/*
+          du -h research_artifact/binance_um_metrics_actual_clock/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-um-metrics-actual-clock-2023-01_2026-06
+          path: research_artifact/binance_um_metrics_actual_clock
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
