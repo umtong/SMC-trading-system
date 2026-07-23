@@ -1,0 +1,62 @@
+name: V2.50 Funding Settlement Mechanics Research
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - research/v250_funding_settlement.py
+      - .github/workflows/v250-funding-settlement.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: v250-funding-settlement-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install isolated dependencies
+        run: python -m pip install --upgrade numpy pandas
+      - name: Download official data and run chronological screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/v250_funding_settlement.py --out v250-results
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v250-funding-settlement-${{ github.run_id }}
+          path: v250-results
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish summary
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          if test -f v250-results/summary.json; then
+            body="$(python - <<'PY'
+          import json
+          x=json.load(open('v250-results/summary.json'))
+          print('## V2.50 funding settlement mechanics\n')
+          for k in ('status','rows','eligible','target_met'):
+              if k in x: print(f'- {k}: `{x[k]}`')
+          print('\n_Research-only. No paper/live orders, risk, leverage, or allocation changes._')
+          PY
+          )"
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi
