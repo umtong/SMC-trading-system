@@ -26,7 +26,7 @@ jobs:
         run: |
           set +e
           set -u
-          mkdir -p transport-evidence
+          mkdir -p transport-evidence/parts
           parts=(
             research/v024_bundle_v4/part-000.b64
             research/v024_bundle_v4/part-001a.b64
@@ -43,6 +43,7 @@ jobs:
           for part in "${parts[@]}"; do
             sha256sum "$part" >> transport-evidence/part-sha256.txt
             printf '%s %s\n' "$(basename "$part")" "$(wc -c < "$part")" >> transport-evidence/part-sizes.txt
+            cp "$part" transport-evidence/parts/
           done
           cat "${parts[@]}" | base64 -d > transport-evidence/reconstructed.tar.xz
           printf '%s\n' "$?" > transport-evidence/base64-status.txt
@@ -53,11 +54,11 @@ jobs:
           tar -tJf transport-evidence/reconstructed.tar.xz > transport-evidence/archive-members.txt 2> transport-evidence/tar-error.txt
           printf '%s\n' "$?" > transport-evidence/tar-status.txt
           exit 0
-      - name: Upload explicit reconstructed bytes
+      - name: Upload explicit reconstructed bytes and source chunks
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v0241-explicit-transport-${{ github.run_id }}
+          name: v0241-explicit-chunks-${{ github.run_id }}
           path: transport-evidence
           if-no-files-found: error
           retention-days: 7
