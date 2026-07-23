@@ -1,0 +1,151 @@
+name: V10 SMT Relative Value Research
+
+on:
+  push:
+    branches:
+      - "research/v9-alpha-search-20260723"
+    paths:
+      - "research/v10_smt_relative_value.py.gz.b64"
+      - ".github/workflows/v10-smt-relative-value.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pip numpy pandas tabulate
+
+      - name: Restore and verify V10 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, gzip, hashlib
+          from pathlib import Path
+          source = Path('research/v10_smt_relative_value.py.gz.b64')
+          encoded = ''.join(source.read_text(encoding='utf-8').split())
+          compressed = base64.b64decode(encoded, validate=True)
+          payload = gzip.decompress(compressed)
+          expected = '17e92545b989cb317b4a02d936eed0d29d26464aee088816909f36d7e08a001e'
+          actual = hashlib.sha256(payload).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'source hash mismatch: {actual}')
+          Path('/tmp/v10_smt_relative_value.py').write_bytes(payload)
+          print(f'source_bytes={len(payload)} source_sha256={actual}')
+          PY
+          python -m py_compile /tmp/v10_smt_relative_value.py
+
+      - name: Restore Binance 5m archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/smc-v10
+          key: smc-v10-binance-usdm-5m-2021-2026-v1
+
+      - name: Run causal cross-asset SMT research
+        id: research
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts/v10-smt-relative-value
+          python /tmp/v10_smt_relative_value.py \
+            --start-month 2021-01 \
+            --end-month 2026-06 \
+            --cache-dir .cache/smc-v10 \
+            --output-dir artifacts/v10-smt-relative-value \
+            2>&1 | tee artifacts-v10.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build V10 report
+        if: always()
+        env:
+          RESEARCH_EXIT_CODE: ${{ steps.research.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          out = Path('artifacts/v10-smt-relative-value')
+          lines = [
+              '## V10 causal SMT relative-value research', '',
+              f"- run_id: `{os.environ.get('RUN_ID')}`",
+              f"- process exit code: `{os.environ.get('RESEARCH_EXIT_CODE', 'unknown')}`",
+          ]
+          summary = out / 'summary.json'
+          if summary.exists():
+              s = json.loads(summary.read_text())
+              best = s.get('best_oos_configuration', {})
+              lines += [
+                  f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
+                  f"- candidates: `{s.get('candidate_count')}`",
+                  f"- frozen candidate: `{s.get('frozen_candidate', {}).get('candidate_id')}`",
+                  f"- best OOS risk: `{best.get('risk')}`",
+                  f"- best OOS max leverage: `{best.get('max_leverage')}`",
+                  f"- best OOS cost multiple: `{best.get('cost_multiple')}`",
+                  f"- best OOS trades: `{best.get('oos_trades')}`",
+                  f"- best OOS final multiple: `{best.get('oos_final_multiple')}`",
+                  f"- best OOS geometric daily net: `{best.get('oos_geo_daily')}`",
+                  f"- best OOS max drawdown: `{best.get('oos_max_drawdown')}`",
+                  '',
+              ]
+          else:
+              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+              log = Path('artifacts-v10.log')
+              if log.exists():
+                  lines += ['### Log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```', '']
+          screen = out / 'screen.csv'
+          if screen.exists():
+              d = pd.read_csv(screen).head(10)
+              cols = [c for c in ['candidate_id','family','score','dev_trades','dev_pf','dev_geo_daily','val_trades','val_pf','val_geo_daily','dev2x_pf','val2x_pf'] if c in d.columns]
+              lines += ['### Development-selected candidates', '', d[cols].to_markdown(index=False), '']
+          stress = out / 'frozen_stress.csv'
+          if stress.exists():
+              d = pd.read_csv(stress)
+              cols = [c for c in ['key','risk','max_leverage','cost_multiple','unresolved','oos_trades','oos_pf','oos_final_multiple','oos_geo_daily','oos_max_drawdown'] if c in d.columns]
+              lines += ['### Frozen OOS stress', '', d[cols].to_markdown(index=False), '']
+          lines += ['', '_Research-only. No paper/live/order/risk-setting changes._']
+          Path('artifacts/v10-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Publish V10 report to research PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 35 --body-file artifacts/v10-pr-comment.md
+
+      - name: Upload V10 outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-smt-relative-value-${{ github.run_id }}
+          path: |
+            artifacts/v10-smt-relative-value
+            artifacts-v10.log
+            artifacts/v10-pr-comment.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Preserve failure status
+        if: always() && steps.research.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.research.outputs.exit_code }}
+        run: |
+          echo "V10 research failed with exit code ${EXIT_CODE}"
+          exit 1
