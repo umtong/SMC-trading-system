@@ -8,7 +8,7 @@ on:
       - .github/workflows/binance-coinm-liquidation-sample.yml
   push:
     branches:
-      - agent/long-lived-research-cycle
+      - agent/liquidation-research
     paths:
       - scripts/download_binance_coinm_liquidation_sample.py
       - .github/workflows/binance-coinm-liquidation-sample.yml
