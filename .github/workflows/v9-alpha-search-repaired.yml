@@ -1,12 +1,12 @@
-name: V9 Alpha Search Repaired
+name: V10 Causal SMT Relative Value Research
 
 on:
   push:
     branches:
       - "research/v9-alpha-search-20260723"
     paths:
-      - "research/v9_restore.py"
       - "research/v10_smt_relative_value.py.gz.b64"
+      - "research/v10_causality_fix.patch.gz.b64"
       - ".github/workflows/v9-alpha-search-repaired.yml"
   workflow_dispatch:
 
@@ -16,125 +16,6 @@ permissions:
   pull-requests: write
 
 jobs:
-  alpha-search:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Mark repaired V9 run started
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr comment 35 --body "## V9 chronological alpha search\n\n- status: \`RUN_STARTED_REPAIRED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Research-only; no paper/live/order/sizing changes._" --edit-last --create-if-none
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip numpy pandas tabulate
-
-      - name: Restore hash-locked research source
-        run: |
-          mkdir -p artifacts/v9-alpha-search
-          python research/v9_restore.py research/v9_alpha_search.py.gz.b64 /tmp/v9_alpha_search.py 2>&1 | tee artifacts-v9.log
-
-      - name: Restore Binance archive cache
-        uses: actions/cache@v4
-        with:
-          path: .cache/xsmc-v9
-          key: xsmc-v9-binance-usdm-15m-2019-2026-v1
-
-      - name: Run fixed-candidate chronological alpha search
-        id: alpha
-        shell: bash
-        run: |
-          set +e
-          set -o pipefail
-          python /tmp/v9_alpha_search.py \
-            --start-month 2019-01 \
-            --end-month 2026-06 \
-            --evaluation-start 2024-01 \
-            --evaluation-end 2026-06 \
-            --symbols BTCUSDT ETHUSDT \
-            --output-dir artifacts/v9-alpha-search \
-            2>&1 | tee -a artifacts-v9.log
-          status=${PIPESTATUS[0]}
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Build V9 report
-        if: always()
-        env:
-          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          import pandas as pd
-          out = Path('artifacts/v9-alpha-search')
-          lines = ['## V9 chronological alpha search', '', f"- run_id: `{os.environ.get('RUN_ID')}`", f"- process exit code: `{os.environ.get('ALPHA_EXIT_CODE', 'unknown')}`"]
-          summary = out / 'summary.json'
-          if summary.exists():
-              s = json.loads(summary.read_text())
-              lines += [
-                  f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
-                  f"- candidates: `{s.get('candidate_count')}`",
-                  f"- OOS trades: `{s.get('trades')}`",
-                  f"- OOS final multiple: `{s.get('final_multiple')}`",
-                  f"- OOS geometric daily net: `{s.get('geo_daily')}`",
-                  f"- OOS max drawdown: `{s.get('max_drawdown')}`",
-                  f"- positive-month ratio: `{s.get('positive_month_ratio')}`",
-                  f"- no-trade months: `{s.get('no_trade_months')}`",
-                  '',
-              ]
-          else:
-              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
-              log = Path('artifacts-v9.log')
-              if log.exists():
-                  lines += ['### Log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-120:]), '```', '']
-          top = out / 'top30_pre2024.csv'
-          if top.exists():
-              frame = pd.read_csv(top).head(10)
-              cols = [c for c in ['candidate_id','family','pre2x_final_multiple','pre_final_multiple','post2024_diag_final_multiple','pre_trades','pre2x_max_drawdown'] if c in frame.columns]
-              lines += ['### Top pre-2024 diagnostics', '', frame[cols].to_markdown(index=False), '']
-          months = out / 'walkforward_months.csv'
-          if months.exists():
-              frame = pd.read_csv(months)
-              lines += ['### Walk-forward monthly tail', '', frame.tail(12).to_markdown(index=False), '']
-          lines += ['', '_Research-only; no paper/live/order/sizing changes._']
-          Path('artifacts/v9-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
-          PY
-
-      - name: Publish V9 report
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh pr comment 35 --body-file artifacts/v9-pr-comment.md --edit-last --create-if-none
-
-      - name: Upload outputs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v9-alpha-search-repaired-${{ github.run_id }}
-          path: |
-            artifacts/v9-alpha-search
-            artifacts-v9.log
-            artifacts/v9-pr-comment.md
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Preserve alpha-search failure status
-        if: always() && steps.alpha.outputs.exit_code != '0'
-        env:
-          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
-        run: |
-          echo "V9 alpha search failed with exit code ${ALPHA_EXIT_CODE}"
-          exit 1
-
   v10-smt-relative-value:
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -146,36 +27,54 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install V10 dependencies
+      - name: Install research dependencies
         run: python -m pip install --upgrade pip numpy pandas tabulate
 
-      - name: Restore and verify V10 source
+      - name: Restore, patch, and verify V10 source
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import base64, gzip, hashlib
           from pathlib import Path
-          source = Path('research/v10_smt_relative_value.py.gz.b64')
-          encoded = ''.join(source.read_text(encoding='utf-8').split())
-          compressed = base64.b64decode(encoded, validate=True)
-          payload = gzip.decompress(compressed)
-          expected = '17e92545b989cb317b4a02d936eed0d29d26464aee088816909f36d7e08a001e'
+
+          def decode(path: str) -> bytes:
+              text = Path(path).read_text(encoding='utf-8')
+              return gzip.decompress(base64.b64decode(''.join(text.split()), validate=True))
+
+          source = decode('research/v10_smt_relative_value.py.gz.b64')
+          source_hash = hashlib.sha256(source).hexdigest()
+          if source_hash != '17e92545b989cb317b4a02d936eed0d29d26464aee088816909f36d7e08a001e':
+              raise SystemExit(f'base source hash mismatch: {source_hash}')
+          patch = decode('research/v10_causality_fix.patch.gz.b64')
+          patch_hash = hashlib.sha256(patch).hexdigest()
+          if patch_hash != 'b864a7125313543c6d61170ce67aa36220333b7d75098d63ba3e8380ef733ee2':
+              raise SystemExit(f'patch hash mismatch: {patch_hash}')
+          Path('/tmp/v10_smt_relative_value.py').write_bytes(source)
+          Path('/tmp/v10_causality_fix.patch').write_bytes(patch)
+          print(f'base_source_bytes={len(source)} base_source_sha256={source_hash}')
+          print(f'patch_bytes={len(patch)} patch_sha256={patch_hash}')
+          PY
+          patch --batch --forward /tmp/v10_smt_relative_value.py /tmp/v10_causality_fix.patch
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          payload = Path('/tmp/v10_smt_relative_value.py').read_bytes()
           actual = hashlib.sha256(payload).hexdigest()
+          expected = 'b6b45a71093d5233d1f67b257bd5d5b24834391b3c927b7a078baf94f7289921'
           if actual != expected:
-              raise SystemExit(f'source hash mismatch: {actual}')
-          Path('/tmp/v10_smt_relative_value.py').write_bytes(payload)
-          print(f'source_bytes={len(payload)} source_sha256={actual}')
+              raise SystemExit(f'patched source hash mismatch: {actual}')
+          print(f'patched_source_bytes={len(payload)} patched_source_sha256={actual}')
           PY
           python -m py_compile /tmp/v10_smt_relative_value.py
 
-      - name: Restore Binance V10 archive cache
+      - name: Restore Binance archive cache
         uses: actions/cache@v4
         with:
           path: .cache/smc-v10
-          key: smc-v10-binance-usdm-5m-2021-2026-v1
+          key: smc-v10-binance-usdm-5m-2021-2026-v2
 
-      - name: Run V10 causal cross-asset SMT research
+      - name: Run official-data causal SMT research
         id: v10
         shell: bash
         run: |
@@ -197,6 +96,7 @@ jobs:
         env:
           V10_EXIT_CODE: ${{ steps.v10.outputs.exit_code }}
           RUN_ID: ${{ github.run_id }}
+          RUN_SHA: ${{ github.sha }}
         run: |
           python - <<'PY'
           import json, os
@@ -206,6 +106,7 @@ jobs:
           lines = [
               '## V10 causal SMT relative-value research', '',
               f"- run_id: `{os.environ.get('RUN_ID')}`",
+              f"- sha: `{os.environ.get('RUN_SHA')}`",
               f"- process exit code: `{os.environ.get('V10_EXIT_CODE', 'unknown')}`",
           ]
           summary = out / 'summary.json'
@@ -223,13 +124,14 @@ jobs:
                   f"- best OOS final multiple: `{best.get('oos_final_multiple')}`",
                   f"- best OOS geometric daily net: `{best.get('oos_geo_daily')}`",
                   f"- best OOS max drawdown: `{best.get('oos_max_drawdown')}`",
+                  f"- unresolved position: `{best.get('unresolved')}`",
                   '',
               ]
           else:
               lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
               log = Path('artifacts-v10.log')
               if log.exists():
-                  lines += ['### Log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```', '']
+                  lines += ['### Log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```', '']
           screen = out / 'screen.csv'
           if screen.exists():
               d = pd.read_csv(screen).head(10)
@@ -238,7 +140,7 @@ jobs:
           stress = out / 'frozen_stress.csv'
           if stress.exists():
               d = pd.read_csv(stress)
-              cols = [c for c in ['key','risk','max_leverage','cost_multiple','unresolved','oos_trades','oos_pf','oos_final_multiple','oos_geo_daily','oos_max_drawdown'] if c in d.columns]
+              cols = [c for c in ['key','risk','max_leverage','cost_multiple','unresolved','oos_trades','oos_pf','oos_final_multiple','oos_geo_daily','oos_max_drawdown','audit_same_bar_stops'] if c in d.columns]
               lines += ['### Frozen OOS stress', '', d[cols].to_markdown(index=False), '']
           lines += ['', '_Research-only. No paper/live/order/risk-setting changes._']
           Path('artifacts/v10-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
