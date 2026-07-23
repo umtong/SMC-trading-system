@@ -36,11 +36,14 @@ jobs:
           mkdir -p "$WORK_DIR"
           cat research/remote/cross_asset_wfv_v3.py.b64.part{00..06} > /tmp/cross_asset_wfv_v3.py.b64
           base64 --decode /tmp/cross_asset_wfv_v3.py.b64 > "$SCRIPT_PATH"
-          python research/remote/repair_cross_asset_wfv_v3_transfer.py "$SCRIPT_PATH"
+          cp "$SCRIPT_PATH" "$WORK_DIR/assembled_payload_before_repair.py"
+          python research/remote/repair_cross_asset_wfv_v3_transfer.py "$SCRIPT_PATH" \
+            2>&1 | tee "$WORK_DIR/repair.log"
+          cp "$SCRIPT_PATH" "$WORK_DIR/assembled_payload_after_repair.py"
           actual_sha=$(sha256sum "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
-          printf '%s  %s\n' "$EXPECTED_SHA256" "$SCRIPT_PATH" | sha256sum --check --strict
           python -m py_compile "$SCRIPT_PATH"
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$SCRIPT_PATH" | sha256sum --check --strict
           cp "$SCRIPT_PATH" "$WORK_DIR/locked_research_script.py"
 
       - name: Install fixed research dependencies
