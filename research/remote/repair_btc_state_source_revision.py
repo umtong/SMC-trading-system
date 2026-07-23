@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 
 # Retrieval-only repair: the original pinned commit predated the raw 5m upload.
+# Re-run marker 2026-07-24: execute the unchanged locked repair on the corrected source snapshot.
 if len(sys.argv) != 2:
     raise SystemExit("usage: repair_btc_state_source_revision.py SCRIPT")
 
