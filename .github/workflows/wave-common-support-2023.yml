@@ -1,0 +1,90 @@
+name: Shared official support 2023
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave-common-support-2023.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-symbol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build feature-independent contract/funding support
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python research/wave39/build_support_year_v3.py \
+            --symbol "${{ matrix.symbol }}" --year 2023 --output-dir output --retries 8 \
+            2>&1 | tee "output/${{ matrix.symbol }}_support_build.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-support-2023-${{ matrix.symbol }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  combine:
+    needs: build-symbol
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shared-support-2023-*
+          path: support
+          merge-multiple: true
+      - name: Verify all symbol outputs and record gap statistics
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('support')
+          combined={
+              'schema':'wave39-official-support-combined-v3','year':2023,'symbols':{},
+              'future_outcomes_included':False,'strategy_results_included':False,
+              'gap_policy':'No imputation; downstream invalidates every intersecting history or still-open holding path.',
+          }
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              path=root/f'{symbol}_support_manifest.json'
+              manifest=json.loads(path.read_text(encoding='utf-8'))
+              if manifest['schema']!='wave39-official-support-v3' or manifest['year']!=2023:
+                  raise RuntimeError(f'{symbol}: identity mismatch')
+              for name,record in manifest['outputs'].items():
+                  item=root/name
+                  if hashlib.sha256(item.read_bytes()).hexdigest()!=record['sha256']:
+                      raise RuntimeError(f'{symbol}: hash mismatch {name}')
+              combined['symbols'][symbol]={
+                  'observed_contract_minutes':manifest['observed_contract_minutes'],
+                  'missing_contract_minutes':manifest['missing_contract_minutes'],
+                  'gap_run_count':manifest['gap_run_count'],'largest_gap_minutes':manifest['largest_gap_minutes'],
+                  'funding_rows':manifest['funding_rows'],'outputs':manifest['outputs'],
+                  'manifest_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+          (root/'manifest.json').write_text(json.dumps(combined,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(combined,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-official-support-2023-${{ github.run_id }}
+          path: support/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
