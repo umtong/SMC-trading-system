@@ -1,0 +1,61 @@
+name: Binance USD-M BTC ETH Full 1m Data
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_usdm_btc_eth_1m.py
+      - .github/workflows/binance-usdm-btc-eth-1m.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-full-1m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "requests>=2.32" "pyarrow>=17"
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_usdm_btc_eth_1m.py
+      - name: Download checksum-verified full one-minute history
+        run: |
+          python scripts/download_binance_usdm_btc_eth_1m.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start-month 2020-01 \
+            --end-month 2026-06 \
+            --daily-start 2026-07-01 \
+            --daily-end 2026-07-22 \
+            --workers 12 \
+            --output artifacts/binance_usdm_btc_eth_1m
+      - name: Validate immutable snapshot
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/binance_usdm_btc_eth_1m')
+          m=json.loads((root/'manifest.json').read_text())
+          if set(m['datasets']) != {'BTCUSDT','ETHUSDT'}:
+              raise SystemExit(f"dataset mismatch: {set(m['datasets'])}")
+          for symbol, info in m['datasets'].items():
+              path=root/info['path']
+              if not path.exists() or path.stat().st_size <= 0:
+                  raise SystemExit(f'invalid dataset {symbol}')
+          print(json.dumps({'archives':m['verified_archives'],'missing':len(m['missing_archives']),'datasets':m['datasets']},indent=2))
+          PY
+      - name: Upload full one-minute research snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-btc-eth-full-1m-${{ github.sha }}
+          path: artifacts/binance_usdm_btc_eth_1m
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
