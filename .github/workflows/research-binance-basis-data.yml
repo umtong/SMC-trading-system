@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/research-binance-basis-data.yml"
       - "research_tools/binance_basis_bundle.py"
+      - "research_tools/binance_basis_bundle_relaxed_clock.py"
   workflow_dispatch:
 
 permissions:
@@ -30,7 +31,7 @@ jobs:
         run: |
           set +e
           mkdir -p research_artifact/binance_basis_5m
-          python research_tools/binance_basis_bundle.py \
+          python research_tools/binance_basis_bundle_relaxed_clock.py \
             --symbols BTCUSDT ETHUSDT \
             --start-month 2023-01 \
             --end-month 2026-06 \
