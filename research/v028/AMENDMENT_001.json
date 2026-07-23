@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "study_id": "quarter_hour_delayed_public_rotation_v0_28",
+  "amendment_id": "V028-A001",
+  "recorded_at_utc": "2026-07-23T23:22:22Z",
+  "recorded_before_any_v0271_or_v028_candidate_pnl_observation": true,
+  "change": {
+    "old_rule": "public-component dominance used absolute component magnitudes only",
+    "new_rule": "the signed predicted 12-hour public component must have the same sign as the selected total 12-hour forecast and trade direction, in addition to satisfying the preregistered absolute dominance ratio",
+    "formal_condition": "direction * pred_12h_public_bps > 0"
+  },
+  "reason": "The economic hypothesis is specifically that the delayed trade harvests the persistent public-information component after the initial reversal. A large public component pointing against the trade does not instantiate that hypothesis even when its absolute magnitude is dominant.",
+  "candidate_grid_changed": false,
+  "candidate_count": 64,
+  "development_period_changed": false,
+  "evaluation_period_changed": false,
+  "terminal_holdout_opened": false,
+  "production_enabled": false
+}
