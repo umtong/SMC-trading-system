@@ -56,6 +56,14 @@ jobs:
       - name: Checkout PR merge
         uses: actions/checkout@v4
 
+      - name: Mark V9 run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V9 chronological alpha search\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- merge_sha: \`${GITHUB_SHA}\`\n\n_Research-only. No paper/live/order/sizing changes._" --edit-last --create-if-none
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
