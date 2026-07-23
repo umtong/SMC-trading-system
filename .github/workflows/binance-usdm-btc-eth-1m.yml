@@ -2,6 +2,10 @@ name: Binance USD-M BTC ETH Full 1m Data
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_btc_eth_1m.py
+      - .github/workflows/binance-usdm-btc-eth-1m.yml
   push:
     branches:
       - agent/long-lived-research-cycle
