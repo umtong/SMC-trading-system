@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T03:55:00Z",
+  "family": "N20_1M_QUALITY_ADAPTIVE_EXIT_V1",
+  "frozen_before_post_2024_diagnostic": true,
+  "base": "N20_QUALITY_TIER_EXIT_V1",
+  "entry": "wait for exactly one fully completed 1m bar after the H1 decision, then enter at the next 1m open for every signal",
+  "micro_high_quality": {
+    "source": "best pre-2024 region from the rejected hard-filter study",
+    "directional_taker_imbalance_min": 0.0,
+    "confirmation_relative_volume_min": 0.75,
+    "final_close_outside": true,
+    "confirmation_clv_min": 0.5
+  },
+  "high_quality_exit": "retain the frozen H1 quality-tier exit: H1 high quality=.20 ATR/3R/36h, otherwise=.10 ATR/3R/24h",
+  "micro_lower_quality_exit_grid": {
+    "stop_buffer_atr": [0.05, 0.10, 0.20],
+    "target_r": [1.5, 2.0, 2.5, 3.0],
+    "maximum_hold_hours": [6, 12, 18, 24]
+  },
+  "selection": {
+    "development": ["2020-01-01", "2023-01-01"],
+    "validation": ["2023-01-01", "2024-01-01"],
+    "development_trades_min": 120,
+    "validation_trades_min": 45,
+    "development_pf_min": 1.50,
+    "validation_pf_min": 1.40,
+    "development_top10_removed_r_gt": 0,
+    "validation_top5_removed_r_gt": 0,
+    "score": "min(development mean-2SE, validation mean-2SE)",
+    "tie_breaks": ["higher minimum PF", "higher removed-R sum", "longer hold", "higher target", "smaller buffer"]
+  },
+  "portfolio": {
+    "global_pending_plus_open_slots": 1,
+    "same_timestamp_priority": "frozen causal N20 quality priority"
+  },
+  "promotion": "Historical improvement is diagnostic only and cannot enable live trading."
+}
