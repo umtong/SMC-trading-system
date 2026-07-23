@@ -1,0 +1,78 @@
+name: V0.10 Four-Asset Profitability Data
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol:
+          - BTCUSDT
+          - ETHUSDT
+          - SOLUSDT
+          - XRPUSDT
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download and verify complete 5m panel
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.download_binance_um_5m_range \
+            --symbols '${{ matrix.symbol }}' \
+            --start 2022-01-01 \
+            --end 2026-07-01 \
+            --output-dir 'data/v10/${{ matrix.symbol }}' \
+            2>&1 | tee 'v10-${{ matrix.symbol }}-download.log'
+
+      - name: Validate deterministic output
+        shell: bash
+        run: |
+          test -s 'data/v10/${{ matrix.symbol }}/${{ matrix.symbol }}_5m.csv'
+          test -s 'data/v10/${{ matrix.symbol }}/v09_5m_data_manifest.json'
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          symbol = os.environ['SYMBOL']
+          root = Path('data/v10') / symbol
+          manifest = json.loads((root / 'v09_5m_data_manifest.json').read_text())
+          output = next(row for row in manifest['outputs'] if row['symbol'] == symbol)
+          expected = int((__import__('pandas').Timestamp('2026-07-01', tz='UTC') - __import__('pandas').Timestamp('2022-01-01', tz='UTC')) / __import__('pandas').Timedelta(minutes=5))
+          if output['rows'] != expected:
+              raise SystemExit(f"{symbol}: rows={output['rows']} expected={expected}")
+          print(symbol, output)
+          PY
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+
+      - name: Upload immutable symbol panel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-four-asset-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            data/v10/${{ matrix.symbol }}/${{ matrix.symbol }}_5m.csv
+            data/v10/${{ matrix.symbol }}/v09_5m_data_manifest.json
+            v10-${{ matrix.symbol }}-download.log
+          if-no-files-found: error
+          retention-days: 14
