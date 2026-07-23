@@ -8,6 +8,13 @@ on:
       - "research/v10_event_meta_search.py.gz.b64"
       - "research/v10_restore.py"
       - ".github/workflows/v10-event-meta.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/v10_event_meta_search.py.gz.b64"
+      - "research/v10_restore.py"
+      - ".github/workflows/v10-event-meta.yml"
   workflow_dispatch:
 
 permissions:
