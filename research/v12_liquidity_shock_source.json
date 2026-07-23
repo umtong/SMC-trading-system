@@ -1,0 +1,7 @@
+{
+  "source_commit": "f12718079bd05965d9e12e8829e6e7b66a9d9dbd",
+  "source_path": "research/v12_liquidity_shock_bundle.tgz.b64",
+  "source_url": "https://raw.githubusercontent.com/umtong/SMC-trading-system/f12718079bd05965d9e12e8829e6e7b66a9d9dbd/research/v12_liquidity_shock_bundle.tgz.b64",
+  "decoded_tar_sha256": "746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89",
+  "purpose": "Pinned, checksum-verified V12 research source used by the clean discovery branch"
+}
