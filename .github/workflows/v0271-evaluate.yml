@@ -1,0 +1,280 @@
+name: v0.27.1 locked quarter-hour evaluation
+
+on:
+  push:
+    branches:
+      - research/v027-quarter-hour-20260724
+    paths:
+      - 'research/results/v0271-scout/status.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v0271-evaluate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ARCHIVE_SHA256: e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9
+  PLAN_FILE_SHA256: 723245a408b66808b588be329a1a2cb2f563aaedad260455f4d6626f01f559b1
+  PLAN_PAYLOAD_SHA256: c0cf8dacfdcc5474fd58f7570bb18a875481371658ed02ade3e2c0a5d2815f8f
+  SOURCE_MANIFEST_SHA256: 9de4136de0c0bb74c8bc3d5cdf7ab235040a56e5e81568e3fee1ffd3a4968a11
+
+jobs:
+  precheck:
+    runs-on: ubuntu-slim
+    outputs:
+      runnable: ${{ steps.check.outputs.runnable }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+          p = json.loads(Path('research/results/v0271-scout/status.json').read_text())
+          runnable = (
+              bool(p.get('scout_completed'))
+              and p.get('archive_sha256') == os.environ['ARCHIVE_SHA256']
+              and p.get('plan_payload_sha256') == os.environ['PLAN_PAYLOAD_SHA256']
+              and p.get('source_manifest_sha256') == os.environ['SOURCE_MANIFEST_SHA256']
+              and int(p.get('total_compressed_bytes') or 10**30) <= 120_000_000_000
+              and p.get('candidate_pnl_observed') is False
+              and p.get('terminal_holdout_opened') is False
+              and p.get('production_enabled') is False
+          )
+          print(f'runnable={str(runnable).lower()}')
+          PY
+
+  build:
+    needs: precheck
+    if: needs.precheck.outputs.runnable == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    env:
+      DATA_DIR: ${{ github.workspace }}/.v0271-data/${{ matrix.symbol }}
+      RAW_DIR: ${{ github.workspace }}/.v0271-raw/${{ matrix.symbol }}
+      PYTHONUNBUFFERED: '1'
+      PYTHONHASHSEED: '0'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct exact locked runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v0271
+          python - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          root=Path('research/v0271_bundle')
+          manifest=json.loads((root/'TRANSPORT_MANIFEST.json').read_text())
+          encoded=[]
+          for item in manifest['parts']:
+              raw=(root/item['name']).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==item['sha256']
+              encoded.append(''.join(raw.decode('ascii').split()))
+          archive=base64.b64decode(''.join(encoded),validate=True)
+          assert hashlib.sha256(archive).hexdigest()==manifest['archive_sha256']=='e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9'
+          Path('/tmp/v0271_locked_runner.tar.xz').write_bytes(archive)
+          PY
+          echo "${ARCHIVE_SHA256}  /tmp/v0271_locked_runner.tar.xz" | sha256sum -c -
+          xz -t /tmp/v0271_locked_runner.tar.xz
+          tar -xJf /tmp/v0271_locked_runner.tar.xz -C v0271
+          echo "${PLAN_FILE_SHA256}  v0271/artifacts/v027/research_plan_locked.json" | sha256sum -c -
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v0271/requirements-lock.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/${{ matrix.symbol }}
+          key: v0271-normalized-${{ matrix.symbol }}-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+
+      - name: Build checksum-verified causal panel
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p "${DATA_DIR}" "${RAW_DIR}"
+          python -m research.v027.qh_pipeline build \
+            --symbols "${{ matrix.symbol }}" \
+            --data-dir "${DATA_DIR}" \
+            --cache-dir "${RAW_DIR}" \
+            2>&1 | tee "${DATA_DIR}/build.log"
+          for suffix in qh_panel 1m mark_1m funding; do
+            test -s "${DATA_DIR}/${{ matrix.symbol }}_${suffix}.csv.gz"
+          done
+          test -s "${DATA_DIR}/acquisition_manifest.json"
+          du -sh "${DATA_DIR}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v0271-build-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            .v0271-data/${{ matrix.symbol }}/acquisition_manifest.json
+            .v0271-data/${{ matrix.symbol }}/build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  evaluate:
+    needs: [precheck, build]
+    if: needs.precheck.outputs.runnable == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: '1'
+      PYTHONHASHSEED: '0'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      COMBINED: ${{ github.workspace }}/.v0271-combined
+      OUTPUT: ${{ github.workspace }}/.v0271-results
+      RESULT_ROOT: ${{ github.workspace }}/research/results/v0271-evaluation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct exact locked runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v0271 transport-evidence
+          python - <<'PY' | tee transport-evidence/reconstruction.json
+          import base64, hashlib, json
+          from pathlib import Path
+          root=Path('research/v0271_bundle')
+          manifest=json.loads((root/'TRANSPORT_MANIFEST.json').read_text())
+          encoded=[]; evidence=[]
+          for item in manifest['parts']:
+              raw=(root/item['name']).read_bytes(); actual=hashlib.sha256(raw).hexdigest()
+              assert actual==item['sha256']
+              text=''.join(raw.decode('ascii').split()); encoded.append(text)
+              evidence.append({'name':item['name'],'sha256':actual})
+          archive=base64.b64decode(''.join(encoded),validate=True)
+          actual=hashlib.sha256(archive).hexdigest()
+          assert actual==manifest['archive_sha256']=='e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9'
+          Path('/tmp/v0271_locked_runner.tar.xz').write_bytes(archive)
+          print(json.dumps({'archive_sha256':actual,'parts':evidence},sort_keys=True,indent=2))
+          PY
+          echo "${ARCHIVE_SHA256}  /tmp/v0271_locked_runner.tar.xz" | sha256sum -c -
+          xz -t /tmp/v0271_locked_runner.tar.xz
+          tar -xJf /tmp/v0271_locked_runner.tar.xz -C v0271
+          echo "${PLAN_FILE_SHA256}  v0271/artifacts/v027/research_plan_locked.json" | sha256sum -c -
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v0271/requirements-lock.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/BTCUSDT
+          key: v0271-normalized-BTCUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/ETHUSDT
+          key: v0271-normalized-ETHUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/SOLUSDT
+          key: v0271-normalized-SOLUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/XRPUSDT
+          key: v0271-normalized-XRPUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+
+      - name: Run frozen development selection and untouched evaluation
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p ci-evidence "${COMBINED}" "${OUTPUT}" "${RESULT_ROOT}"
+          python -m pytest -q | tee ci-evidence/pytest.txt
+          python -m compileall -q research scripts tests
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            cp "${GITHUB_WORKSPACE}/.v0271-data/${symbol}/${symbol}_"*.csv.gz "${COMBINED}/"
+          done
+          set +e
+          /usr/bin/time -v python -m research.v027.qh_pipeline evaluate \
+            --panel-dir "${COMBINED}" \
+            --data-dir "${COMBINED}" \
+            --output "${OUTPUT}" \
+            2>&1 | tee "${OUTPUT}/evaluation.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -eq 0 -o "$code" -eq 1
+          cp "${OUTPUT}/study_summary.json" "${RESULT_ROOT}/"
+          for family in continuation reversal router; do
+            cp "${OUTPUT}/${family}_study_results.json" "${RESULT_ROOT}/"
+            cp "${OUTPUT}/${family}_screening_leaderboard.csv" "${RESULT_ROOT}/"
+            cp "${OUTPUT}/${family}_dense_development_shortlist.csv" "${RESULT_ROOT}/"
+          done
+          python - "$code" <<'PY'
+          import json, os, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          root=Path(os.environ['RESULT_ROOT'])
+          summary=json.loads((root/'study_summary.json').read_text())
+          status={
+              'schema_version':1,
+              'study_id':'quarter_hour_component_rotation_v0_27_1',
+              'scientific_run_completed':True,
+              'any_target_met':bool(summary.get('any_target_met',False)),
+              'archive_sha256':os.environ['ARCHIVE_SHA256'],
+              'plan_payload_sha256':os.environ['PLAN_PAYLOAD_SHA256'],
+              'source_manifest_sha256':os.environ['SOURCE_MANIFEST_SHA256'],
+              'terminal_holdout_opened':False,
+              'production_enabled':False,
+              'process_exit_code':int(sys.argv[1]),
+              'head_sha':os.environ.get('GITHUB_SHA'),
+              'recorded_at_utc':datetime.now(timezone.utc).isoformat(),
+          }
+          (root/'status.json').write_text(json.dumps(status,sort_keys=True,indent=2)+'\n')
+          PY
+          git -C "${GITHUB_WORKSPACE}" config user.name 'github-actions[bot]'
+          git -C "${GITHUB_WORKSPACE}" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "${GITHUB_WORKSPACE}" add research/results/v0271-evaluation
+          if ! git -C "${GITHUB_WORKSPACE}" diff --cached --quiet; then
+            git -C "${GITHUB_WORKSPACE}" commit -m 'Record v0.27.1 frozen preholdout evaluation'
+            git -C "${GITHUB_WORKSPACE}" push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload scientific evidence without full deployment package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0271-evaluation-${{ github.run_id }}
+          path: |
+            transport-evidence
+            v0271/ci-evidence
+            .v0271-results
+            research/results/v0271-evaluation
+            v0271/artifacts/v027/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30
