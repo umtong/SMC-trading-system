@@ -1,0 +1,171 @@
+name: Wave41 cross-sectional boundary-flow development 2022
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave41-development-2022.yml"
+      - "research/wave41/**"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave41-development-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Await common audited 2022 feature and support artifacts
+        id: await
+        shell: bash
+        run: |
+          set -euo pipefail
+          successful_run() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if r.get("name")==n and r.get("status")=="completed" and r.get("conclusion")=="success"),""))' "$1"
+          }
+          for attempt in $(seq 1 270); do
+            exact_id="$(successful_run 'Wave39 exact quarter-hour aggTrades 2022 v3')"
+            support_id="$(successful_run 'Wave39 official 1m support 2022 v3')"
+            echo "attempt=${attempt} exact=${exact_id:-none} support=${support_id:-none}"
+            if [[ -n "${exact_id}" && -n "${support_id}" ]]; then
+              echo "exact_run_id=${exact_id}" >> "$GITHUB_OUTPUT"
+              echo "support_run_id=${support_id}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 60
+          done
+          exit 1
+
+      - name: Reconstruct immutable common 2022 data root
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exact support data2022/support
+          gh run download "${{ steps.await.outputs.exact_run_id }}" --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v3-${{ steps.await.outputs.exact_run_id }}" --dir exact
+          gh run download "${{ steps.await.outputs.support_run_id }}" --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${{ steps.await.outputs.support_run_id }}" --dir support
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              matches=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: matches.append(path)
+              if len(matches)!=1: raise RuntimeError(f'{root}/{schema}: {matches}')
+              return matches[0]
+          exact=locate('exact','wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate('support','wave39-official-support-combined-v3')
+          target=Path('data2022')
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Verify exact sources and execute registered cross-sectional grid
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest \
+            research/wave39/test_wave39_engine_v3.py \
+            research/wave39/test_wave39_engine_v4.py \
+            research/wave41/test_wave41.py -q
+          python -m compileall -q research/wave41
+          rm -rf output; mkdir -p output/development output/frozen output/audits
+          python -m research.wave39.audit_boundary_vs_kline \
+            --data-root data2022 --year 2022 --output output/audits/source_crosscheck_2022.json
+          python -m research.wave41.run_wave41_development_v2 \
+            --data-root data2022 --output-dir output/development \
+            --registration research/wave41/WAVE41_PRE_RESULT_REGISTRATION.json \
+            2>&1 | tee output/development/run.log
+          python -m research.wave41.finalize_wave41 \
+            --result-dir output/development --data-root data2022 \
+            --registration research/wave41/WAVE41_PRE_RESULT_REGISTRATION.json \
+            --freeze-dir output/frozen \
+            2>&1 | tee output/finalize.log
+
+      - name: Adversarially verify candidate registry and split locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root=Path('output/development')
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          candidates=pd.read_csv(root/'wave41_all_candidates_2022.csv.gz')
+          if len(candidates)!=manifest['candidate_count']: raise RuntimeError('candidate count mismatch')
+          if candidates['candidate_id'].duplicated().any(): raise RuntimeError('candidate ID collision')
+          if int(candidates['development_gate'].astype(bool).sum())!=manifest['development_gate_count']:
+              raise RuntimeError('gate count mismatch')
+          if manifest['2023_opened'] or manifest['2024_opened'] or manifest['sealed_terminal_oos_opened']:
+              raise RuntimeError('future split opened')
+          if manifest['risk_or_leverage_optimized']: raise RuntimeError('risk/leverage optimized')
+          freeze=Path('output/frozen/WAVE41_CANDIDATE_BEFORE_2023.json'); blocked=root/'BLOCKED.json'
+          if freeze.exists()==blocked.exists(): raise RuntimeError('exactly one freeze/block result is required')
+          print(json.dumps({
+              'candidate_count':len(candidates),
+              'development_gate_count':manifest['development_gate_count'],
+              'frozen':freeze.exists(),
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Commit durable Wave41 checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="research/wave41/results/development_2022"
+          rm -rf "${destination}" research/wave41/frozen
+          mkdir -p "${destination}/audits"
+          cp -a output/development/. "${destination}/"
+          cp -a output/audits/. "${destination}/audits/"
+          if [[ -f output/frozen/WAVE41_CANDIDATE_BEFORE_2023.json ]]; then
+            mkdir -p research/wave41/frozen
+            cp output/frozen/WAVE41_CANDIDATE_BEFORE_2023.json research/wave41/frozen/
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}" research/wave41/frozen || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record Wave41 cross-sectional development"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${HEAD_BRANCH}"; then exit 0; fi
+            git fetch origin "${HEAD_BRANCH}"; git rebase "origin/${HEAD_BRANCH}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave41-development-2022-${{ github.run_id }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
