@@ -47,7 +47,7 @@ jobs:
           from pathlib import Path
 
           symbol = os.environ['SYMBOL']
-          days = ['2023-03-10', '2023-05-16', '2024-03-05', '2025-02-03']
+          days = ['2023-05-16', '2024-03-05', '2025-02-03']
           root = Path('artifacts/phase20-maker-calibration') / symbol
           root.mkdir(parents=True, exist_ok=True)
           manifest = {
