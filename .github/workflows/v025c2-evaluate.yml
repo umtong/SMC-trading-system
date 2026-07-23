@@ -1,0 +1,222 @@
+name: v0.25C2 locked initiative-continuation evaluation
+
+on:
+  push:
+    branches:
+      - research/v025a2-eventtime-20260723
+    paths:
+      - 'research/results/v025a2-evaluation/status.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v025c2-evaluate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  A2_ARCHIVE_SHA256: 67468fcd7195481a0f2bd2f067f698e727a13dd6d2c01b12e5d34c08f7360f79
+  A2_PLAN_PAYLOAD_SHA256: 0c2a63b95aeaafee05a6ef8027f1e8ec46f75d98860cf031845307e3f6e1c152
+  DATA_PLAN_FILE_SHA256: 9874d8042af578586bba0310e76f376873077be6c32e1d49408d3e15be5fd496
+  C2_ARCHIVE_SHA256: 9febff34c6afc9b1c501d414fa53c1a4398fd4113577d0bfd0675b4355383ce2
+  C2_PLAN_FILE_SHA256: 612a7e606d6bd998da8ad3efd5432ece005c4d19d56290424818fce678fb7226
+  C2_PLAN_PAYLOAD_SHA256: 53e598e740d2e69cf3e1bf8338705469ab4151c3b3c4ee00aaff1f1258db0876
+  C2_SOURCE_MANIFEST_SHA256: c02f536bd95253fec6e3bd7caded083be70e054cf119ec2d5af42e976ac9bf49
+  DATA_ROOT: ${{ github.workspace }}/.research-data/v025a2-minute
+  EVENT_ROOT: ${{ github.workspace }}/.research-data/v025a2-event
+  A2_WORKSPACE: ${{ github.workspace }}/.research-work/v025a2-for-c2
+  C2_WORKSPACE: ${{ github.workspace }}/.research-work/v025c2
+  C2_OUTPUT: ${{ github.workspace }}/.research-results/v025c2
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  MALLOC_ARENA_MAX: '2'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct exact A2 and C2 locked runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p a2 c2 transport-evidence
+          echo "${A2_ARCHIVE_SHA256}  research/v025a2/v025a2_locked_runner.tar.xz" | sha256sum -c -
+          xz -t research/v025a2/v025a2_locked_runner.tar.xz
+          tar -xJf research/v025a2/v025a2_locked_runner.tar.xz -C a2
+          base64 -d research/v025c2/v025c2_locked_runner.tar.xz.b64 > /tmp/v025c2_locked_runner.tar.xz
+          echo "${C2_ARCHIVE_SHA256}  /tmp/v025c2_locked_runner.tar.xz" | sha256sum -c -
+          xz -t /tmp/v025c2_locked_runner.tar.xz
+          tar -xJf /tmp/v025c2_locked_runner.tar.xz -C c2
+          (cd a2 && sha256sum -c SOURCE_SHA256SUMS.txt) | tee transport-evidence/a2-source-sha256.txt
+          (cd c2 && sha256sum -c SOURCE_SHA256SUMS.txt) | tee transport-evidence/c2-source-sha256.txt
+          echo "${C2_PLAN_FILE_SHA256}  c2/research/v025c/research_plan_locked.json" | sha256sum -c -
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: c2/requirements-lock.txt
+
+      - name: Verify frozen identities and regression gates
+        shell: bash
+        working-directory: c2
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p ci-evidence "${A2_WORKSPACE}" "${C2_WORKSPACE}" "${C2_OUTPUT}" "${EVENT_ROOT}"
+          python - <<'PY' | tee ci-evidence/preregistration.json
+          import hashlib, json, os
+          from pathlib import Path
+          def canonical(x): return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
+          p=json.loads(Path('research/v025c/research_plan_locked.json').read_text())
+          q=dict(p); declared=q.pop('plan_payload_sha256')
+          assert p['study_id']=='smc_event_time_initiative_continuation_v0_25_c2'
+          assert p['candidate_count']==64
+          assert canonical(q)==declared==os.environ['C2_PLAN_PAYLOAD_SHA256']
+          assert p['source_tree_manifest_sha256']==os.environ['C2_SOURCE_MANIFEST_SHA256']
+          assert p['candidate_pnl_observed_before_plan'] is False
+          assert p['terminal_holdout_opened_before_plan'] is False
+          assert p['production_enabled'] is False
+          a2_status=json.loads(Path('../research/results/v025a2-evaluation/status.json').read_text())
+          assert a2_status['terminal_holdout_opened'] is False
+          assert a2_status['production_enabled'] is False
+          print(json.dumps({'study_id':p['study_id'],'candidate_count':64,'a2_target_value_consumed':False,'terminal_holdout_opened':False,'production_enabled':False},sort_keys=True,indent=2))
+          PY
+          PYTHONPATH=research/v025c:research/v025 python -m pytest -q research/v025c | tee ci-evidence/pytest.txt
+          python -m compileall -q research/v025c research/v025
+
+      - name: Restore official minute cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/v025a2-minute
+          key: v025a2-binance-usdm-minute-${{ env.DATA_PLAN_FILE_SHA256 }}-v1
+          restore-keys: |
+            v025a1-binance-usdm-minute-${{ env.DATA_PLAN_FILE_SHA256 }}-
+            v0241-patched-binance-usdm-
+
+      - name: Restore performance-independent A2 event cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/v025a2-event
+          key: v025a2-binance-usdm-event-${{ env.A2_PLAN_PAYLOAD_SHA256 }}-v1
+
+      - name: Rebuild exact A2 contexts and event plan
+        shell: bash
+        working-directory: a2
+        run: |
+          set -euo pipefail
+          python scripts/download_binance_um_parallel.py --request-plan artifacts/v0243/data_acquisition_plan.json --output "${DATA_ROOT}" --workers 16 2>&1 | tee ../c2/ci-evidence/minute-download.log
+          PYTHONPATH=research/v025 python research/v025/v025_pipeline.py context --data-root "${DATA_ROOT}" --data-plan artifacts/v0243/data_acquisition_plan.json --workspace "${A2_WORKSPACE}" 2>&1 | tee ../c2/ci-evidence/a2-context.log
+          test -s "${A2_WORKSPACE}/event_day_plan.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['A2_WORKSPACE'])/'event_day_plan.json').read_text())
+          assert p['study_id']=='smc_event_time_liquidation_exhaustion_v0_25_a2'
+          assert p['generated_from_candidate_pnl'] is False
+          assert p['terminal_holdout_downloaded'] is False
+          PY
+
+      - name: Materialize exact filtered A2 event cache when absent
+        shell: bash
+        working-directory: a2
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/v025 python research/v025/v025_pipeline.py events --event-plan "${A2_WORKSPACE}/event_day_plan.json" --output "${EVENT_ROOT}" --workers 4 2>&1 | tee ../c2/ci-evidence/event-cache.log
+
+      - name: Build strict-subset C2 contexts and frozen signals
+        shell: bash
+        working-directory: c2
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/v025c:research/v025 python research/v025c/v025c_pipeline.py context --a2-workspace "${A2_WORKSPACE}" --a2-event-plan "${A2_WORKSPACE}/event_day_plan.json" --workspace "${C2_WORKSPACE}" 2>&1 | tee ci-evidence/c2-context.log
+          PYTHONPATH=research/v025c:research/v025 python research/v025c/v025c_pipeline.py signals --workspace "${C2_WORKSPACE}" --a2-event-root "${EVENT_ROOT}" 2>&1 | tee ci-evidence/c2-signals.log
+          python - <<'PY' | tee ci-evidence/signal-audit.json
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          w=Path(os.environ['C2_WORKSPACE'])
+          s=pd.read_csv(w/'signals.csv')
+          if len(s):
+              for col in ('signal_time','context_available_time','entry_time'): s[col]=pd.to_datetime(s[col],utc=True)
+              assert (s['entry_time']>s[['signal_time','context_available_time']].max(axis=1)).all()
+              assert (s['entry_time']<pd.Timestamp('2025-10-01T00:00:00Z')).all()
+          summary=json.loads((w/'context_summary.json').read_text())
+          assert summary['coverage_mode']=='strict_subset_of_performance_independent_A2_windows'
+          print(json.dumps({'signals':int(len(s)),'strict_subset_coverage':True,'terminal_signal':False},sort_keys=True,indent=2))
+          PY
+
+      - name: Run C2 frozen development selection and untouched evaluation
+        shell: bash
+        working-directory: c2
+        run: |
+          set -uo pipefail
+          set +e
+          /usr/bin/time -v env PYTHONPATH=research/v025c:research/v025 python research/v025c/v025c_pipeline.py evaluate --workspace "${C2_WORKSPACE}" --output "${C2_OUTPUT}" 2>&1 | tee ci-evidence/evaluation.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -eq 0 -o "$status" -eq 1
+          printf '%s\n' "$status" > ci-evidence/scientific-exit-code.txt
+
+      - name: Persist compact C2 result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='research/results/v025c2-evaluation'
+          mkdir -p "$root"
+          for name in study_results.json selected_candidate.json research_gate.json development_leaderboard.csv; do
+            if [ -f "${C2_OUTPUT}/${name}" ]; then cp "${C2_OUTPUT}/${name}" "$root/${name}"; fi
+          done
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          r=Path('research/results/v025c2-evaluation'); result={}
+          if (r/'study_results.json').exists(): result=json.loads((r/'study_results.json').read_text())
+          p={'schema_version':1,'study_id':'smc_event_time_initiative_continuation_v0_25_c2','scientific_run_completed':bool(result.get('scientific_run_completed',False)),'target_met':bool(result.get('target_met',False)),'a2_target_value_consumed':False,'terminal_holdout_opened':False,'production_enabled':False,'recorded_at_utc':datetime.now(timezone.utc).isoformat()}
+          (r/'status.json').write_text(json.dumps(p,sort_keys=True,indent=2)+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$root"
+          if ! git diff --cached --quiet; then git commit -m 'Record v0.25C2 frozen preholdout evaluation'; git push origin "HEAD:${GITHUB_REF_NAME}"; fi
+
+      - name: Upload evidence without raw market data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v025c2-evaluation-${{ github.run_id }}
+          path: |
+            transport-evidence
+            c2/ci-evidence
+            .research-work/v025c2/context_summary.json
+            .research-work/v025c2/signals.csv
+            .research-results/v025c2
+            c2/research/v025c/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Preserve target-miss status after evidence
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${C2_OUTPUT}/research_gate.json" ]; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          g=json.loads((Path(os.environ['C2_OUTPUT'])/'research_gate.json').read_text())
+          raise SystemExit(0 if g.get('target_met') else 1)
+          PY
+          else
+            exit 2
+          fi
