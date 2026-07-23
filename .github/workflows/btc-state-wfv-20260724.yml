@@ -38,7 +38,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORK_DIR"
-          base64 --decode research/remote/btc_state_wfv_20260724.py.gz.b64 | gunzip > "$SCRIPT_PATH"
+          python3 - <<'PY'
+          import base64, gzip, os
+          from pathlib import Path
+          source = Path("research/remote/btc_state_wfv_20260724.py.gz.b64")
+          target = Path(os.environ["SCRIPT_PATH"])
+          target.write_bytes(gzip.decompress(base64.b64decode(source.read_text(encoding="ascii"))))
+          PY
           actual_sha=$(shasum -a 256 "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
           test "$actual_sha" = "$EXPECTED_SHA256"
