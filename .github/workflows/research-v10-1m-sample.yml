@@ -1,0 +1,96 @@
+name: V0.10 One-Minute Profitability Sample
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol:
+          - BTCUSDT
+          - ETHUSDT
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download checksum-verified December 2020 and January 2021 one-minute bars
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee "v10-1m-${SYMBOL}.log"
+          import hashlib, io, json, os, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+
+          symbol = os.environ['SYMBOL']
+          root = 'https://data.binance.vision/data/futures/um/monthly/klines'
+          columns = ('open_time','open','high','low','close','volume','close_time','quote_volume','trade_count','taker_buy_base','taker_buy_quote','ignore')
+          frames=[]; sources=[]
+          for month in ('2020-12','2021-01'):
+              name=f'{symbol}-1m-{month}.zip'
+              url=f'{root}/{symbol}/1m/{name}'
+              request=lambda u: urllib.request.Request(u, headers={'User-Agent':'smc-v10-profitability/1.0'})
+              with urllib.request.urlopen(request(url+'.CHECKSUM'), timeout=180) as r:
+                  expected=r.read().decode('utf-8-sig').strip().split()[0].lower()
+              with urllib.request.urlopen(request(url), timeout=180) as r:
+                  payload=r.read()
+              actual=hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{symbol}/{month}: checksum mismatch')
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  members=[n for n in z.namelist() if n.lower().endswith('.csv')]
+                  if not members: raise SystemExit(f'{symbol}/{month}: no csv')
+                  raw=pd.read_csv(z.open(members[0]), header=None, low_memory=False)
+              if pd.isna(pd.to_numeric(raw.iloc[0,0],errors='coerce')):
+                  raw=raw.iloc[1:].copy()
+              raw=raw.iloc[:,:12];raw.columns=columns
+              raw['open_time']=pd.to_datetime(pd.to_numeric(raw.open_time,errors='raise').astype('int64'),unit='ms',utc=True)
+              for c in ('open','high','low','close','volume'):raw[c]=pd.to_numeric(raw[c],errors='raise').astype(float)
+              frame=raw[['open_time','open','high','low','close','volume']]
+              frames.append(frame)
+              sources.append({'symbol':symbol,'month':month,'url':url,'sha256':actual,'rows':len(frame),'bytes':len(payload)})
+          merged=pd.concat(frames).drop_duplicates('open_time').sort_values('open_time')
+          start=pd.Timestamp('2020-12-25',tz='UTC');end=pd.Timestamp('2021-02-01',tz='UTC')
+          merged=merged[(merged.open_time>=start)&(merged.open_time<end)].copy()
+          expected_index=pd.date_range(start,end,freq='1min',inclusive='left')
+          actual_index=pd.DatetimeIndex(merged.open_time)
+          missing=expected_index.difference(actual_index)
+          if len(missing) or len(merged)!=len(expected_index):
+              raise SystemExit(f'{symbol}: missing={len(missing)} rows={len(merged)} expected={len(expected_index)}')
+          out=Path('data/v10_1m')/symbol;out.mkdir(parents=True,exist_ok=True)
+          csv=out/f'{symbol}_1m.csv';merged.to_csv(csv,index=False)
+          manifest={'schema_version':1,'source':'Binance USD-M monthly 1m klines','start':start.isoformat(),'end':end.isoformat(),'sources':sources,'output':{'path':str(csv),'rows':len(merged),'sha256':hashlib.sha256(csv.read_bytes()).hexdigest(),'bytes':csv.stat().st_size}}
+          (out/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps(manifest,indent=2))
+          PY
+
+      - name: Upload one-minute sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-1m-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            data/v10_1m/${{ matrix.symbol }}/${{ matrix.symbol }}_1m.csv
+            data/v10_1m/${{ matrix.symbol }}/manifest.json
+            v10-1m-${{ matrix.symbol }}.log
+          if-no-files-found: error
+          retention-days: 14
