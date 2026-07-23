@@ -62,6 +62,46 @@ jobs:
             symbol: ETHUSDT
             start: 2026-01-01
             end: 2026-07-01
+          - shard: SOLUSDT-2022
+            symbol: SOLUSDT
+            start: 2022-01-01
+            end: 2023-01-01
+          - shard: SOLUSDT-2023
+            symbol: SOLUSDT
+            start: 2023-01-01
+            end: 2024-01-01
+          - shard: SOLUSDT-2024
+            symbol: SOLUSDT
+            start: 2024-01-01
+            end: 2025-01-01
+          - shard: SOLUSDT-2025
+            symbol: SOLUSDT
+            start: 2025-01-01
+            end: 2026-01-01
+          - shard: SOLUSDT-2026H1
+            symbol: SOLUSDT
+            start: 2026-01-01
+            end: 2026-07-01
+          - shard: XRPUSDT-2022
+            symbol: XRPUSDT
+            start: 2022-01-01
+            end: 2023-01-01
+          - shard: XRPUSDT-2023
+            symbol: XRPUSDT
+            start: 2023-01-01
+            end: 2024-01-01
+          - shard: XRPUSDT-2024
+            symbol: XRPUSDT
+            start: 2024-01-01
+            end: 2025-01-01
+          - shard: XRPUSDT-2025
+            symbol: XRPUSDT
+            start: 2025-01-01
+            end: 2026-01-01
+          - shard: XRPUSDT-2026H1
+            symbol: XRPUSDT
+            start: 2026-01-01
+            end: 2026-07-01
     steps:
       - name: Checkout
         uses: actions/checkout@v4
