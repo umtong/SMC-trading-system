@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   tests:
@@ -45,3 +45,56 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  phase26_liquidation_depth:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/phase26-liquidation-depth
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install event-data dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas pyarrow huggingface_hub
+
+      - name: Run causal liquidation-depth screen
+        env:
+          HF_HOME: ${{ runner.temp }}/hf
+        run: |
+          rm -rf research/phase26_microbar/results
+          python research/phase26_microbar/liquidation_depth_research.py \
+            --out research/phase26_microbar/results \
+            | tee research/phase26_microbar/run.log
+
+      - name: Upload Phase26 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase26-liquidation-depth-${{ github.run_id }}
+          path: |
+            research/phase26_microbar/results
+            research/phase26_microbar/run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit compact results to research branch
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/phase26_microbar/results research/phase26_microbar/run.log
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "[skip ci] Record Phase26 liquidation-depth results"
+          git push origin HEAD:research/phase26-liquidation-depth
