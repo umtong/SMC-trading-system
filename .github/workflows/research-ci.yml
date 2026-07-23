@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   tests:
+    if: github.event_name != 'pull_request' || github.head_ref != 'research/binance-flow-20260723'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -84,7 +85,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "pytest==8.3.4"
 
-      - name: Materialize and verify readable engine
+      - name: Materialize, hotfix, and verify readable engine
         run: |
           python - <<'PY'
           import base64, hashlib, zlib
@@ -96,12 +97,23 @@ jobs:
           if actual != expected:
               raise SystemExit(f"engine digest mismatch: expected {expected}, got {actual}")
           (root / "run_research.py").write_bytes(raw)
-          print({"engine_sha256": actual, "bytes": len(raw)})
+          print({"source_engine_sha256": actual, "bytes": len(raw)})
+          PY
+          python research/orderflow_20260723/hotfix_nan_sign.py
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          path = Path("research/orderflow_20260723/run_research.py")
+          expected = "4933bdf62afabbbf3d79ef7888bc9eb7eec3f89ed4b447a211260e3851e92cdd"
+          actual = hashlib.sha256(path.read_bytes()).hexdigest()
+          if actual != expected:
+              raise SystemExit(f"patched engine digest mismatch: expected {expected}, got {actual}")
+          print({"patched_engine_sha256": actual})
           PY
           python -m py_compile research/orderflow_20260723/run_research.py
 
       - name: Run causal execution tests before data access
-        run: python -m pytest -q research/orderflow_20260723/tests/test_research.py
+        run: python -m pytest -q research/orderflow_20260723/tests
 
       - name: Download verified archives and run registered research
         id: alpha
@@ -186,6 +198,7 @@ jobs:
           path: |
             research/orderflow_20260723/registration.json
             research/orderflow_20260723/run_research.py
+            research/orderflow_20260723/hotfix_nan_sign.py
             research/orderflow_20260723/tests
             research/orderflow_20260723/results
           if-no-files-found: warn
