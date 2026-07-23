@@ -1,0 +1,124 @@
+name: Cache BTC USD-M Metrics v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-btc-usdm-metrics-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Download, validate, and clip BTC metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p btc-metrics-cache
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, traceback
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT = Path('btc-metrics-cache')
+          END = pd.Timestamp('2025-07-01T00:00:00Z')
+          REPO = 'Mindbyte-89/btcusdt_perp_metrics_5m_09_2020_to_04_2026'
+          DEST = OUT / 'BTCUSDT_metrics_5m_preholdout.parquet'
+          session = requests.Session()
+          session.headers['User-Agent'] = 'SMC-trading-system-research-btc-metrics/1.0'
+          attempts = [
+              ('original', f'https://huggingface.co/datasets/{REPO}/resolve/main/data/train-00000-of-00001.parquet?download=true'),
+              ('viewer', f'https://huggingface.co/api/datasets/{REPO}/parquet/default/train/0.parquet'),
+          ]
+          try:
+              errors=[]
+              raw_path=OUT/'raw.parquet'
+              source_kind=source_url=None
+              raw_hash=raw_bytes=None
+              for kind,url in attempts:
+                  try:
+                      h=hashlib.sha256(); size=0
+                      with session.get(url,stream=True,timeout=(30,300),allow_redirects=True) as r:
+                          r.raise_for_status()
+                          if 'text/html' in r.headers.get('content-type','').lower():
+                              raise RuntimeError('unexpected HTML response')
+                          with raw_path.open('wb') as f:
+                              for chunk in r.iter_content(4*1024*1024):
+                                  if not chunk: continue
+                                  f.write(chunk); h.update(chunk); size += len(chunk)
+                      if size < 1_000_000: raise RuntimeError(f'download too small: {size}')
+                      source_kind,source_url,raw_hash,raw_bytes=kind,url,h.hexdigest(),size
+                      break
+                  except Exception as exc:
+                      errors.append(f'{kind}: {type(exc).__name__}: {exc}')
+                      raw_path.unlink(missing_ok=True)
+              else:
+                  raise RuntimeError(f'all downloads failed: {errors}')
+
+              df=pd.read_parquet(raw_path)
+              df.columns=[str(c).strip().lower().replace(' ','_') for c in df.columns]
+              required=[
+                  'timestamp','sum_open_interest','sum_open_interest_value',
+                  'count_toptrader_long_short_ratio','sum_toptrader_long_short_ratio',
+                  'count_long_short_ratio','sum_taker_long_short_vol_ratio',
+              ]
+              missing=sorted(set(required)-set(df.columns))
+              if missing: raise RuntimeError(f'missing columns {missing}; got {list(df.columns)}')
+              ts=pd.to_datetime(df['timestamp'],utc=True,errors='raise')
+              out=df[required].copy(); out['timestamp']=ts
+              out=out[out.timestamp < END].sort_values('timestamp').reset_index(drop=True)
+              if out.empty: raise RuntimeError('empty after clipping')
+              if out.timestamp.duplicated().any(): raise RuntimeError('duplicate timestamps')
+              for c in required[1:]:
+                  out[c]=pd.to_numeric(out[c],errors='raise')
+              if out[required[1:]].isna().any().any(): raise RuntimeError('missing numeric metrics')
+              if (out['sum_open_interest']<=0).any() or (out['sum_open_interest_value']<=0).any():
+                  raise RuntimeError('non-positive OI')
+              delta=out.timestamp.diff().dropna()
+              out.to_parquet(DEST,index=False,compression='zstd')
+              manifest={
+                  'dataset_repo':REPO,
+                  'source_kind':source_kind,
+                  'source_url':source_url,
+                  'raw_bytes':raw_bytes,
+                  'raw_sha256':raw_hash,
+                  'end_exclusive':END.isoformat(),
+                  'rows':len(out),
+                  'start':out.timestamp.iloc[0].isoformat(),
+                  'end':out.timestamp.iloc[-1].isoformat(),
+                  'duplicate_timestamps':int(out.timestamp.duplicated().sum()),
+                  'gap_count_gt_5m':int((delta>pd.Timedelta(minutes=5)).sum()),
+                  'largest_gap_seconds':float(delta.max().total_seconds()),
+                  'output':str(DEST),
+                  'output_bytes':DEST.stat().st_size,
+                  'output_sha256':hashlib.sha256(DEST.read_bytes()).hexdigest(),
+                  'columns':required,
+                  'timestamp_semantics_note':'Native dataset sample timestamp; downstream research delays availability by one full 5-minute interval before signal use.',
+              }
+              (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+              print(json.dumps(manifest,indent=2),flush=True)
+          except Exception:
+              (OUT/'failure.txt').write_text(traceback.format_exc(),encoding='utf-8')
+              traceback.print_exc()
+              raise
+          PY
+      - name: Upload BTC metrics cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-usdm-metrics-preholdout-${{ github.run_id }}
+          path: btc-metrics-cache/**
+          retention-days: 7
+          if-no-files-found: error
