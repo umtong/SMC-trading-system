@@ -1,0 +1,199 @@
+name: research-binance-orderflow-npz
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/research-binance-orderflow-npz.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-orderflow-npz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install isolated conversion dependencies
+        run: python -m pip install --upgrade numpy pandas pyarrow huggingface_hub hf_xet
+
+      - name: Download pinned data and produce sealed NumPy archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+          from huggingface_hub import HfApi, hf_hub_download
+
+          REPO_ID = "linxy/USDT-M_Perpetual_Futures"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          CUTOFF = pd.Timestamp("2026-01-01T00:00:00Z")
+          OUTPUT = Path("research_data/binance_usdm_orderflow_npz_2020_2025")
+          CACHE = Path(".hf-npz-cache")
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  while chunk := handle.read(1024 * 1024):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def as_utc(series: pd.Series) -> pd.Series:
+              if pd.api.types.is_integer_dtype(series) or pd.api.types.is_float_dtype(series):
+                  numeric = pd.to_numeric(series, errors="raise")
+                  magnitude = float(numeric.dropna().abs().median()) if numeric.notna().any() else 0.0
+                  unit = "ns" if magnitude > 1e17 else "us" if magnitude > 1e14 else "ms" if magnitude > 1e11 else "s"
+                  return pd.to_datetime(numeric, unit=unit, utc=True)
+              return pd.to_datetime(series, utc=True, errors="raise")
+
+          def numeric_frame(frame: pd.DataFrame, time_column: str) -> tuple[dict[str, np.ndarray], dict[str, str]]:
+              arrays: dict[str, np.ndarray] = {
+                  time_column: frame[time_column].astype("int64").to_numpy(dtype=np.int64, copy=True),
+              }
+              schema = {time_column: "datetime64[ns, UTC] stored as epoch ns int64"}
+              for column in frame.columns:
+                  if column == time_column or column in {"symbol", "ignore"}:
+                      continue
+                  converted = pd.to_numeric(frame[column], errors="coerce")
+                  if converted.notna().sum() == 0:
+                      continue
+                  if converted.isna().any():
+                      arrays[column] = converted.to_numpy(dtype=np.float64, copy=True)
+                      schema[column] = "float64; NaN represents missing"
+                  elif pd.api.types.is_integer_dtype(converted):
+                      arrays[column] = converted.to_numpy(dtype=np.int64, copy=True)
+                      schema[column] = "int64"
+                  else:
+                      arrays[column] = converted.to_numpy(dtype=np.float64, copy=True)
+                      schema[column] = "float64"
+              return arrays, schema
+
+          revision = HfApi().dataset_info(REPO_ID).sha
+          manifest_records = []
+          for symbol in SYMBOLS:
+              specs = (
+                  ("klines_5m", f"{symbol}/{symbol}_5m.parquet", "open_time"),
+                  ("metrics", f"{symbol}/{symbol}_metrics.parquet", "create_time"),
+                  ("funding", f"{symbol}/{symbol}_fundingRate.parquet", "calc_time"),
+              )
+              symbol_dir = OUTPUT / symbol
+              symbol_dir.mkdir(parents=True, exist_ok=True)
+              schema_payload = {
+                  "symbol": symbol,
+                  "source_repository": REPO_ID,
+                  "source_revision": revision,
+                  "sealed_cutoff_exclusive": CUTOFF.isoformat(),
+                  "datasets": {},
+              }
+              for kind, filename, time_column in specs:
+                  source = Path(hf_hub_download(
+                      repo_id=REPO_ID,
+                      repo_type="dataset",
+                      filename=filename,
+                      revision=revision,
+                      cache_dir=CACHE,
+                  ))
+                  frame = pd.read_parquet(source)
+                  if time_column not in frame.columns:
+                      raise RuntimeError(f"missing {time_column} in {filename}: {list(frame.columns)}")
+                  frame[time_column] = as_utc(frame[time_column])
+                  frame = frame.loc[frame[time_column] < CUTOFF].copy()
+                  frame = frame.sort_values(time_column, kind="stable")
+                  duplicates = int(frame[time_column].duplicated().sum())
+                  frame = frame.drop_duplicates(time_column, keep="last").reset_index(drop=True)
+
+                  if kind == "klines_5m":
+                      for column in ("open", "high", "low", "close", "volume", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"):
+                          frame[column] = pd.to_numeric(frame[column], errors="raise")
+                      if (frame["high"] < frame[["open", "close"]].max(axis=1)).any():
+                          raise RuntimeError(f"OHLC high invariant failed for {symbol}")
+                      if (frame["low"] > frame[["open", "close"]].min(axis=1)).any():
+                          raise RuntimeError(f"OHLC low invariant failed for {symbol}")
+                      if (frame["taker_buy_quote_volume"] > frame["quote_volume"] + 1e-7).any():
+                          raise RuntimeError(f"taker volume invariant failed for {symbol}")
+                      delta = frame[time_column].diff().dropna() / pd.Timedelta(minutes=5)
+                      missing_intervals = int((delta - 1).clip(lower=0).round().sum())
+                  else:
+                      missing_intervals = None
+
+                  arrays, schema = numeric_frame(frame, time_column)
+                  target = symbol_dir / f"{symbol}_{kind}_through_2025.npz"
+                  np.savez_compressed(target, **arrays)
+                  schema_payload["datasets"][kind] = {
+                      "time_column": time_column,
+                      "columns": schema,
+                      "rows": len(frame),
+                  }
+                  manifest_records.append({
+                      "symbol": symbol,
+                      "kind": kind,
+                      "source_path": filename,
+                      "source_sha256": sha256(source),
+                      "output_path": str(target),
+                      "output_sha256": sha256(target),
+                      "rows": int(len(frame)),
+                      "start": None if frame.empty else frame[time_column].min().isoformat(),
+                      "end": None if frame.empty else frame[time_column].max().isoformat(),
+                      "duplicates_removed": duplicates,
+                      "missing_intervals": missing_intervals,
+                  })
+
+              schema_path = symbol_dir / f"{symbol}_SCHEMA.json"
+              schema_path.write_text(json.dumps(schema_payload, indent=2, sort_keys=True), encoding="utf-8")
+              manifest_records.append({
+                  "symbol": symbol,
+                  "kind": "schema",
+                  "output_path": str(schema_path),
+                  "output_sha256": sha256(schema_path),
+              })
+
+          manifest = {
+              "schema_version": 1,
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+              "source_repository": REPO_ID,
+              "source_revision": revision,
+              "source_description": "Binance USD-M data mirror generated from official data.binance.vision archives",
+              "sealed_cutoff_exclusive": CUTOFF.isoformat(),
+              "sealed_2026_status": "REMOVED_BEFORE_NPZ_SERIALIZATION",
+              "credentials_used": False,
+              "orders_submitted": False,
+              "records": manifest_records,
+          }
+          digest_source = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+          manifest["content_digest"] = hashlib.sha256(digest_source).hexdigest()
+          manifest_path = OUTPUT / "MANIFEST.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          (OUTPUT / "MANIFEST.sha256").write_text(f"{sha256(manifest_path)}  MANIFEST.json\n", encoding="utf-8")
+          print(json.dumps({"source_revision": revision, "records": len(manifest_records), "manifest": str(manifest_path)}, indent=2))
+          PY
+
+      - name: Upload sealed NumPy research dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-orderflow-npz-through-2025-${{ github.run_id }}
+          path: research_data/binance_usdm_orderflow_npz_2020_2025
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
