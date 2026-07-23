@@ -1,0 +1,139 @@
+--- a/research/v12_liquidity_shock/core.py
++++ b/research/v12_liquidity_shock/core.py
+@@ -160,11 +160,13 @@
+     output = output.sort_values("open_time", kind="mergesort").reset_index(drop=True)
+     if output.open_time.duplicated().any():
+         raise ValueError(f"{symbol}: duplicate minute")
+-    if len(output) > 1:
+-        diffs = output.open_time.diff().dropna()
+-        if not diffs.eq(pd.Timedelta(minutes=1)).all():
+-            first_bad = diffs[~diffs.eq(pd.Timedelta(minutes=1))].index[0]
+-            raise ValueError(f"{symbol}: missing minute before row {first_bad}")
++    # Missing market/reference minutes are explicit segment boundaries.  We do
++    # not impute them and no rolling feature, signal, entry, or exit may cross
++    # the boundary.  This preserves causal state while allowing real exchange
++    # archives with isolated reference-price gaps to remain usable.
++    diffs = output.open_time.diff()
++    new_segment = diffs.isna() | diffs.ne(pd.Timedelta(minutes=1))
++    output["segment_id"] = new_segment.cumsum().astype("int64") - 1
+     if ((output.high < output[["open", "close"]].max(axis=1)) | (output.low > output[["open", "close"]].min(axis=1))).any():
+         raise ValueError(f"{symbol}: OHLC violation")
+     if (output[["open", "high", "low", "close", "mark_close"]] <= 0).any(axis=None):
+@@ -194,10 +196,16 @@
+         0.0,
+     )
+     output["contract_mark_basis"] = np.log(output.close / output.mark_close)
+-    output["abs_return_z"] = _prior_z(output.abs_bar_return, window=cfg.prior_window, minimum=cfg.minimum_prior)
+-    output["volume_z"] = _prior_z(output.log_quote_volume, window=cfg.prior_window, minimum=cfg.minimum_prior)
+-    output["trade_count_z"] = _prior_z(output.log_trades, window=cfg.prior_window, minimum=cfg.minimum_prior)
+-    output["basis_z"] = _prior_z(output.contract_mark_basis, window=cfg.prior_window, minimum=cfg.minimum_prior)
++    segment = output["segment_id"] if "segment_id" in output else pd.Series(0, index=output.index)
++    for source, destination in (
++        ("abs_bar_return", "abs_return_z"),
++        ("log_quote_volume", "volume_z"),
++        ("log_trades", "trade_count_z"),
++        ("contract_mark_basis", "basis_z"),
++    ):
++        output[destination] = output[source].groupby(segment, sort=False).transform(
++            lambda values: _prior_z(values, window=cfg.prior_window, minimum=cfg.minimum_prior)
++        )
+     return output
+ 
+ 
+@@ -340,6 +348,13 @@
+     entry_index = int(times.searchsorted(candidate.decision_time, side="left"))
+     if entry_index >= len(frame) or pd.Timestamp(times.iloc[entry_index]) != candidate.decision_time:
+         return None
++    if "segment_id" in frame:
++        segment_id = frame.iloc[entry_index].segment_id
++        frame = frame.loc[frame.segment_id.eq(segment_id)].reset_index(drop=True)
++        times = frame.open_time
++        entry_index = int(times.searchsorted(candidate.decision_time, side="left"))
++        if entry_index >= len(frame) or pd.Timestamp(times.iloc[entry_index]) != candidate.decision_time:
++            return None
+     entry_row = frame.iloc[entry_index]
+     raw_entry = float(entry_row.open)
+     entry = _adverse_price(raw_entry, candidate.side, entry_slippage_bps, entry=True)
+--- a/research/v12_liquidity_shock/run_discovery.py
++++ b/research/v12_liquidity_shock/run_discovery.py
+@@ -168,9 +168,13 @@
+         mark_path = root / symbol / "markPriceKlines" / "1m" / f"{symbol}-1m-{month}.zip"
+         trade = read_kline_zip(trade_path)
+         mark = read_kline_zip(mark_path)[["open_time", "close"]].rename(columns={"close": "mark_close"})
+-        merged = trade.merge(mark, on="open_time", how="inner", validate="one_to_one")
+-        if len(merged) != len(trade) or len(merged) != len(mark):
+-            raise ValueError(f"incomplete mark stream: {symbol} {month}")
++        merged = trade.merge(mark, on="open_time", how="left", validate="one_to_one")
++        # A contract minute without a same-minute mark is not reconstructed or
++        # forward-filled.  It is removed and becomes an explicit segment break
++        # in ``normalize_feature_frame`` so no feature or trade crosses it.
++        merged = merged.loc[merged.mark_close.notna()].copy()
++        if merged.empty:
++            raise ValueError(f"no overlapping contract/mark minutes: {symbol} {month}")
+         pieces.append(merged[["open_time", "open", "high", "low", "close", "quote_volume", "trades", "taker_buy_quote", "mark_close"]])
+     frame = pd.concat(pieces, ignore_index=True)
+     frame = frame.loc[(frame.open_time >= start) & (frame.open_time < end)].copy()
+@@ -240,6 +244,8 @@
+             "rows": len(frame),
+             "first_open_time": frame.open_time.min(),
+             "last_open_time": frame.open_time.max(),
++            "segments": int(frame.segment_id.nunique()) if "segment_id" in frame else 1,
++            "gap_boundaries": int(max(0, frame.segment_id.nunique() - 1)) if "segment_id" in frame else 0,
+             "sha256_frame": hashlib.sha256(
+                 pd.util.hash_pandas_object(frame, index=False).values.tobytes()
+             ).hexdigest(),
+--- a/research/v12_liquidity_shock/test_core.py
++++ b/research/v12_liquidity_shock/test_core.py
+@@ -139,3 +139,52 @@
+ def test_metrics_include_full_calendar_denominator() -> None:
+     metrics = metrics_for_trades([], start=pd.Timestamp("2023-01-01", tz="UTC"), end=pd.Timestamp("2023-02-01", tz="UTC"))
+     assert metrics["trades_per_calendar_day"] == 0.0
++
++
++def test_missing_minute_starts_new_causal_segment() -> None:
++    raw = frame(n=240).drop(index=120).reset_index(drop=True)
++    normalized = normalize_feature_frame(raw.drop(columns=["symbol", "segment_id"]), symbol="BTCUSDT")
++    assert normalized.segment_id.nunique() == 2
++    cfg = StrategyConfig(
++        family=Family.CONTINUATION,
++        abs_return_z=2.0,
++        dislocation_z=0.5,
++        prior_window=50,
++        minimum_prior=20,
++    )
++    enriched = add_causal_features(normalized, cfg)
++    # The first row after the gap has no inherited rolling state.
++    first_after_gap = enriched.index[enriched.segment_id.eq(1)][0]
++    assert pd.isna(enriched.loc[first_after_gap, "abs_return_z"])
++
++
++def test_trade_cannot_cross_segment_gap() -> None:
++    raw = frame(n=40).drop(index=15).reset_index(drop=True)
++    raw = normalize_feature_frame(raw.drop(columns=["symbol", "segment_id"]), symbol="BTCUSDT")
++    candidate = Candidate(
++        candidate_id="gap",
++        family=Family.CONTINUATION,
++        symbol="BTCUSDT",
++        side=Side.LONG,
++        shock_open_time=raw.loc[10, "open_time"],
++        confirmation_open_time=raw.loc[12, "open_time"],
++        decision_time=raw.loc[13, "open_time"],
++        reference_entry=100.0,
++        structural_stop=99.0,
++        score=1.0,
++        reward_risk=20.0,
++        hold_minutes=10,
++        shock_return=0.01,
++        shock_abs_return_z=3.0,
++        shock_volume_z=2.0,
++        shock_trade_count_z=2.0,
++        shock_taker_imbalance=0.5,
++        directional_dislocation_z=1.0,
++        confirmation_return=0.001,
++        confirmation_taker_imbalance=0.2,
++    )
++    trades, _ = simulate_global_slot(
++        [candidate], {"BTCUSDT": raw}, cell_id="c",
++        total_round_trip_cost_bps=13.0, entry_slippage_bps=0.0, exit_slippage_bps=0.0,
++    )
++    assert trades == []
