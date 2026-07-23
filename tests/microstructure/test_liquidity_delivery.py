@@ -155,7 +155,18 @@ def test_next_open_outside_frozen_geometry_is_rejected() -> None:
 
 def test_break_acceptance_requires_only_directional_node_acceptance() -> None:
     no_deep_sweep = flow(Side.LONG)
-    no_deep_sweep.loc[KNOWN - pd.Timedelta(minutes=3), "low"] = 99.95
+    event_index = pd.date_range(
+        KNOWN - pd.Timedelta(minutes=5),
+        KNOWN,
+        freq="1min",
+        inclusive="left",
+        tz="UTC",
+    )
+    no_deep_sweep.loc[event_index, "open"] = [100.05, 100.04, 100.03, 100.02, 100.00]
+    no_deep_sweep.loc[event_index, "close"] = [100.04, 100.03, 100.02, 100.01, 100.20]
+    no_deep_sweep.loc[event_index, "high"] = [100.10, 100.09, 100.08, 100.07, 100.25]
+    no_deep_sweep.loc[event_index, "low"] = [99.95, 99.94, 99.93, 99.92, 99.95]
+
     sweep = evaluate_fixed_flow_reversal(scene(Side.LONG), no_deep_sweep)
     acceptance = evaluate_fixed_flow_reversal(
         scene(Side.LONG, kind=FlowSceneKind.BREAK_ACCEPTANCE),
