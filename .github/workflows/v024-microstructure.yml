@@ -5,13 +5,11 @@ on:
     branches:
       - research/v024-microstructure-20260723
     paths:
-      - 'research/v024_bundle/**'
-      - 'research/v024_bundle_v2/**'
+      - 'research/v024_bundle_v3/**'
       - '.github/workflows/v024-microstructure.yml'
   pull_request:
     paths:
-      - 'research/v024_bundle/**'
-      - 'research/v024_bundle_v2/**'
+      - 'research/v024_bundle_v3/**'
       - '.github/workflows/v024-microstructure.yml'
   workflow_dispatch:
 
@@ -23,35 +21,97 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  diagnose-transport:
-    name: Diagnose locked runner transport only
+  integrity:
+    name: Reconstruct and validate locked v0.24 runner
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - name: Checkout exact research commit
         uses: actions/checkout@v4
 
-      - name: Reconstruct and inspect repository bytes
+      - name: Reconstruct SHA-locked runner
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p transport-evidence
-          count="$(find research/v024_bundle -maxdepth 1 -name 'part-*.b64' | wc -l)"
-          printf '%s\n' "$count" | tee transport-evidence/part-count.txt
-          test "$count" -eq 16
-          cat research/v024_bundle/part-*.b64 | base64 -d > /tmp/v024_repository_bundle.tar.xz
-          sha256sum /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/repository-bundle.sha256
-          wc -c /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/repository-bundle.size
-          xz -t /tmp/v024_repository_bundle.tar.xz
-          tar -tJf /tmp/v024_repository_bundle.tar.xz | tee transport-evidence/archive-members.txt
+          mkdir -p integrity-evidence
+          count="$(find research/v024_bundle_v3 -maxdepth 1 -name 'part-*.b64' | wc -l)"
+          printf '%s\n' "$count" | tee integrity-evidence/part-count.txt
+          test "$count" -eq 8
+          cat research/v024_bundle_v3/part-*.b64 | base64 -d > /tmp/v024_locked_runner.tar.xz
+          echo '25ae16b46f0daaa9501f571c810eba6159d0454474e0d0eee81f4329b7ec8746  /tmp/v024_locked_runner.tar.xz' | sha256sum -c - | tee integrity-evidence/archive-sha256.txt
+          xz -t /tmp/v024_locked_runner.tar.xz
+          tar -tJf /tmp/v024_locked_runner.tar.xz | tee integrity-evidence/archive-members.txt
+          tar -xJf /tmp/v024_locked_runner.tar.xz
+          test -f v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
+          test -f v024/scripts/run_microstructure_pipeline_v0_24.py
+          test -f v024/RELEASE_MANIFEST.json
 
-      - name: Upload transport evidence and reconstructed bytes
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v024/requirements-lock.txt
+
+      - name: Install locked dependencies
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+
+      - name: Verify preregistration identity
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          mkdir -p ci_evidence
+          echo '2ae6149b25eac3b329588945c1a210751f11edb486c3ef64b226c27d08b80240  artifacts/microstructure_liquidity_v0_24/research_plan_locked.json' | sha256sum -c -
+          echo '6e126bde5719ea25c93d16bdaec165ce2005eeaad96f462c4964e9929f4040b6  artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json' | sha256sum -c -
+          python - <<'PY' | tee ci_evidence/preregistration-audit.json
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('artifacts/microstructure_liquidity_v0_24/research_plan_locked.json').read_text())
+          acquisition = json.loads(Path('artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json').read_text())
+          assert plan['plan_payload_sha256'] == 'e059f1f500203e919feb5bf4766b151bb1fe9b6e12defe94a9e41deabb115693'
+          assert plan['source_tree_manifest_sha256'] == 'd3efea3771b02b33ed59db4e42e2f4fddf346a9c76b908aaa6bfbfed5e00ea64'
+          assert plan['candidate_count'] == 64
+          assert plan['evaluation_period']['terminal_holdout_locked'] is True
+          assert acquisition['download_end_inclusive'] == '2025-09-30'
+          assert acquisition['terminal_holdout_download_prohibited_by_default'] is True
+          assert acquisition['request_count'] == 4070
+          print(json.dumps({
+              'plan_payload_sha256': plan['plan_payload_sha256'],
+              'source_tree_manifest_sha256': plan['source_tree_manifest_sha256'],
+              'candidate_count': plan['candidate_count'],
+              'preholdout_download_end': acquisition['download_end_inclusive'],
+              'terminal_holdout_locked': plan['evaluation_period']['terminal_holdout_locked'],
+              'production_enabled': plan['production_enabled'],
+          }, sort_keys=True, indent=2))
+          PY
+
+      - name: Run full regression and compile gates
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python -m pytest -q | tee ci_evidence/pytest.txt
+          python -m compileall -q smc_ict_quant scripts tests
+          python scripts/run_microstructure_pipeline_v0_24.py --help | tee ci_evidence/pipeline-help.txt
+          python scripts/run_microstructure_liquidity_v0_24.py --help | tee ci_evidence/research-help.txt
+          python scripts/download_binance_um_parallel.py --help | tee ci_evidence/downloader-help.txt
+
+      - name: Upload integrity evidence only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v024-transport-${{ github.run_id }}
+          name: v024-integrity-${{ github.run_id }}
           path: |
-            transport-evidence
-            /tmp/v024_repository_bundle.tar.xz
+            integrity-evidence
+            v024/ci_evidence
+            v024/RELEASE_MANIFEST.json
+            v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
+            v024/artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
