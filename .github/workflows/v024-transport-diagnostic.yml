@@ -6,6 +6,10 @@ on:
       - research/v024-microstructure-20260723
     paths:
       - '.github/workflows/v024-transport-diagnostic.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/v024-transport-diagnostic.yml'
+      - 'research/v024_bundle_v4/**'
   workflow_dispatch:
 
 permissions:
