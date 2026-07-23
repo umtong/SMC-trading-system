@@ -1,0 +1,50 @@
+name: Wave44 exact quarter-hour aggTrades 2022
+
+on:
+  pull_request:
+    paths:
+      - "scripts/build_wave44_exact_quarterhour_month.py"
+      - ".github/workflows/wave44-quarterhour-exact.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        month: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pandas pyarrow numpy
+      - name: Build checksum-verified exact first-10-second features
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_wave44_exact_quarterhour_month.py \
+            --symbol "${{ matrix.symbol }}" \
+            --month "2022-${{ matrix.month }}" \
+            --output-dir "wave44/${{ matrix.symbol }}/2022-${{ matrix.month }}" \
+            2>&1 | tee "wave44-${{ matrix.symbol }}-2022-${{ matrix.month }}.log"
+      - name: Upload exact feature shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave44-${{ matrix.symbol }}-2022-${{ matrix.month }}-${{ github.run_id }}
+          path: |
+            wave44/${{ matrix.symbol }}/2022-${{ matrix.month }}/**
+            wave44-${{ matrix.symbol }}-2022-${{ matrix.month }}.log
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
