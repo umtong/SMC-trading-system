@@ -1,6 +1,12 @@
 name: V9 Alpha Search
 
 on:
+  push:
+    branches:
+      - "research/v9-alpha-search-20260723"
+    paths:
+      - "research/v9_alpha_search.py.gz.b64"
+      - ".github/workflows/v9-alpha-search.yml"
   pull_request:
     paths:
       - "research/v9_alpha_search.py.gz.b64"
