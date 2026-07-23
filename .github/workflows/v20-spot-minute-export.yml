@@ -1,0 +1,149 @@
+name: V20 Binance Spot Minute Export
+
+on:
+  pull_request:
+    paths:
+      - 'research/v20_spot_data_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-spot-2023-2024:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'research/v20-run-20260723')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests
+      - name: Restore Binance spot cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v20_spot
+          key: v20-binance-spot-1m-2023-2024-btc-eth-v1
+      - name: Download, verify, and export spot minutes
+        id: export
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts
+          python - <<'PY' 2>&1 | tee artifacts-v20-spot.log
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+          import hashlib, json, re, zipfile
+          import pandas as pd
+          import requests
+
+          BASE='https://data.binance.vision/data/spot/monthly/klines'
+          symbols=['BTCUSDT','ETHUSDT']
+          months=[f'{y}-{m:02d}' for y in (2023,2024) for m in range(1,13)]
+          cache=Path('.cache/v20_spot')
+          out=Path('artifacts/v20-spot-minute-2023-2024')
+          out.mkdir(parents=True,exist_ok=True)
+          session=requests.Session()
+
+          def sha(path: Path) -> str:
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for b in iter(lambda:f.read(1024*1024),b''):
+                      h.update(b)
+              return h.hexdigest()
+
+          def dl(symbol: str, month: str) -> dict:
+              name=f'{symbol}-1m-{month}.zip'
+              url=f'{BASE}/{symbol}/1m/{name}'
+              path=cache/symbol/name
+              path.parent.mkdir(parents=True,exist_ok=True)
+              cp=path.with_suffix('.zip.CHECKSUM')
+              if not cp.exists():
+                  r=session.get(url+'.CHECKSUM',timeout=90)
+                  r.raise_for_status()
+                  cp.write_bytes(r.content)
+              text=cp.read_text(encoding='utf-8-sig')
+              match=re.search(r'([0-9a-fA-F]{64})',text)
+              if not match:
+                  raise ValueError(f'bad checksum {cp}')
+              expected=match.group(1).lower()
+              if not path.exists() or sha(path)!=expected:
+                  tmp=path.with_suffix('.tmp')
+                  r=session.get(url,timeout=240)
+                  r.raise_for_status()
+                  tmp.write_bytes(r.content)
+                  actual=sha(tmp)
+                  if actual!=expected:
+                      raise ValueError(f'checksum mismatch {url}')
+                  tmp.replace(path)
+              return {'symbol':symbol,'month':month,'path':str(path),'sha256':expected,'bytes':path.stat().st_size,'url':url}
+
+          rows=[]
+          with ThreadPoolExecutor(max_workers=8) as ex:
+              fs=[ex.submit(dl,s,m) for s in symbols for m in months]
+              for f in as_completed(fs):
+                  rows.append(f.result())
+          pd.DataFrame(rows).sort_values(['symbol','month']).to_csv(out/'input_manifest.csv',index=False)
+
+          summaries=[]
+          for symbol in symbols:
+              pieces=[]
+              for month in months:
+                  path=cache/symbol/f'{symbol}-1m-{month}.zip'
+                  with zipfile.ZipFile(path) as zf:
+                      names=[n for n in zf.namelist() if not n.endswith('/')]
+                      if len(names)!=1:
+                          raise ValueError(f'unexpected members: {path}')
+                      raw=pd.read_csv(zf.open(names[0]),header=None)
+                  if raw.shape[1] < 11:
+                      raise ValueError(f'bad schema: {path}')
+                  x=raw.iloc[:,[0,1,2,3,4,7,8,10]].copy()
+                  x.columns=['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']
+                  x['open_time']=pd.to_datetime(pd.to_numeric(x.open_time,errors='raise'),unit='ms',utc=True)
+                  for c in x.columns[1:]:
+                      x[c]=pd.to_numeric(x[c],errors='raise')
+                  pieces.append(x)
+              frame=pd.concat(pieces,ignore_index=True).sort_values('open_time',kind='mergesort').reset_index(drop=True)
+              if frame.open_time.duplicated().any():
+                  raise ValueError(f'{symbol}: duplicate minute')
+              diffs=frame.open_time.diff()
+              frame['segment_id']=(diffs.isna()|diffs.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
+              path=out/f'{symbol}_spot_1m.csv.gz'
+              frame.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+              summaries.append({'symbol':symbol,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(path),'bytes':path.stat().st_size})
+          (out/'summary.json').write_text(json.dumps(summaries,indent=2),encoding='utf-8')
+          print(json.dumps(summaries,indent=2))
+          PY
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload spot data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v20-binance-spot-minute-2023-2024-${{ github.run_id }}
+          path: |
+            artifacts/v20-spot-minute-2023-2024
+            artifacts-v20-spot.log
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V20 spot-minute export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- artifact: \`v20-binance-spot-minute-2023-2024-${GITHUB_RUN_ID}\`\n\n_Checksum-verified data artifact only._" --edit-last --create-if-none
+      - name: Preserve failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
