@@ -149,3 +149,5 @@ jobs:
         run: |
           echo "V10 research failed with exit code ${EXIT_CODE}"
           exit 1
+
+# trigger after workflow registration
