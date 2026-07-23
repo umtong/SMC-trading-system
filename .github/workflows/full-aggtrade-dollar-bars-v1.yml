@@ -1,0 +1,46 @@
+name: Build Full AggTrade Dollar Bars v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/full-aggtrade-dollar-bars-v1.yml"
+      - "research/full_aggtrade_dollar_bars/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-bars:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [ETHUSDT, SOLUSDT]
+        year: [2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pandas numpy pyarrow requests
+      - name: Build checksum-verified dollar-volume bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python research/full_aggtrade_dollar_bars/build.py \
+            --symbol "${{ matrix.symbol }}" \
+            --year "${{ matrix.year }}" \
+            --output output \
+            2>&1 | tee "output/${{ matrix.symbol }}_${{ matrix.year }}_build.log"
+      - name: Upload dollar-volume bars
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-dollar-bars-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          path: output/**
+          retention-days: 7
+          if-no-files-found: error
