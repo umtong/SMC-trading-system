@@ -6,6 +6,7 @@ on:
     paths:
       - "research/remote/cross_asset_asymmetry.py.b64.part*"
       - "research/remote/cross_asset_asymmetry.py.b64.s*"
+      - "research/remote/cross_asset_asymmetry.py.gz.b64.part*"
       - "research/cross_asset_asymmetry_20260724/preregistration.json"
       - ".github/workflows/cross-asset-asymmetry-arm.yml"
 
@@ -30,6 +31,7 @@ jobs:
       PREREGISTRATION: ${{ github.workspace }}/research/cross_asset_asymmetry_20260724/preregistration.json
       EXPECTED_BASE_SHA256: 66b08521a6136ce26fe1c586dcd915877e874228692b03e312fa834afe9554af
       EXPECTED_EXPERIMENT_SHA256: 5b2eb13d43ddf50fe766a0456b24e256a57823539433a43c761490b52cc883c8
+      EXPECTED_COMPRESSED_SHA256: 758b23b28df17b1c76490af445071495a29a193c940a70a8c8637b5362aaefa3
       EXPECTED_PREREG_SHA256: f395a2a390614ad93d709a14b6d2aa781e5cbdedee9d84d3c493a66139bfae4e
     steps:
       - name: Checkout isolated research branch
@@ -47,20 +49,10 @@ jobs:
           base64 --decode /tmp/base_wfv.py.b64 > "$BASE_SCRIPT"
           python research/remote/repair_cross_asset_wfv_v3_transfer.py "$BASE_SCRIPT" \
             2>&1 | tee "$WORK_DIR/base_repair.log"
-          cat \
-            research/remote/cross_asset_asymmetry.py.b64.part00 \
-            research/remote/cross_asset_asymmetry.py.b64.part01 \
-            research/remote/cross_asset_asymmetry.py.b64.part02 \
-            research/remote/cross_asset_asymmetry.py.b64.s03_00 \
-            research/remote/cross_asset_asymmetry.py.b64.s03_01 \
-            research/remote/cross_asset_asymmetry.py.b64.s03_02 \
-            research/remote/cross_asset_asymmetry.py.b64.s03_03 \
-            research/remote/cross_asset_asymmetry.py.b64.s04_00 \
-            research/remote/cross_asset_asymmetry.py.b64.s04_01 \
-            research/remote/cross_asset_asymmetry.py.b64.s04_02 \
-            research/remote/cross_asset_asymmetry.py.b64.s04_03 \
-            > /tmp/cross_asset_asymmetry.py.b64
-          base64 --decode /tmp/cross_asset_asymmetry.py.b64 > "$EXPERIMENT_SCRIPT"
+          cat research/remote/cross_asset_asymmetry.py.gz.b64.part{00..01} > /tmp/cross_asset_asymmetry.py.gz.b64
+          base64 --decode /tmp/cross_asset_asymmetry.py.gz.b64 > /tmp/cross_asset_asymmetry.py.gz
+          printf '%s  %s\n' "$EXPECTED_COMPRESSED_SHA256" /tmp/cross_asset_asymmetry.py.gz | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/cross_asset_asymmetry.py.gz > "$EXPERIMENT_SCRIPT"
           printf '%s  %s\n' "$EXPECTED_BASE_SHA256" "$BASE_SCRIPT" | sha256sum --check --strict
           printf '%s  %s\n' "$EXPECTED_EXPERIMENT_SHA256" "$EXPERIMENT_SCRIPT" | sha256sum --check --strict
           printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREGISTRATION" | sha256sum --check --strict
