@@ -2,6 +2,7 @@ name: V0.10 Multi-Year One-Minute Taker Flow
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
