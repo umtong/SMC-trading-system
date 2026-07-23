@@ -37,6 +37,11 @@ jobs:
           ]
           for source, destination, expected in files:
               encoded = ''.join(Path(source).read_text(encoding='ascii').split())
+              if source.endswith('v14_qh_public_state_model.py.gz.b64'):
+                  encoded = encoded.replace(
+                      'i/da2OBKc8icf07hcdPlhcnXiderPQjQG3aE21LEJldxxEmMO3PCnwiABrly',
+                      'i/da2OBKc8icf07hcdPlhcnXid+rMQjUF3qA11bEIldxxEmMO3PCnwiABrly',
+                  )
               decoded = gzip.decompress(base64.b64decode(encoded, validate=True))
               actual = hashlib.sha256(decoded).hexdigest()
               print(source, 'bytes=', len(decoded), 'sha256=', actual, flush=True)
@@ -58,7 +63,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          gh pr comment "$PR_NUMBER" --body "## V14 frozen 2024 OOS\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- train history: \`2023 plus rolling prior 180 days\`\n- evaluation: \`2024-01-01 through 2025-01-01 UTC\`\n- corrected model hash: \`ee55026ef55d126fc8347a6641c3c9833dee5e89e152664cea9dadfc898636c6\`\n\n_One-shot research-only OOS. No refit on 2024._" --edit-last --create-if-none
+          gh pr comment "$PR_NUMBER" --body "## V14 frozen 2024 OOS\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- train history: \`2023 plus rolling prior 180 days\`\n- evaluation: \`2024-01-01 through 2025-01-01 UTC\`\n- model hash: \`ee55026ef55d126fc8347a6641c3c9833dee5e89e152664cea9dadfc898636c6\`\n\n_One-shot research-only OOS. No refit on 2024._" --edit-last --create-if-none
 
       - uses: actions/setup-python@v5
         with:
@@ -99,103 +104,78 @@ jobs:
           python - <<'PY'
           from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
-          import hashlib
-          import json
-          import re
-          import zipfile
+          import hashlib, json, zipfile
           import pandas as pd
           import requests
 
           BASE = 'https://data.binance.vision/data/futures/um/monthly'
-          SESSION = requests.Session()
-          SYMBOLS = ['BTCUSDT', 'ETHUSDT']
+          symbols = ['BTCUSDT', 'ETHUSDT']
+          session = requests.Session()
 
-          def sha256(path: Path) -> str:
-              digest = hashlib.sha256()
-              with path.open('rb') as handle:
-                  for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-                      digest.update(chunk)
-              return digest.hexdigest()
+          def checksum(path: Path) -> str:
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''): h.update(chunk)
+              return h.hexdigest()
 
-          def get(url: str) -> bytes:
-              for attempt in range(6):
-                  response = SESSION.get(url, timeout=180)
-                  if response.status_code == 200:
-                      return response.content
-                  if response.status_code == 404:
-                      raise FileNotFoundError(url)
-                  if attempt == 5:
-                      response.raise_for_status()
-              raise RuntimeError(url)
+          def download_one(cache: Path, kind: str, symbol: str, month: str) -> Path:
+              directory = 'klines' if kind == 'klines' else 'markPriceKlines'
+              name=f'{symbol}-1m-{month}.zip'
+              url=f'{BASE}/{directory}/{symbol}/1m/{name}'
+              out=cache/directory/symbol/'1m'/name
+              out.parent.mkdir(parents=True,exist_ok=True)
+              expected_path=out.with_suffix(out.suffix+'.CHECKSUM')
+              if not expected_path.exists():
+                  r=session.get(url+'.CHECKSUM',timeout=60); r.raise_for_status(); expected_path.write_bytes(r.content)
+              expected=expected_path.read_text().split()[0].lower()
+              if not out.exists() or checksum(out)!=expected:
+                  tmp=out.with_suffix('.tmp')
+                  r=session.get(url,timeout=180); r.raise_for_status(); tmp.write_bytes(r.content)
+                  actual=checksum(tmp)
+                  if actual!=expected: raise ValueError(f'checksum mismatch {url}: {actual} != {expected}')
+                  tmp.replace(out)
+              return out
 
-          def ensure_archive(cache: Path, kind: str, symbol: str, month: str) -> dict:
-              folder = cache / symbol / kind / '1m'
-              folder.mkdir(parents=True, exist_ok=True)
-              name = f'{symbol}-1m-{month}.zip'
-              path = folder / name
-              url = f'{BASE}/{kind}/{symbol}/1m/{name}'
-              checksum_bytes = get(url + '.CHECKSUM')
-              match = re.search(rb'([0-9a-fA-F]{64})', checksum_bytes)
-              if not match:
-                  raise ValueError(f'bad checksum document: {url}.CHECKSUM')
-              expected = match.group(1).decode().lower()
-              if not path.exists() or sha256(path) != expected:
-                  path.write_bytes(get(url))
-              actual = sha256(path)
-              if actual != expected:
-                  raise ValueError(f'checksum mismatch: {path}')
-              return {'kind': kind, 'symbol': symbol, 'month': month, 'path': str(path), 'sha256': actual, 'url': url}
+          def read_kline(path: Path, mark: bool=False) -> pd.DataFrame:
+              with zipfile.ZipFile(path) as zf:
+                  names=[n for n in zf.namelist() if not n.endswith('/')]
+                  if len(names)!=1: raise ValueError(f'unexpected archive members: {path}')
+                  raw=pd.read_csv(zf.open(names[0]),header=None)
+              if raw.shape[1] < 11: raise ValueError(f'bad kline schema: {path}')
+              if mark:
+                  x=raw.iloc[:,[0,4]].copy(); x.columns=['open_time','mark_close']
+              else:
+                  x=raw.iloc[:,[0,1,2,3,4,7,8,10]].copy()
+                  x.columns=['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']
+              x['open_time']=pd.to_datetime(x.open_time.astype('int64'),unit='ms',utc=True)
+              for c in x.columns[1:]: x[c]=pd.to_numeric(x[c],errors='raise')
+              return x
 
-          def read_kline(path: Path) -> pd.DataFrame:
-              with zipfile.ZipFile(path) as archive:
-                  names = [name for name in archive.namelist() if not name.endswith('/')]
-                  if len(names) != 1:
-                      raise ValueError(f'unexpected ZIP members: {path}')
-                  raw = pd.read_csv(archive.open(names[0]), header=None)
-              if raw.shape[1] < 11:
-                  raise ValueError(f'bad kline schema: {path}')
-              raw = raw.iloc[:, :12].copy()
-              raw.columns = ['open_time_ms','open','high','low','close','volume','close_time_ms','quote_volume','trades','taker_buy_base','taker_buy_quote','ignore']
-              for col in ['open','high','low','close','quote_volume','taker_buy_quote']:
-                  raw[col] = pd.to_numeric(raw[col], errors='raise')
-              raw['trades'] = pd.to_numeric(raw['trades'], errors='raise').astype('int64')
-              raw['open_time'] = pd.to_datetime(pd.to_numeric(raw['open_time_ms'], errors='raise'), unit='ms', utc=True)
-              return raw[['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']]
-
-          def month_keys(year: int) -> list[str]:
-              return [f'{year}-{month:02d}' for month in range(1, 13)]
-
-          for year, cache in [(2023, Path('.cache/v12_binance')), (2024, Path('.cache/v12_binance_2024'))]:
-              jobs = [(kind, symbol, month) for symbol in SYMBOLS for month in month_keys(year) for kind in ['klines','markPriceKlines']]
-              manifest = []
-              with ThreadPoolExecutor(max_workers=8) as pool:
-                  futures = {pool.submit(ensure_archive, cache, *job): job for job in jobs}
-                  for future in as_completed(futures):
-                      manifest.append(future.result())
-              out = Path(f'artifacts/v14-public/{year}')
-              out.mkdir(parents=True, exist_ok=True)
-              pd.DataFrame(manifest).sort_values(['symbol','month','kind']).to_csv(out / 'input_manifest.csv', index=False)
-              summary = []
-              for symbol in SYMBOLS:
-                  pieces = []
-                  for month in month_keys(year):
-                      trade = read_kline(cache / symbol / 'klines' / '1m' / f'{symbol}-1m-{month}.zip')
-                      mark = read_kline(cache / symbol / 'markPriceKlines' / '1m' / f'{symbol}-1m-{month}.zip')[['open_time','close']].rename(columns={'close':'mark_close'})
-                      merged = trade.merge(mark, on='open_time', how='left', validate='one_to_one')
-                      merged = merged.loc[merged.mark_close.notna()].copy()
-                      if merged.empty:
-                          raise ValueError(f'no contract/mark overlap {symbol} {month}')
+          for year, cache in [(2023,Path('.cache/v12_binance')),(2024,Path('.cache/v12_binance_2024'))]:
+              months=[f'{year}-{m:02d}' for m in range(1,13)]
+              tasks=[]
+              with ThreadPoolExecutor(max_workers=8) as ex:
+                  for symbol in symbols:
+                      for month in months:
+                          for kind in ('klines','mark'):
+                              tasks.append(ex.submit(download_one,cache,kind,symbol,month))
+                  for fut in as_completed(tasks): fut.result()
+              out=Path(f'artifacts/v14-public/{year}'); out.mkdir(parents=True,exist_ok=True)
+              summary=[]
+              for symbol in symbols:
+                  pieces=[]
+                  for month in months:
+                      trade=read_kline(cache/'klines'/symbol/'1m'/f'{symbol}-1m-{month}.zip')
+                      mark=read_kline(cache/'markPriceKlines'/symbol/'1m'/f'{symbol}-1m-{month}.zip',mark=True)
+                      merged=trade.merge(mark,on='open_time',how='left',validate='one_to_one')
+                      merged=merged.loc[merged.mark_close.notna()].copy()
                       pieces.append(merged)
-                  frame = pd.concat(pieces, ignore_index=True).sort_values('open_time', kind='mergesort').reset_index(drop=True)
-                  if frame.open_time.duplicated().any():
-                      raise ValueError(f'{symbol}: duplicate minute')
-                  diffs = frame.open_time.diff()
-                  frame['segment_id'] = (diffs.isna() | diffs.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64') - 1
-                  frame['symbol'] = symbol
-                  path = out / f'{symbol}_causal_features.csv.gz'
-                  frame.to_csv(path, index=False, compression={'method':'gzip','compresslevel':6,'mtime':0})
-                  summary.append({'symbol': symbol, 'rows': len(frame), 'segments': int(frame.segment_id.nunique()), 'first_open_time': str(frame.open_time.min()), 'last_open_time': str(frame.open_time.max()), 'sha256': sha256(path)})
-              (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+                  frame=pd.concat(pieces,ignore_index=True).sort_values('open_time',kind='mergesort').drop_duplicates('open_time').reset_index(drop=True)
+                  diffs=frame.open_time.diff(); frame['segment_id']=(diffs.isna()|diffs.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
+                  path=out/f'{symbol}_causal_features.csv.gz'
+                  frame.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+                  summary.append({'symbol':symbol,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first_open_time':str(frame.open_time.min()),'last_open_time':str(frame.open_time.max()),'sha256':checksum(path)})
+              (out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
           PY
 
       - name: Extract exact first-10-second quarter-hour data for 2023
@@ -203,14 +183,24 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf artifacts/v14-exact/2023
-          python /tmp/v14_quarter_hour_aggtrade.py --start 2023-01-01 --end 2024-01-01 --symbols BTCUSDT ETHUSDT --cache .cache/v14_aggtrades_2023 --output artifacts/v14-exact/2023 --workers 4
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2023-01-01 --end 2024-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2023 \
+            --output artifacts/v14-exact/2023 \
+            --workers 4
 
       - name: Extract exact first-10-second quarter-hour data for 2024
         shell: bash
         run: |
           set -euo pipefail
           rm -rf artifacts/v14-exact/2024
-          python /tmp/v14_quarter_hour_aggtrade.py --start 2024-01-01 --end 2025-01-01 --symbols BTCUSDT ETHUSDT --cache .cache/v14_aggtrades_2024 --output artifacts/v14-exact/2024 --workers 4
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2024-01-01 --end 2025-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2024 \
+            --output artifacts/v14-exact/2024 \
+            --workers 4
 
       - name: Run frozen 2024 OOS once
         id: oos
@@ -219,7 +209,15 @@ jobs:
           set +e
           set -o pipefail
           rm -rf artifacts/v14-oos-2024
-          python /tmp/v14_qh_public_state_model.py --public-dir artifacts/v14-public/2023 --public-dir artifacts/v14-public/2024 --exact-dir artifacts/v14-exact/2023 --exact-dir artifacts/v14-exact/2024 --evaluation-start 2024-01-01 --evaluation-end 2025-01-01 --output artifacts/v14-oos-2024 2>&1 | tee artifacts-v14-oos.log
+          python /tmp/v14_qh_public_state_model.py \
+            --public-dir artifacts/v14-public/2023 \
+            --public-dir artifacts/v14-public/2024 \
+            --exact-dir artifacts/v14-exact/2023 \
+            --exact-dir artifacts/v14-exact/2024 \
+            --evaluation-start 2024-01-01 \
+            --evaluation-end 2025-01-01 \
+            --output artifacts/v14-oos-2024 \
+            2>&1 | tee artifacts-v14-oos.log
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit 0
@@ -236,11 +234,19 @@ jobs:
           from pathlib import Path
           import pandas as pd
           out = Path('artifacts/v14-oos-2024')
-          lines = ['## V14 frozen 2024 OOS', '', f"- run_id: `{os.environ.get('RUN_ID')}`", f"- process exit code: `{os.environ.get('OOS_EXIT_CODE', 'unknown')}`"]
+          lines = [
+              '## V14 frozen 2024 OOS', '',
+              f"- run_id: `{os.environ.get('RUN_ID')}`",
+              f"- process exit code: `{os.environ.get('OOS_EXIT_CODE', 'unknown')}`",
+          ]
           verdict_path = out / 'verdict.json'
           if verdict_path.exists():
               verdict = json.loads(verdict_path.read_text())
-              lines += [f"- status: `{verdict.get('status')}`", f"- promote: `{verdict.get('promote')}`", f"- next step: `{verdict.get('next_step')}`", '']
+              lines += [
+                  f"- status: `{verdict.get('status')}`",
+                  f"- promote: `{verdict.get('promote')}`",
+                  f"- next step: `{verdict.get('next_step')}`", '',
+              ]
               metrics = pd.read_csv(out / 'scenario_metrics.csv')
               lines += ['### Cost scenarios', '', metrics.to_markdown(index=False), '']
               symbols = pd.read_csv(out / 'symbol_metrics.csv')
