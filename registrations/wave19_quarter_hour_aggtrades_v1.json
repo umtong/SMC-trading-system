@@ -1,0 +1,42 @@
+{
+  "registration_id": "wave19_quarter_hour_aggtrades_v1_2026_07_24",
+  "status": "FROZEN_BEFORE_EVENT_DATA_RESULTS",
+  "hypothesis": "The first ten seconds of true quarter-hour openings contain an order-imbalance signal not recoverable from completed 15-minute OHLCV. Its public-state component should forecast 4-12 hour returns, while the raw first-30-minute path may partially reverse.",
+  "source": "official Binance Vision USD-M monthly aggTrades with adjacent SHA-256 verification",
+  "symbols_stage_1": ["BTCUSDT", "ETHUSDT"],
+  "event_definition": {
+    "boundary": "UTC epoch-aligned 00, 15, 30, 45 minutes",
+    "opening_window": "[boundary, boundary+10 seconds)",
+    "prior_price_window": "[boundary-10 seconds, boundary)",
+    "buyer_initiated": "isBuyerMaker=False",
+    "seller_initiated": "isBuyerMaker=True",
+    "order_imbalance": "signed taker quantity divided by total quantity in opening window"
+  },
+  "data_period": {
+    "development": ["2021-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+    "walk_forward": ["2024-01-01T00:00:00Z", "2025-08-01T00:00:00Z"],
+    "sealed_final_oos": ["2025-08-01T00:00:00Z", "2026-01-23T00:00:00Z"]
+  },
+  "sealed_access": "PROHIBITED",
+  "planned_independent_paths": [
+    "standalone extreme opening imbalance with 30-minute delayed entry and 4/8/12-hour exits",
+    "public-state projection of opening imbalance using only lagged OHLCV/order-flow features",
+    "E1 consensus plus contemporaneous opening-imbalance agreement",
+    "SMC external-liquidity sweep plus opening-imbalance exhaustion reversal",
+    "same-phase lagged opening-imbalance forecast control"
+  ],
+  "execution_controls": {
+    "decision_available": "after the first ten-second opening window closes",
+    "earliest_entry": "first transaction or executable quote strictly after boundary+10 seconds",
+    "one_global_pending_or_open_slot": true,
+    "cost_stress_bps": [22, 32],
+    "funding": "actual finalized Binance USD-M events",
+    "same_window_favorable_fill": "forbidden"
+  },
+  "forbidden": [
+    "using the opening window before it completes",
+    "using future returns to choose event thresholds",
+    "accessing timestamps on or after 2025-08-01",
+    "treating paper regression coefficients as executable returns without a new local replay"
+  ]
+}
