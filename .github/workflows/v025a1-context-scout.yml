@@ -1,0 +1,287 @@
+name: v0.25A1 causality-locked official context scout
+
+on:
+  pull_request:
+    paths:
+      - 'research/v025a_bundle/**'
+      - 'research/v025a1_patch/**'
+      - 'research/v025a_support/**'
+      - 'research/v025a1_support/**'
+      - '.github/workflows/v025a1-context-scout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v025a1-context-scout-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ORIGINAL_ARCHIVE_SHA256: bebc0e1277a0b7a471e8447cf667251fda9685700eb8508dacd979f15639a9b1
+  PATCH_SHA256: 0c5f3bb99fd60d9b38eb4bbf6522593de29495f1fd84a90701685569d72292f9
+  PLAN_FILE_SHA256: 4a995c0b5ebaf2f569ecff6590b371f299a70e0ec022cfb4415b7bcedbd2093c
+  PLAN_PAYLOAD_SHA256: 322aa4298c403a692e4114a3165d71df5c2499720338c16a1e96b3c8b24e525c
+  SOURCE_MANIFEST_SHA256: 6d18d0d3e6b88711a65fcf8d61d58a7be65f28fd50f6188220d578dc101a4339
+  DATA_PLAN_SHA256: 9874d8042af578586bba0310e76f376873077be6c32e1d49408d3e15be5fd496
+  SCOUT_PROFILE_SHA256: c633df6d679edd2264a8e2aad52d8f3f775052c1059664b30a571380ca3b3e5a
+  SUPPORT_INIT_SHA256: 93d828f214cace66bce7fe0f9a6bbd6dfa94c0aefc1bcb6e23a366e5d8e09adf
+  SUPPORT_ARCHIVE_SHA256: 3a4e65901ab64ecbc47d65431e31fef7129a74a270a5f4d874f77234248b014a
+  DATA_ROOT: ${{ github.workspace }}/.research-data/v025a1-minute
+  WORKSPACE: ${{ github.workspace }}/.research-work/v025a1-context
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  MALLOC_ARENA_MAX: '2'
+
+jobs:
+  scout:
+    name: Verify causality correction and measure official event-data envelope
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout exact PR merge commit
+        uses: actions/checkout@v4
+
+      - name: Reconstruct original locked bundle and apply SHA-locked correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transport-evidence
+          python - <<'PY' | tee transport-evidence/reconstruction.json
+          import base64, hashlib, json
+          from pathlib import Path
+
+          original_root = Path('research/v025a_bundle')
+          original_manifest = json.loads((original_root / 'TRANSPORT_MANIFEST.json').read_text())
+          encoded = []
+          original_records = []
+          for item in original_manifest['parts']:
+              path = original_root / item['name']
+              raw = path.read_bytes()
+              observed = hashlib.sha256(raw).hexdigest()
+              assert len(raw) == int(item['bytes']), (path, len(raw), item['bytes'])
+              assert observed == item['sha256'], (path, observed, item['sha256'])
+              encoded.append(raw)
+              original_records.append({'name': item['name'], 'bytes': len(raw), 'sha256': observed})
+          original_payload = base64.b64decode(b''.join(encoded), validate=True)
+          original_sha = hashlib.sha256(original_payload).hexdigest()
+          assert len(encoded) == int(original_manifest['part_count']) == 11
+          assert len(original_payload) == int(original_manifest['archive_bytes'])
+          assert original_sha == original_manifest['archive_sha256'] == 'bebc0e1277a0b7a471e8447cf667251fda9685700eb8508dacd979f15639a9b1'
+          Path('/tmp/v025a-original.tar.xz').write_bytes(original_payload)
+
+          patch_root = Path('research/v025a1_patch')
+          patch_manifest = json.loads((patch_root / 'PATCH_MANIFEST.json').read_text())
+          patch_parts = []
+          patch_records = []
+          for item in patch_manifest['parts']:
+              path = patch_root / item['name']
+              raw = path.read_bytes()
+              observed = hashlib.sha256(raw).hexdigest()
+              assert len(raw) == int(item['bytes']), (path, len(raw), item['bytes'])
+              assert observed == item['sha256'], (path, observed, item['sha256'])
+              patch_parts.append(raw)
+              patch_records.append({'name': item['name'], 'bytes': len(raw), 'sha256': observed})
+          patch_payload = b''.join(patch_parts)
+          patch_sha = hashlib.sha256(patch_payload).hexdigest()
+          assert len(patch_parts) == int(patch_manifest['part_count']) == 10
+          assert len(patch_payload) == int(patch_manifest['patch_bytes'])
+          assert patch_sha == patch_manifest['patch_sha256'] == '0c5f3bb99fd60d9b38eb4bbf6522593de29495f1fd84a90701685569d72292f9'
+          assert patch_manifest['candidate_pnl_observed'] is False
+          assert patch_manifest['terminal_holdout_opened'] is False
+          Path('/tmp/v025a1.patch').write_bytes(patch_payload)
+          print(json.dumps({
+              'original_archive_sha256': original_sha,
+              'patch_sha256': patch_sha,
+              'candidate_pnl_observed': False,
+              'terminal_holdout_opened': False,
+              'original_parts': original_records,
+              'patch_parts': patch_records,
+          }, sort_keys=True, indent=2))
+          PY
+          xz -t /tmp/v025a-original.tar.xz
+          rm -rf v025a1
+          mkdir -p v025a1
+          tar -xJf /tmp/v025a-original.tar.xz -C v025a1
+          (cd v025a1 && patch --batch --forward -p1 < /tmp/v025a1.patch)
+          mkdir -p v025a1/smc_ict_quant
+          cp research/v025a1_support/smc_ict_quant/__init__.py v025a1/smc_ict_quant/__init__.py
+          cp research/v025a_support/smc_ict_quant/binance_public_data.py v025a1/smc_ict_quant/binance_public_data.py
+          echo "${SUPPORT_INIT_SHA256}  v025a1/smc_ict_quant/__init__.py" | sha256sum -c -
+          echo "${SUPPORT_ARCHIVE_SHA256}  v025a1/smc_ict_quant/binance_public_data.py" | sha256sum -c -
+          echo "${PLAN_FILE_SHA256}  v025a1/research/v025/research_plan_locked.json" | sha256sum -c -
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v025a1/requirements-lock.txt
+
+      - name: Verify source closure, preregistration identity, tests, and compile gate
+        shell: bash
+        working-directory: v025a1
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p ci-evidence
+          python - <<'PY' | tee ci-evidence/preregistration-audit.json
+          import hashlib, json, os
+          from pathlib import Path
+
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+          def canonical_sha(payload):
+              raw = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+              return hashlib.sha256(raw).hexdigest()
+
+          plan_path = Path('research/v025/research_plan_locked.json')
+          plan = json.loads(plan_path.read_text())
+          assert plan['study_id'] == 'smc_event_time_liquidation_exhaustion_v0_25_a1'
+          assert plan['candidate_count'] == 64
+          assert plan['candidate_pnl_observed_before_plan'] is False
+          assert plan['terminal_holdout_opened_before_plan'] is False
+          assert plan['periods']['terminal_holdout_locked'] is True
+          assert plan['production_enabled'] is False
+          expected_payload = plan['plan_payload_sha256']
+          payload = dict(plan)
+          payload.pop('plan_payload_sha256')
+          assert canonical_sha(payload) == expected_payload == os.environ['PLAN_PAYLOAD_SHA256']
+          assert plan['source_tree_manifest_sha256'] == os.environ['SOURCE_MANIFEST_SHA256']
+          for relative, expected in plan['source_files'].items():
+              observed = digest(relative)
+              assert observed == expected, (relative, observed, expected)
+          assert canonical_sha(plan['source_files']) == plan['source_tree_manifest_sha256']
+          assert digest('artifacts/v0243/data_acquisition_plan.json') == os.environ['DATA_PLAN_SHA256']
+          assert digest('scout_profile.json') == os.environ['SCOUT_PROFILE_SHA256']
+          print(json.dumps({
+              'study_id': plan['study_id'],
+              'plan_payload_sha256': expected_payload,
+              'source_tree_manifest_sha256': plan['source_tree_manifest_sha256'],
+              'candidate_count': plan['candidate_count'],
+              'candidate_pnl_observed': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+          }, sort_keys=True, indent=2))
+          PY
+          PYTHONPATH=research/v025 python -m pytest -q research/v025 | tee ci-evidence/pytest.txt
+          python -m compileall -q research/v025 scripts smc_ict_quant
+          python scripts/download_binance_um_parallel.py --help > ci-evidence/downloader-help.txt
+          python research/v025/v025_pipeline.py --help > ci-evidence/pipeline-help.txt
+
+      - name: Restore checksum-verified official minute and derivatives cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/v025a1-minute
+          key: v025a1-binance-usdm-minute-${{ env.DATA_PLAN_SHA256 }}-v1
+
+      - name: Download exact official preholdout request set
+        shell: bash
+        working-directory: v025a1
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence "${DATA_ROOT}" "${WORKSPACE}"
+          python scripts/download_binance_um_parallel.py \
+            --request-plan artifacts/v0243/data_acquisition_plan.json \
+            --output "${DATA_ROOT}" --workers 12 2>&1 | tee ci-evidence/minute-download.log
+
+      - name: Build causal contexts without candidate PnL
+        shell: bash
+        working-directory: v025a1
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/v025 python research/v025/v025_pipeline.py context \
+            --data-root "${DATA_ROOT}" \
+            --data-plan artifacts/v0243/data_acquisition_plan.json \
+            --workspace "${WORKSPACE}" 2>&1 | tee ci-evidence/context-build.log
+          test -s "${WORKSPACE}/contexts.csv"
+          test -s "${WORKSPACE}/event_day_plan.json"
+          test -s "${WORKSPACE}/context_summary.json"
+
+      - name: Measure official aggTrades archive envelope without downloading bodies
+        shell: bash
+        working-directory: v025a1
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee ci-evidence/event-size-scout.log
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import json, os, re
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          workspace = Path(os.environ['WORKSPACE'])
+          plan = json.loads((workspace / 'event_day_plan.json').read_text())
+          assert plan['generated_from_candidate_pnl'] is False
+          assert plan['terminal_holdout_downloaded'] is False
+          requests = list(plan['requests'])
+          assert all(str(item['date']) < '2025-10-01' for item in requests)
+
+          def probe(item):
+              url = str(item['url'])
+              headers = {'User-Agent': 'smc-ict-v025a1-size-scout/1.0'}
+              try:
+                  with urlopen(Request(url, method='HEAD', headers=headers), timeout=60) as response:
+                      length = response.headers.get('Content-Length')
+                      return {'relative_path': item['relative_path'], 'bytes': int(length) if length else None, 'method': 'HEAD', 'status': response.status}
+              except Exception as head_error:
+                  try:
+                      ranged = dict(headers)
+                      ranged['Range'] = 'bytes=0-0'
+                      with urlopen(Request(url, headers=ranged), timeout=60) as response:
+                          content_range = response.headers.get('Content-Range', '')
+                          match = re.search(r'/(\d+)$', content_range)
+                          length = int(match.group(1)) if match else response.headers.get('Content-Length')
+                          return {'relative_path': item['relative_path'], 'bytes': int(length) if length else None, 'method': 'RANGE', 'status': response.status, 'head_error': repr(head_error)}
+                  except Exception as range_error:
+                      return {'relative_path': item['relative_path'], 'bytes': None, 'method': 'FAILED', 'head_error': repr(head_error), 'error': repr(range_error)}
+
+          records = []
+          with ThreadPoolExecutor(max_workers=20) as pool:
+              futures = [pool.submit(probe, item) for item in requests]
+              for index, future in enumerate(as_completed(futures), 1):
+                  records.append(future.result())
+                  if index % 50 == 0 or index == len(futures):
+                      print(f'probed={index}/{len(futures)}', flush=True)
+          records.sort(key=lambda item: item['relative_path'])
+          known = [int(item['bytes']) for item in records if item.get('bytes') is not None]
+          payload = {
+              'schema_version': 1,
+              'study_id': 'smc_event_time_liquidation_exhaustion_v0_25_a1',
+              'event_plan_payload_sha256': plan['payload_sha256'],
+              'context_count': plan['context_count'],
+              'request_count': len(records),
+              'known_size_count': len(known),
+              'failed_size_count': len(records) - len(known),
+              'total_compressed_bytes_known': sum(known),
+              'max_compressed_bytes': max(known) if known else None,
+              'median_compressed_bytes': sorted(known)[len(known) // 2] if known else None,
+              'candidate_pnl_observed': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+              'records': records,
+          }
+          (workspace / 'event_size_scout.json').write_text(json.dumps(payload, sort_keys=True, indent=2) + '\n')
+          print(json.dumps({key: value for key, value in payload.items() if key != 'records'}, sort_keys=True, indent=2))
+          PY
+
+      - name: Upload compact evidence without raw market archives
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v025a1-context-scout-${{ github.run_id }}
+          path: |
+            transport-evidence
+            v025a1/ci-evidence
+            .research-work/v025a1-context/context_summary.json
+            .research-work/v025a1-context/contexts.csv
+            .research-work/v025a1-context/event_day_plan.json
+            .research-work/v025a1-context/event_size_scout.json
+            v025a1/research/v025/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30
