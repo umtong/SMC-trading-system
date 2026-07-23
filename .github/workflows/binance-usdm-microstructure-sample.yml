@@ -1,0 +1,64 @@
+name: Binance USD-M Microstructure OFI Sample
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/build_binance_usdm_microstructure_sample.py
+      - configs/research/microstructure_ofi_sample_v1/predeclared.json
+      - .github/workflows/binance-usdm-microstructure-sample.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/build_binance_usdm_microstructure_sample.py
+      - configs/research/microstructure_ofi_sample_v1/predeclared.json
+      - .github/workflows/binance-usdm-microstructure-sample.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install "numpy>=2.0" "pandas>=2.2" "requests>=2.32"
+      - name: Compile research builder
+        run: python -m py_compile scripts/build_binance_usdm_microstructure_sample.py
+      - name: Build checksum-verified ten-second microstructure sample
+        run: |
+          python scripts/build_binance_usdm_microstructure_sample.py \
+            --config configs/research/microstructure_ofi_sample_v1/predeclared.json \
+            --bucket-seconds 10 \
+            --output artifacts/binance_usdm_microstructure_ofi_sample_v1
+      - name: Validate immutable sample
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/binance_usdm_microstructure_ofi_sample_v1')
+          manifest=json.loads((root/'manifest.json').read_text())
+          expected=len(manifest['symbols'])*len(manifest['dates'])
+          if len(manifest['datasets']) != expected:
+              raise SystemExit(f"expected {expected} datasets, found {len(manifest['datasets'])}; missing={manifest['missing_archives'][:5]}")
+          for key, info in manifest['datasets'].items():
+              path=root/info['path']
+              if not path.exists() or path.stat().st_size <= 0 or info['rows'] <= 0:
+                  raise SystemExit(f'invalid dataset: {key}')
+          print(json.dumps({'datasets':len(manifest['datasets']),'archives':len(manifest['archives']),'rows':sum(v['rows'] for v in manifest['datasets'].values())},indent=2))
+          PY
+      - name: Upload immutable ten-second sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-microstructure-ofi-sample-${{ github.sha }}
+          path: artifacts/binance_usdm_microstructure_ofi_sample_v1
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
