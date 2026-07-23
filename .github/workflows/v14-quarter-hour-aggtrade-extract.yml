@@ -1,0 +1,133 @@
+name: V14 Quarter-Hour AggTrade Extract
+
+on:
+  pull_request:
+    paths:
+      - 'research/v14_quarter_hour_aggtrade.py.gz.b64'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  extract-2023:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@v4
+
+      - name: Restore and verify extractor
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode research/v14_quarter_hour_aggtrade.py.gz.b64 | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
+          python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
+
+      - name: Mark V14 extraction started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V14 quarter-hour aggTrade extraction\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- period: \`2023-01-01 through 2024-01-01 UTC\`\n- signal window: first 10 seconds of each quarter-hour\n\n_Checksum-verified research-only extraction._" --edit-last --create-if-none
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests
+
+      - name: Restore Binance aggTrade cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v14_aggtrades_2023
+          key: v14-binance-usdm-aggtrades-2023-btc-eth-v1
+
+      - name: Extract first-10-second quarter-hour features
+        id: extract
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          rm -rf artifacts/v14-quarter-hour-2023
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2023-01-01 \
+            --end 2024-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2023 \
+            --output artifacts/v14-quarter-hour-2023 \
+            --workers 4 \
+            2>&1 | tee artifacts-v14-extract.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build extraction summary
+        if: always()
+        env:
+          EXTRACT_EXIT_CODE: ${{ steps.extract.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          lines = [
+              '## V14 quarter-hour aggTrade extraction', '',
+              f"- run_id: `{os.environ.get('RUN_ID')}`",
+              f"- process exit code: `{os.environ.get('EXTRACT_EXIT_CODE', 'unknown')}`",
+          ]
+          summary = Path('artifacts/v14-quarter-hour-2023/summary.json')
+          if summary.exists():
+              rows = json.loads(summary.read_text())
+              lines += ['- status: `COMPLETE`', '']
+              for row in rows:
+                  lines += [
+                      f"### {row['symbol']}",
+                      f"- events: `{row['events']}`",
+                      f"- missing entry: `{row['missing_entry']}`",
+                      f"- SHA-256: `{row['sha256']}`", ''
+                  ]
+          else:
+              lines += ['- status: `FAILED_BEFORE_SUMMARY`', '']
+              log = Path('artifacts-v14-extract.log')
+              if log.exists():
+                  tail='\n'.join(log.read_text(errors='replace').splitlines()[-120:])
+                  lines += ['```text', tail, '```']
+          Path('artifacts/v14-extract-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Upload compact quarter-hour features
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-quarter-hour-aggtrade-2023-${{ github.run_id }}
+          path: |
+            artifacts/v14-quarter-hour-2023
+            artifacts-v14-extract.log
+            artifacts/v14-extract-pr-comment.md
+            research/v14_quarter_hour_aggtrade.py.gz.b64
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish extraction summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file artifacts/v14-extract-pr-comment.md --edit-last --create-if-none
+
+      - name: Preserve extraction failure
+        if: always() && steps.extract.outputs.exit_code != '0'
+        env:
+          EXTRACT_EXIT_CODE: ${{ steps.extract.outputs.exit_code }}
+        run: |
+          echo "V14 extraction failed with exit code ${EXTRACT_EXIT_CODE}"
+          exit 1
