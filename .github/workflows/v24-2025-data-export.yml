@@ -1,0 +1,175 @@
+name: V24 Frozen 2025 Data Export
+
+on:
+  pull_request:
+    paths:
+      - 'research/v24_2025_data_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-2025:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'research/v24-run-20260723')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests
+      - name: Restore public minute cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v24_public
+          key: v24-binance-spot-futures-minute-2025-2026jan-btc-eth-v1
+      - name: Restore aggregate-trade cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v24_aggtrades
+          key: v24-binance-usdm-aggtrades-2025-btc-eth-v1
+      - name: Export checksum-verified spot and futures minute data
+        id: public
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts/v24-data-2025/public
+          python - <<'PY' 2>&1 | tee artifacts/v24-public.log
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+          import hashlib, json, re, zipfile
+          import numpy as np
+          import pandas as pd
+          import requests
+
+          symbols=['BTCUSDT','ETHUSDT']
+          months=[f'2025-{m:02d}' for m in range(1,13)]+['2026-01']
+          root=Path('.cache/v24_public');out=Path('artifacts/v24-data-2025/public')
+          session=requests.Session()
+
+          def sha(path):
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+              return h.hexdigest()
+
+          def ensure(market,kind,symbol,month):
+              if market=='spot':
+                  base='https://data.binance.vision/data/spot/monthly/klines'
+                  folder=root/'spot'/symbol
+              else:
+                  base='https://data.binance.vision/data/futures/um/monthly'
+                  folder=root/'futures'/kind/symbol
+              folder.mkdir(parents=True,exist_ok=True)
+              name=f'{symbol}-1m-{month}.zip';url=f'{base}/{kind}/{symbol}/1m/{name}'
+              path=folder/name;cp=folder/f'{name}.CHECKSUM'
+              if not cp.exists():
+                  r=session.get(url+'.CHECKSUM',timeout=90);r.raise_for_status();cp.write_bytes(r.content)
+              text=cp.read_text(encoding='utf-8-sig');match=re.search(r'([0-9a-fA-F]{64})',text)
+              if not match:raise ValueError(f'bad checksum {cp}')
+              expected=match.group(1).lower()
+              if not path.exists() or sha(path)!=expected:
+                  tmp=path.with_suffix('.tmp');r=session.get(url,timeout=240);r.raise_for_status();tmp.write_bytes(r.content)
+                  if sha(tmp)!=expected:raise ValueError(f'checksum mismatch {url}')
+                  tmp.replace(path)
+              return {'market':market,'kind':kind,'symbol':symbol,'month':month,'path':str(path),'url':url,'sha256':expected,'bytes':path.stat().st_size}
+
+          jobs=[]
+          for s in symbols:
+              for m in months:
+                  jobs += [('spot','klines',s,m),('futures','klines',s,m),('futures','markPriceKlines',s,m)]
+          manifest=[]
+          with ThreadPoolExecutor(max_workers=8) as pool:
+              fs=[pool.submit(ensure,*job) for job in jobs]
+              for f in as_completed(fs):manifest.append(f.result())
+          pd.DataFrame(manifest).sort_values(['market','symbol','month','kind']).to_csv(out/'input_manifest.csv',index=False)
+
+          def read_kline(path):
+              with zipfile.ZipFile(path) as zf:
+                  members=[n for n in zf.namelist() if not n.endswith('/')]
+                  if len(members)!=1:raise ValueError(f'unexpected members {path}')
+                  raw=pd.read_csv(zf.open(members[0]),header=None)
+              if raw.shape[1]<11:raise ValueError(f'bad schema {path}')
+              x=raw.iloc[:,[0,1,2,3,4,7,8,10]].copy();x.columns=['open_time_raw','open','high','low','close','quote_volume','trades','taker_buy_quote']
+              ts=pd.to_numeric(x.open_time_raw,errors='raise').astype('int64')
+              unit='us' if float(ts.median())>1e14 else 'ms'
+              x['open_time']=pd.to_datetime(ts,unit=unit,utc=True)
+              for c in ['open','high','low','close','quote_volume','trades','taker_buy_quote']:x[c]=pd.to_numeric(x[c],errors='raise')
+              return x[['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']]
+
+          summary=[]
+          for symbol in symbols:
+              spot_parts=[];fut_parts=[]
+              for month in months:
+                  spot_parts.append(read_kline(root/'spot'/symbol/f'{symbol}-1m-{month}.zip'))
+                  fut=read_kline(root/'futures'/'klines'/symbol/f'{symbol}-1m-{month}.zip')
+                  mark=read_kline(root/'futures'/'markPriceKlines'/symbol/f'{symbol}-1m-{month}.zip')[['open_time','close']].rename(columns={'close':'mark_close'})
+                  merged=fut.merge(mark,on='open_time',how='left',validate='one_to_one');merged=merged[merged.mark_close.notna()].copy()
+                  if merged.empty:raise ValueError(f'no contract/mark overlap {symbol} {month}')
+                  fut_parts.append(merged)
+              spot=pd.concat(spot_parts,ignore_index=True).sort_values('open_time',kind='mergesort').reset_index(drop=True)
+              fut=pd.concat(fut_parts,ignore_index=True).sort_values('open_time',kind='mergesort').reset_index(drop=True)
+              for name,frame in [('spot',spot),('fut',fut)]:
+                  if frame.open_time.duplicated().any():raise ValueError(f'{symbol} {name}: duplicate minute')
+                  diffs=frame.open_time.diff();frame['segment_id']=(diffs.isna()|diffs.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
+                  path=out/f'{symbol}_{name}_1m.csv.gz';frame.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+                  summary.append({'symbol':symbol,'kind':name,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(path),'bytes':path.stat().st_size})
+          (out/'summary.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
+          print(json.dumps(summary,indent=2))
+          PY
+          status=${PIPESTATUS[0]};echo "exit_code=$status" >> "$GITHUB_OUTPUT";exit 0
+      - name: Restore pinned exact-flow extractor
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://raw.githubusercontent.com/umtong/SMC-trading-system/37dac126da9341c78238ab9a90b0e1c501303720/research/v14_quarter_hour_aggtrade_plain.py \
+            -o /tmp/v24_exact_extractor.py
+          python -m py_compile /tmp/v24_exact_extractor.py
+          sha256sum /tmp/v24_exact_extractor.py | tee artifacts/v24-extractor.sha256
+      - name: Export checksum-verified 2025 exact first-10-second futures flow
+        id: exact
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts/v24-data-2025/exact
+          python /tmp/v24_exact_extractor.py \
+            --start 2025-01-01 --end 2026-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v24_aggtrades \
+            --output artifacts/v24-data-2025/exact \
+            --workers 4 2>&1 | tee artifacts/v24-exact.log
+          status=${PIPESTATUS[0]};echo "exit_code=$status" >> "$GITHUB_OUTPUT";exit 0
+      - name: Upload frozen OOS input data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v24-frozen-2025-inputs-${{ github.run_id }}
+          path: |
+            artifacts/v24-data-2025
+            artifacts/v24-public.log
+            artifacts/v24-exact.log
+            artifacts/v24-extractor.sha256
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PUBLIC_EXIT: ${{ steps.public.outputs.exit_code }}
+          EXACT_EXIT: ${{ steps.exact.outputs.exit_code }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V24 frozen 2025 input export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- public exit: \`${PUBLIC_EXIT}\`\n- exact-flow exit: \`${EXACT_EXIT}\`\n- artifact: \`v24-frozen-2025-inputs-${GITHUB_RUN_ID}\`\n\n_Data only. Frozen candidate parameters remain unchanged._" --edit-last --create-if-none
+      - name: Preserve data failure
+        if: always() && (steps.public.outputs.exit_code != '0' || steps.exact.outputs.exit_code != '0')
+        run: exit 1
