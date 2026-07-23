@@ -15,6 +15,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   discovery-2023:
@@ -22,6 +24,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Mark V12 run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh pr comment 36 --body "## V12 liquidity-shock discovery\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Research-only; no paper/live/order/sizing changes._" --edit-last --create-if-none
 
       - name: Restore V12 research source
         shell: bash
@@ -49,24 +58,57 @@ jobs:
         run: pytest -q
 
       - name: Run 2023 BTC/ETH frozen discovery screen
+        id: discovery
         working-directory: research/v12_liquidity_shock
+        shell: bash
         run: |
+          set +e
+          set -o pipefail
           python run_discovery.py \
             --start 2023-01-01 \
             --end 2024-01-01 \
             --cache ../../.cache/v12_binance \
-            --output ../../research_outputs/v12_2023
+            --output ../../research_outputs/v12_2023 \
+            2>&1 | tee ../../v12-discovery.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build V12 PR report
+        if: always()
+        env:
+          DISCOVERY_EXIT_CODE: ${{ steps.discovery.outputs.exit_code }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          lines = ['## V12 liquidity-shock discovery', '', f"- process exit code: `{os.environ.get('DISCOVERY_EXIT_CODE', 'unknown')}`"]
+          verdict = Path('research_outputs/v12_2023/verdict.json')
+          if verdict.exists():
+              data = json.loads(verdict.read_text())
+              lines += ['- status: `VERDICT_READY`', '', '```json', json.dumps(data, ensure_ascii=False, indent=2), '```']
+          else:
+              lines += ['- status: `RUN_FAILED_BEFORE_VERDICT`', '']
+              log = Path('v12-discovery.log')
+              if log.exists():
+                  lines += ['### Failure log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-120:]), '```']
+          lines += ['', '_Research-only; no paper/live/order/sizing changes._']
+          Path('v12-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
 
       - name: Publish verdict in job summary
         if: always()
         shell: bash
         run: |
-          if [[ -f research_outputs/v12_2023/verdict.json ]]; then
-            echo '## V12 2023 discovery verdict' >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat research_outputs/v12_2023/verdict.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          cat v12-pr-comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish V12 verdict to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh pr comment 36 --body-file v12-pr-comment.md --edit-last --create-if-none
 
       - name: Upload discovery evidence
         if: always()
@@ -76,5 +118,15 @@ jobs:
           path: |
             research_outputs/v12_2023
             research/v12_liquidity_shock
-          if-no-files-found: error
+            v12-discovery.log
+            v12-pr-comment.md
+          if-no-files-found: warn
           retention-days: 30
+
+      - name: Preserve discovery failure status
+        if: always() && steps.discovery.outputs.exit_code != '0'
+        env:
+          DISCOVERY_EXIT_CODE: ${{ steps.discovery.outputs.exit_code }}
+        run: |
+          echo "V12 discovery failed with exit code ${DISCOVERY_EXIT_CODE}"
+          exit 1
