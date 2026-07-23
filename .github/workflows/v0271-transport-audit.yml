@@ -1,13 +1,9 @@
-name: v0.27.1 transport byte audit
+name: v0.27.1 isolated transport byte audit
 
 on:
   push:
     branches:
-      - research/v027-quarter-hour-20260724
-    paths:
-      - '.github/workflows/v0271-transport-audit.yml'
-      - 'research/v0271_bundle_v2/**'
-  pull_request:
+      - research/v0271-audit-isolated-20260724
     paths:
       - '.github/workflows/v0271-transport-audit.yml'
       - 'research/v0271_bundle_v2/**'
@@ -17,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: v0271-transport-audit-${{ github.ref }}
+  group: v0271-isolated-transport-audit-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -27,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/v027-quarter-hour-20260724
+          ref: research/v0271-audit-isolated-20260724
 
       - name: Audit every transported byte and persist evidence
         shell: bash
@@ -119,9 +115,9 @@ jobs:
           PY
 
           git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.email '4189822+github-actions[bot]@users.noreply.github.com'
           git add research/results/v0271-transport-audit/audit.json
           if ! git diff --cached --quiet; then
-            git commit -m 'Record v0.27.1 transport byte audit'
-            git push origin HEAD:research/v027-quarter-hour-20260724
+            git commit -m 'Record v0.27.1 isolated transport byte audit'
+            git push origin HEAD:research/v0271-audit-isolated-20260724
           fi
