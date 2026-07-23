@@ -20,6 +20,11 @@ concurrency:
   group: v024-microstructure-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  RUNNER_ARCHIVE_SHA256: 25ae16b46f0daaa9501f571c810eba6159d0454474e0d0eee81f4329b7ec8746
+  PLAN_PAYLOAD_SHA256: e059f1f500203e919feb5bf4766b151bb1fe9b6e12defe94a9e41deabb115693
+  DATA_PLAN_SHA256: 0debfb0c09943ba1a43d68bf18f9b3c912d0a2e1e1fcd69a7cbe432c4aff51c7
+
 jobs:
   integrity:
     name: Reconstruct and validate locked v0.24 runner
@@ -38,7 +43,7 @@ jobs:
           printf '%s\n' "$count" | tee integrity-evidence/part-count.txt
           test "$count" -eq 8
           cat research/v024_bundle_v3/part-*.b64 | base64 -d > /tmp/v024_locked_runner.tar.xz
-          echo '25ae16b46f0daaa9501f571c810eba6159d0454474e0d0eee81f4329b7ec8746  /tmp/v024_locked_runner.tar.xz' | sha256sum -c - | tee integrity-evidence/archive-sha256.txt
+          echo "${RUNNER_ARCHIVE_SHA256}  /tmp/v024_locked_runner.tar.xz" | sha256sum -c - | tee integrity-evidence/archive-sha256.txt
           xz -t /tmp/v024_locked_runner.tar.xz
           tar -tJf /tmp/v024_locked_runner.tar.xz | tee integrity-evidence/archive-members.txt
           tar -xJf /tmp/v024_locked_runner.tar.xz
@@ -78,6 +83,7 @@ jobs:
           assert plan['source_tree_manifest_sha256'] == 'd3efea3771b02b33ed59db4e42e2f4fddf346a9c76b908aaa6bfbfed5e00ea64'
           assert plan['candidate_count'] == 64
           assert plan['evaluation_period']['terminal_holdout_locked'] is True
+          assert acquisition['payload_sha256'] == '0debfb0c09943ba1a43d68bf18f9b3c912d0a2e1e1fcd69a7cbe432c4aff51c7'
           assert acquisition['download_end_inclusive'] == '2025-09-30'
           assert acquisition['terminal_holdout_download_prohibited_by_default'] is True
           assert acquisition['request_count'] == 4070
@@ -113,5 +119,192 @@ jobs:
             v024/RELEASE_MANIFEST.json
             v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
             v024/artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  preholdout-research:
+    name: Official preholdout acquisition and chronological research
+    if: github.event_name != 'pull_request'
+    needs: integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DATA_ROOT: ${{ github.workspace }}/.research-data/v024-binance-public
+      PYTHONUNBUFFERED: '1'
+      PYTHONHASHSEED: '0'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
+      MALLOC_ARENA_MAX: '2'
+    steps:
+      - name: Checkout exact research commit
+        uses: actions/checkout@v4
+
+      - name: Reconstruct exact validated runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/v024_bundle_v3/part-*.b64 | base64 -d > /tmp/v024_locked_runner.tar.xz
+          echo "${RUNNER_ARCHIVE_SHA256}  /tmp/v024_locked_runner.tar.xz" | sha256sum -c -
+          xz -t /tmp/v024_locked_runner.tar.xz
+          tar -xJf /tmp/v024_locked_runner.tar.xz
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v024/requirements-lock.txt
+
+      - name: Install locked dependencies
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+
+      - name: Restore checksum-verified preholdout archive cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/v024-binance-public
+          key: v024-binance-usdm-preholdout-${{ env.DATA_PLAN_SHA256 }}-v1
+
+      - name: Record runner resources
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          mkdir -p ci_evidence
+          uname -a | tee ci_evidence/uname.txt
+          free -h | tee ci_evidence/memory-before.txt
+          df -h | tee ci_evidence/disk-before.txt
+          python --version | tee ci_evidence/python-version.txt
+
+      - name: Download official checksum-verified preholdout archives
+        id: download
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python scripts/download_binance_um_parallel.py \
+            --symbols BTCUSDT ETHUSDT \
+            --datasets klines markPriceKlines indexPriceKlines premiumIndexKlines metrics fundingRate \
+            --interval 1m \
+            --start 2020-12-29 \
+            --end 2025-09-30 \
+            --output "${DATA_ROOT}" \
+            --workers 12 \
+            2>&1 | tee ci_evidence/download.log
+
+      - name: Audit acquisition boundary and completeness
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee ci_evidence/acquisition-audit.json
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['DATA_ROOT'])
+          manifests = sorted((root / 'manifests').glob('download_2020-12-29_2025-09-30_*.json'))
+          assert manifests, 'download manifest missing'
+          path = manifests[-1]
+          payload = json.loads(path.read_text())
+          assert payload['completed'] == 4070, payload['completed']
+          assert payload['missing'] == [], payload['missing'][:10]
+          assert payload['failures'] == [], payload['failures'][:10]
+          records = payload['records']
+          assert len(records) == 4070
+          forbidden = []
+          for record in records:
+              request = record.get('request', {})
+              relative = str(request.get('relative_path', ''))
+              if any(token in relative for token in ('2025-10', '2025-11', '2025-12', '2026-')):
+                  forbidden.append(relative)
+          assert not forbidden, forbidden[:10]
+          zip_count = sum(1 for _ in root.rglob('*.zip'))
+          checksum_count = sum(1 for _ in root.rglob('*.zip.CHECKSUM'))
+          assert zip_count == 4070, zip_count
+          assert checksum_count == 4070, checksum_count
+          print(json.dumps({
+              'manifest': str(path),
+              'manifest_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'completed': payload['completed'],
+              'missing': len(payload['missing']),
+              'failures': len(payload['failures']),
+              'zip_count': zip_count,
+              'checksum_count': checksum_count,
+              'terminal_partition_requested': False,
+          }, sort_keys=True, indent=2))
+          PY
+          du -sh "${DATA_ROOT}" | tee ci_evidence/data-size.txt
+          free -h | tee ci_evidence/memory-after-download.txt
+          df -h | tee ci_evidence/disk-after-download.txt
+
+      - name: Run locked chronological preholdout research
+        id: research
+        shell: bash
+        working-directory: v024
+        run: |
+          set -uo pipefail
+          mkdir -p ci_evidence
+          set +e
+          /usr/bin/time -v python scripts/run_microstructure_liquidity_v0_24.py \
+            --data-root "${DATA_ROOT}" \
+            2>&1 | tee ci_evidence/preholdout-research.log
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" | tee ci_evidence/research-exit-code.txt
+          python - "$status" <<'PY' | tee ci_evidence/research-execution-status.json
+          import json, sys
+          status = int(sys.argv[1])
+          print(json.dumps({
+              'exit_code': status,
+              'scientific_run_completed': status in (0, 1),
+              'preholdout_gate_passed': status == 0,
+              'terminal_holdout_requested': False,
+              'production_enabled': False,
+          }, sort_keys=True, indent=2))
+          PY
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            exit "$status"
+          fi
+
+      - name: Build compact research artifact
+        if: always()
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          mkdir -p ci_evidence
+          free -h | tee ci_evidence/memory-after-research.txt
+          df -h | tee ci_evidence/disk-after-research.txt
+          python - <<'PY'
+          import json, tarfile
+          from pathlib import Path
+          out = Path('artifacts/microstructure_liquidity_v0_24')
+          evidence = Path('ci_evidence')
+          manifest = []
+          for root in (out, evidence):
+              if root.exists():
+                  manifest.extend(str(p) for p in root.rglob('*') if p.is_file())
+          Path('ci_evidence/output-files.json').write_text(json.dumps(sorted(manifest), indent=2) + '\n')
+          with tarfile.open('v024-preholdout-results.tar.gz', 'w:gz') as archive:
+              if out.exists():
+                  archive.add(out, arcname=str(out))
+              archive.add(evidence, arcname='ci_evidence')
+          PY
+          sha256sum v024-preholdout-results.tar.gz | tee ci_evidence/results-archive.sha256
+
+      - name: Upload research outputs without raw market data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v024-preholdout-results-${{ github.run_id }}
+          path: |
+            v024/v024-preholdout-results.tar.gz
+            v024/ci_evidence
+            v024/artifacts/microstructure_liquidity_v0_24
           if-no-files-found: warn
           retention-days: 30
