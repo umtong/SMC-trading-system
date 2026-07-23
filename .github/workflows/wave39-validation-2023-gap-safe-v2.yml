@@ -1,0 +1,354 @@
+name: Wave39 gap-safe frozen validation 2023
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-validation-2023-gap-safe-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave39-gap-safe-validation-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  await-decision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      candidate_present: ${{ steps.decision.outputs.candidate_present }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+      - name: Wait for immutable pre-2023 freeze or explicit development block
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/wave39-quarterhour-exact-aggtrades-20260723"
+          freeze="research/wave39/frozen/WAVE39_CANDIDATE_BEFORE_2023.json"
+          blocked="research/wave39/results/development_2022_gap_safe/BLOCKED.json"
+          mkdir -p await-output
+          for attempt in $(seq 1 330); do
+            git fetch origin "${branch}" --quiet
+            if git cat-file -e "origin/${branch}:${freeze}" 2>/dev/null; then
+              git show "origin/${branch}:${freeze}" > await-output/WAVE39_CANDIDATE_BEFORE_2023.json
+              echo "candidate_present=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if git cat-file -e "origin/${branch}:${blocked}" 2>/dev/null; then
+              git show "origin/${branch}:${blocked}" > await-output/BLOCKED.json
+              echo "candidate_present=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt=${attempt}: development decision not yet committed"
+            sleep 60
+          done
+          echo "development decision did not materialize" >&2
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-gap-safe-pre2023-decision-${{ github.run_id }}
+          path: await-output/**
+          if-no-files-found: error
+          retention-days: 30
+
+  extract-2023-month:
+    needs: await-decision
+    if: needs.await-decision.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month:
+          - "2023-01"
+          - "2023-02"
+          - "2023-03"
+          - "2023-04"
+          - "2023-05"
+          - "2023-06"
+          - "2023-07"
+          - "2023-08"
+          - "2023-09"
+          - "2023-10"
+          - "2023-11"
+          - "2023-12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - name: Compile exact extractor
+        run: |
+          set -euo pipefail
+          mkdir -p build output
+          g++ -O3 -std=gnu++20 -D_GNU_SOURCE -Wall -Wextra \
+            research/wave39/extract_boundary_aggtrades.cpp -o build/extract_boundary_aggtrades
+      - name: Download, checksum and extract the registered month
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${SYMBOL}-aggTrades-${MONTH}.zip"
+          root="https://data.binance.vision/data/futures/um/monthly/aggTrades/${SYMBOL}"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}.CHECKSUM" "${root}/${file}.CHECKSUM"
+          expected="$(awk 'NR==1{print tolower($1)}' "${file}.CHECKSUM")"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}" "${root}/${file}"
+          printf '%s  %s\n' "${expected}" "${file}" | sha256sum -c -
+          csv="output/${SYMBOL}_${MONTH}_quarterhour_exact.csv"
+          build/extract_boundary_aggtrades "${SYMBOL}" "${MONTH}" "${file}" "${csv}" \
+            2>&1 | tee "output/${SYMBOL}_${MONTH}_extract.log"
+          gzip -9 "${csv}"
+          python - <<'PY'
+          from calendar import monthrange
+          import csv,gzip,hashlib,json,os
+          from pathlib import Path
+          symbol=os.environ['SYMBOL']; month=os.environ['MONTH']; year,number=map(int,month.split('-'))
+          source=Path(f'{symbol}-aggTrades-{month}.zip'); panel=Path(f'output/{symbol}_{month}_quarterhour_exact.csv.gz')
+          expected=Path(str(source)+'.CHECKSUM').read_text(encoding='utf-8-sig').split()[0].lower()
+          actual=hashlib.sha256(source.read_bytes()).hexdigest()
+          if actual!=expected: raise RuntimeError('source hash changed')
+          rows=0; nonzero10=0; previous=None; fields=None
+          with gzip.open(panel,'rt',newline='') as handle:
+              reader=csv.DictReader(handle); fields=list(reader.fieldnames or [])
+              for row in reader:
+                  ts=int(row['boundary_time_ms'])
+                  if previous is not None and ts-previous!=900000: raise RuntimeError('boundary clock gap')
+                  previous=ts; rows+=1; nonzero10+=int(int(row['post10s_trades'])>0)
+          if rows!=monthrange(year,number)[1]*96: raise RuntimeError('row count mismatch')
+          if nonzero10<int(rows*.95): raise RuntimeError('post10s coverage failure')
+          manifest={
+              'schema':'wave39-quarterhour-exact-month-v1','symbol':symbol,'month':month,
+              'source_sha256':actual,'source_bytes':source.stat().st_size,'rows':rows,
+              'nonzero_post10s_rows':nonzero10,'columns':fields,'output_path':panel.name,
+              'output_bytes':panel.stat().st_size,'output_sha256':hashlib.sha256(panel.read_bytes()).hexdigest(),
+              'future_outcomes_included':False,'strategy_results_included':False,
+          }
+          Path(f'output/{symbol}_{month}_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          rm -f "${file}" "${file}.CHECKSUM"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-gap-safe-2023-${{ matrix.symbol }}-${{ matrix.month }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  support-2023-symbol:
+    needs: await-decision
+    if: needs.await-decision.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build gap-preserving 2023 contract/funding support
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python research/wave39/build_support_year_v3.py \
+            --symbol "${{ matrix.symbol }}" --year 2023 --output-dir output --retries 8 \
+            2>&1 | tee "output/${{ matrix.symbol }}_support_build.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-gap-safe-support-2023-${{ matrix.symbol }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  validate:
+    needs: [await-decision, extract-2023-month, support-2023-symbol]
+    if: needs.await-decision.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-gap-safe-pre2023-decision-*
+          path: decision
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-gap-safe-2023-*
+          path: monthly2023
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-gap-safe-support-2023-*
+          path: support2023
+          merge-multiple: true
+
+      - name: Resolve latest successful 2022 source runs and download them
+        shell: bash
+        run: |
+          set -euo pipefail
+          select_run() {
+            local name="$1"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; r=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(x["id"]) for x in r if x.get("name")==n and x.get("status")=="completed" and x.get("conclusion")=="success"),""))' "$name"
+          }
+          exact_id="$(select_run 'Wave39 exact quarter-hour aggTrades 2022 v2')"
+          support_id="$(select_run 'Wave39 official 1m support 2022 v3')"
+          test -n "${exact_id}"; test -n "${support_id}"
+          mkdir -p exact2022 support2022 data2022/support
+          gh run download "${exact_id}" --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v2-${exact_id}" --dir exact2022
+          gh run download "${support_id}" --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${support_id}" --dir support2022
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              matches=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: matches.append(path)
+              if len(matches)!=1: raise RuntimeError(f'{schema}: {matches}')
+              return matches[0]
+          exact=locate('exact2022','wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate('support2022','wave39-official-support-combined-v3')
+          target=Path('data2022')
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - name: Assemble and independently verify 2023 inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data2023/support
+          python research/wave39v2/combine_panels.py \
+            --input-dir monthly2023 --output-dir data2023 --year 2023
+          python - <<'PY'
+          import hashlib,json,shutil
+          from pathlib import Path
+          source=Path('support2023'); target=Path('data2023/support')
+          combined={
+              'schema':'wave39-official-support-combined-v3','year':2023,'symbols':{},
+              'future_outcomes_included':False,'strategy_results_included':False,
+              'gap_policy':'No imputation; every intersecting history or holding path is invalid.',
+          }
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              manifest_path=source/f'{symbol}_support_manifest.json'
+              manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+              if manifest['schema']!='wave39-official-support-v3' or manifest['year']!=2023:
+                  raise RuntimeError(f'{symbol}: identity mismatch')
+              for name,record in manifest['outputs'].items():
+                  path=source/name
+                  if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                      raise RuntimeError(f'{symbol}: hash mismatch {name}')
+                  shutil.copy2(path,target/name)
+              shutil.copy2(manifest_path,target/manifest_path.name)
+              combined['symbols'][symbol]={
+                  'observed_contract_minutes':manifest['observed_contract_minutes'],
+                  'missing_contract_minutes':manifest['missing_contract_minutes'],
+                  'gap_run_count':manifest['gap_run_count'],'largest_gap_minutes':manifest['largest_gap_minutes'],
+                  'funding_rows':manifest['funding_rows'],'outputs':manifest['outputs'],
+              }
+          (target/'manifest.json').write_text(json.dumps(combined,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Execute exactly the frozen candidate once on 2023
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest research/wave39/test_wave39_engine.py research/wave39/test_wave39_engine_v3.py -q
+          freeze="$(find decision -name WAVE39_CANDIDATE_BEFORE_2023.json -type f | head -n1)"
+          test -n "${freeze}"
+          test "$(find decision -name WAVE39_CANDIDATE_BEFORE_2023.json -type f | wc -l)" -eq 1
+          rm -rf output
+          mkdir -p output
+          python -m research.wave39.run_wave39_validation_2023_v3 \
+            --data-2022 data2022 --data-2023 data2023 \
+            --freeze "${freeze}" --output-dir output \
+            2>&1 | tee output/run.log
+          mkdir -p output/data-manifests
+          cp data2023/manifest.json output/data-manifests/exact-boundary-2023.json
+          cp data2023/support/manifest.json output/data-manifests/support-2023.json
+
+      - name: Adversarially verify result and future-split locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('output')
+          result=json.loads((root/'wave39_validation_2023.json').read_text(encoding='utf-8'))
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          if result['candidate_id']!=manifest['candidate_id']: raise RuntimeError('candidate mismatch')
+          if result['2024_opened'] or result['sealed_terminal_oos_opened']:
+              raise RuntimeError('future split lock violated')
+          if result['risk_or_leverage_optimized']: raise RuntimeError('risk/leverage tuning detected')
+          if hashlib.sha256((root/'wave39_validation_2023.json').read_bytes()).hexdigest()!=manifest['result_sha256']:
+              raise RuntimeError('result hash mismatch')
+          if hashlib.sha256((root/'wave39_validation_2023_ledger.csv').read_bytes()).hexdigest()!=manifest['ledger_sha256']:
+              raise RuntimeError('ledger hash mismatch')
+          print(json.dumps(manifest,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit immutable verdict with conflict-safe retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="research/wave39/results/validation_2023_gap_safe"
+          rm -rf "${destination}"; mkdir -p "${destination}"
+          cp -a output/. "${destination}/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}"
+          git commit -m "Record gap-safe frozen Wave39 2023 verdict"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${HEAD_BRANCH}"; then exit 0; fi
+            git fetch origin "${HEAD_BRANCH}"
+            git rebase "origin/${HEAD_BRANCH}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-gap-safe-validation-2023-${{ github.run_id }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
