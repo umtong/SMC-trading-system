@@ -1,0 +1,86 @@
+name: Build Official Binance 15m Bundle
+
+on:
+  push:
+    branches:
+      - "research/data-15m-bundle-20260724"
+    paths:
+      - "research/build_official_15m_bundle.py"
+      - ".github/workflows/build-official-15m-bundle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-official-15m-bundle
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/data-15m-bundle-20260724
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip "pandas<3" pyarrow requests
+
+      - name: Build checksum-verified bundle
+        run: |
+          rm -rf research/data_bundle
+          python research/build_official_15m_bundle.py \
+            --start 2021-01 \
+            --end 2026-06 \
+            --symbols BTCUSDT ETHUSDT \
+            --out research/data_bundle \
+            2>&1 | tee research/data_bundle_build.log
+
+      - name: Verify completion marker and size
+        run: |
+          test -s research/data_bundle/COMPLETE
+          test -s research/data_bundle/manifest.json
+          test -s research/data_bundle/binance_usdm_btc_eth_15m_2021-01_2026-06.parquet
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('research/data_bundle/manifest.json').read_text())
+          assert manifest['rows'] > 300000, manifest['rows']
+          assert manifest['quality']['BTCUSDT']['duplicates'] == 0
+          assert manifest['quality']['ETHUSDT']['duplicates'] == 0
+          assert manifest['quality']['BTCUSDT']['ohlc_invalid'] == 0
+          assert manifest['quality']['ETHUSDT']['ohlc_invalid'] == 0
+          assert manifest['parquet_bytes'] < 95_000_000, manifest['parquet_bytes']
+          print(json.dumps(manifest['quality'], indent=2))
+          PY
+
+      - name: Commit immutable data bundle to research branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/data_bundle research/data_bundle_build.log
+          if git diff --cached --quiet; then
+            echo "No bundle change"
+          else
+            git commit -m "Persist official Binance 15m research bundle"
+            git push origin HEAD:research/data-15m-bundle-20260724
+          fi
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-15m-bundle-${{ github.run_id }}
+          path: |
+            research/data_bundle
+            research/data_bundle_build.log
+          if-no-files-found: error
+          retention-days: 30
