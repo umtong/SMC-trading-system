@@ -33,12 +33,18 @@ jobs:
           ref: research/btc-state-wfv-20260724
           fetch-depth: 1
 
+      - name: Set up locked Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
       - name: Reassemble and verify immutable research script
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$WORK_DIR"
-          python3 - <<'PY'
+          python - <<'PY'
           import base64, gzip, os
           from pathlib import Path
           source = Path("research/remote/btc_state_wfv_20260724.py.gz.b64")
@@ -48,7 +54,7 @@ jobs:
           actual_sha=$(shasum -a 256 "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
           test "$actual_sha" = "$EXPECTED_SHA256"
-          python3 -m py_compile "$SCRIPT_PATH"
+          python -m py_compile "$SCRIPT_PATH"
           cp "$SCRIPT_PATH" "$WORK_DIR/locked_research_script.py"
           printf '%s  %s\n' "$EXPECTED_SHA256" "$WORK_DIR/locked_research_script.py" > "$WORK_DIR/SCRIPT_SHA256.txt"
 
@@ -56,8 +62,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --upgrade "pip==25.1.1"
-          python3 -m pip install \
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
             "numpy==2.1.3" \
             "pandas==2.2.3" \
             "pyarrow==18.1.0" \
@@ -65,8 +71,8 @@ jobs:
             "numba==0.61.2" \
             "huggingface_hub==0.27.1" \
             "hf_xet==1.1.10"
-          python3 -m pip freeze | sort > "$WORK_DIR/pip-freeze.txt"
-          python3 - <<'PY'
+          python -m pip freeze | sort > "$WORK_DIR/pip-freeze.txt"
+          python - <<'PY'
           import json, platform, sys
           import numpy, pandas, pyarrow, sklearn, numba, huggingface_hub
           from pathlib import Path
@@ -101,7 +107,7 @@ jobs:
           STATUS="$WORK_DIR/run_status.json"
 
           development_rc=0
-          python3 "$SCRIPT_PATH" \
+          python "$SCRIPT_PATH" \
             --stage development \
             --work-dir "$WORK_DIR" \
             --cache-dir "$HF_HOME" \
@@ -110,7 +116,7 @@ jobs:
           development_pass=0
           representatives=0
           if [[ $development_rc -eq 0 && -f "$DEV" ]]; then
-            read development_pass representatives < <(python3 - "$DEV" <<'PY'
+            read development_pass representatives < <(python - "$DEV" <<'PY'
           import json, sys
           p=json.load(open(sys.argv[1], encoding="utf-8"))
           print(int(p.get("gate_pass_count", 0)), len(p.get("representatives", [])))
@@ -123,14 +129,14 @@ jobs:
           selected=0
           if [[ $development_rc -eq 0 && $development_pass -gt 0 && $representatives -gt 0 ]]; then
             selection_rc=0
-            python3 "$SCRIPT_PATH" \
+            python "$SCRIPT_PATH" \
               --stage selection \
               --work-dir "$WORK_DIR" \
               --cache-dir "$HF_HOME" \
               --predecessor "$DEV" \
               2>&1 | tee "$WORK_DIR/selection.log" || selection_rc=$?
             if [[ $selection_rc -eq 0 && -f "$SEL" ]]; then
-              read selection_pass selected < <(python3 - "$SEL" <<'PY'
+              read selection_pass selected < <(python - "$SEL" <<'PY'
           import json, sys
           p=json.load(open(sys.argv[1], encoding="utf-8"))
           print(int(p.get("gate_pass_count", 0)), len(p.get("selected", [])))
@@ -142,7 +148,7 @@ jobs:
           confirmation_rc=-1
           if [[ $selection_rc -eq 0 && $selection_pass -gt 0 && $selected -gt 0 ]]; then
             confirmation_rc=0
-            python3 "$SCRIPT_PATH" \
+            python "$SCRIPT_PATH" \
               --stage confirmation \
               --work-dir "$WORK_DIR" \
               --cache-dir "$HF_HOME" \
@@ -150,7 +156,7 @@ jobs:
               2>&1 | tee "$WORK_DIR/confirmation.log" || confirmation_rc=$?
           fi
 
-          python3 - "$STATUS" "$development_rc" "$development_pass" "$representatives" "$selection_rc" "$selection_pass" "$selected" "$confirmation_rc" <<'PY'
+          python - "$STATUS" "$development_rc" "$development_pass" "$representatives" "$selection_rc" "$selection_pass" "$selected" "$confirmation_rc" <<'PY'
           import json, pathlib, sys
           out=pathlib.Path(sys.argv[1])
           root=out.parent
