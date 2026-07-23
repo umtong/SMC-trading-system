@@ -1,0 +1,45 @@
+name: Wave45 official spot one-minute flow 2022
+on:
+  pull_request:
+    paths:
+      - "scripts/build_wave45_spot_1m_month.py"
+      - ".github/workflows/wave45-spot-flow.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pandas pyarrow
+      - name: Build checksum-verified spot flow shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_wave45_spot_1m_month.py \
+            --symbol "${{ matrix.symbol }}" \
+            --month "2022-${{ matrix.month }}" \
+            --output-dir "wave45/${{ matrix.symbol }}/2022-${{ matrix.month }}" \
+            2>&1 | tee "wave45-${{ matrix.symbol }}-2022-${{ matrix.month }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave45-${{ matrix.symbol }}-2022-${{ matrix.month }}-${{ github.run_id }}
+          path: |
+            wave45/${{ matrix.symbol }}/2022-${{ matrix.month }}/**
+            wave45-${{ matrix.symbol }}-2022-${{ matrix.month }}.log
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
