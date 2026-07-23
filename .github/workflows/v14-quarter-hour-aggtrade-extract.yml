@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'research/v14_quarter_hour_aggtrade.py.gz.b64'
+      - 'research/v14_extract_trigger.json'
   workflow_dispatch:
 
 permissions:
