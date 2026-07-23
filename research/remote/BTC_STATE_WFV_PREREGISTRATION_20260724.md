@@ -7,7 +7,8 @@ This branch is research-only. It never submits paper, testnet, or live orders; n
 ## Immutable source
 
 - Dataset: `ibrahimdaud/binance-btcusdt`
-- Revision: `39b19d4b296129ce5ee1e2118d2ca1c8a49c1984`
+- Revision: `728ce620e8854fde1aa2cb0bca41d8d150dca3bb`
+- Revision change record: the original pinned revision `39b19d4b296129ce5ee1e2118d2ca1c8a49c1984` contained the 2022–2025 feature files but predated the raw five-minute OHLCV upload. The research job therefore stopped before any model fitting. The later verified commit above contains both the same feature history and the required raw source boundary. No signal, model, cost, stage, risk, selection, or promotion rule changed.
 - Allowed files: BTCUSDT feature bars and raw Binance USD-M 5-minute klines for 2022–2025 only
 - Every downloaded file is SHA-256 hashed before research begins.
 - The dataset-provided forward-return columns are not loaded. Executable labels are rebuilt from future raw opens only after model features have been fixed.
