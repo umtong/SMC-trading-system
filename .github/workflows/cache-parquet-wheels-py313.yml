@@ -1,0 +1,33 @@
+name: Cache Parquet Wheels Python 3.13
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-parquet-wheels-py313.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download binary wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wheels
+          python -m pip download --only-binary=:all: --no-deps pyarrow duckdb -d wheels
+          sha256sum wheels/* | tee wheels/SHA256SUMS.txt
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: parquet-wheels-py313-${{ github.run_id }}
+          path: wheels/**
+          compression-level: 0
+          retention-days: 7
