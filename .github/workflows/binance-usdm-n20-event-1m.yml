@@ -1,0 +1,83 @@
+name: Binance USD-M N20 Event 1m Data
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_n20_event_1m.py
+      - configs/n20_1m_archive_dates.csv.gz.b64
+      - configs/n20_1m_events.csv.gz.b64
+      - configs/predeclared_n20_1m_confirmation_v1.json
+      - .github/workflows/binance-usdm-n20-event-1m.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_usdm_n20_event_1m.py
+      - configs/n20_1m_archive_dates.csv.gz.b64
+      - configs/n20_1m_events.csv.gz.b64
+      - configs/predeclared_n20_1m_confirmation_v1.json
+      - .github/workflows/binance-usdm-n20-event-1m.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-event-1m:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "requests>=2.32" "pyarrow>=17"
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_usdm_n20_event_1m.py
+      - name: Decode frozen event manifests
+        run: |
+          python - <<'PY'
+          import base64, gzip
+          from pathlib import Path
+          for name in ('n20_1m_archive_dates.csv', 'n20_1m_events.csv'):
+              source = Path('configs') / f'{name}.gz.b64'
+              target = Path('configs') / name
+              target.write_bytes(gzip.decompress(base64.b64decode(source.read_text().strip())))
+              print(name, target.stat().st_size)
+          PY
+      - name: Download checksum-verified event windows
+        run: |
+          python scripts/download_binance_usdm_n20_event_1m.py \
+            --archive-dates configs/n20_1m_archive_dates.csv \
+            --events configs/n20_1m_events.csv \
+            --workers 20 \
+            --output artifacts/binance_usdm_n20_event_1m
+      - name: Validate manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/binance_usdm_n20_event_1m')
+          m=json.loads((root/'manifest.json').read_text())
+          required={'BTCUSDT','ETHUSDT','XRPUSDT'}
+          if set(m['datasets'])!=required:
+              raise SystemExit(f"datasets mismatch: {set(m['datasets'])}")
+          if not m['archives']:
+              raise SystemExit('no verified archives')
+          for symbol,info in m['datasets'].items():
+              for field in ('parquet','csv_gz'):
+                  path=root/info[field]
+                  if not path.exists() or path.stat().st_size<=0:
+                      raise SystemExit(f'invalid {symbol} {field}')
+          print(json.dumps({'archives':len(m['archives']),'missing':len(m['missing_archives']),'coverage':m['coverage']},indent=2))
+          PY
+      - name: Upload immutable event data
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-n20-event-1m-${{ github.sha }}
+          path: artifacts/binance_usdm_n20_event_1m
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
