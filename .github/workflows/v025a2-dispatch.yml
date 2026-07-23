@@ -1,10 +1,10 @@
-name: Dispatch v0.25A2 locked context scout
+name: Dispatch v0.25A2 locked ARM context scout
 
 on:
   pull_request:
     paths:
       - 'research/v025a2/v025a2_locked_runner.tar.xz'
-      - '.github/workflows/v025a2-context-scout.yml'
+      - '.github/workflows/v025a2-context-scout-arm.yml'
       - '.github/workflows/v025a2-dispatch.yml'
   workflow_dispatch:
 
@@ -17,12 +17,12 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     steps:
-      - name: Dispatch exact locked scout on research branch
+      - name: Dispatch exact locked ARM scout on research branch
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run v025a2-context-scout.yml \
+          gh workflow run v025a2-context-scout-arm.yml \
             --repo "${GITHUB_REPOSITORY}" \
             --ref research/v025a2-eventtime-20260723
