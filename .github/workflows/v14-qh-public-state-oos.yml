@@ -1,0 +1,235 @@
+name: V14 Quarter-Hour Public-State 2024 OOS
+
+on:
+  pull_request:
+    paths:
+      - 'research/v14_qh_public_state_model.py.gz.b64'
+      - 'research/v14_oos_2024_trigger.json'
+      - '.github/workflows/v14-qh-public-state-oos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  frozen-2024-oos:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@v4
+
+      - name: Restore and verify pinned research code
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_url="https://raw.githubusercontent.com/umtong/SMC-trading-system/f12718079bd05965d9e12e8829e6e7b66a9d9dbd/research/v12_liquidity_shock_bundle.tgz.b64"
+          curl --fail --location --retry 5 --retry-all-errors "$source_url" -o /tmp/v12.tgz.b64
+          base64 --decode /tmp/v12.tgz.b64 > /tmp/v12.tgz
+          echo '746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89  /tmp/v12.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/v12.tgz
+          patch --batch --forward -p1 < research/v12_gap_segments.patch
+          base64 --decode research/v14_quarter_hour_aggtrade.py.gz.b64 | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
+          base64 --decode research/v14_qh_public_state_model.py.gz.b64 | gzip -d > /tmp/v14_qh_public_state_model.py
+          echo '6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e  /tmp/v14_qh_public_state_model.py' | sha256sum --check --strict
+          python -m py_compile /tmp/v14_quarter_hour_aggtrade.py /tmp/v14_qh_public_state_model.py
+
+      - name: Mark frozen OOS started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V14 frozen 2024 OOS\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- train history: \`2023 plus rolling prior 180 days\`\n- evaluation: \`2024-01-01 through 2025-01-01 UTC\`\n- model hash: \`6394c6eaae5c46768f95d775935e43b6c91b3fac56e6de2beec189051fdd1a9e\`\n\n_One-shot research-only OOS. No refit on 2024._" --edit-last --create-if-none
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests scikit-learn tabulate
+
+      - name: Restore 2023 public-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance
+          key: v12-binance-um-2023-btc-eth-v2
+
+      - name: Restore 2024 public-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance_2024
+          key: v14-public-2024-btc-eth-v1
+
+      - name: Restore 2023 aggTrade cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v14_aggtrades_2023
+          key: v14-binance-usdm-aggtrades-2023-btc-eth-v1
+
+      - name: Restore 2024 aggTrade cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v14_aggtrades_2024
+          key: v14-binance-usdm-aggtrades-2024-btc-eth-v1
+
+      - name: Build checksum-verified 2023 and 2024 causal public frames
+        working-directory: research/v12_liquidity_shock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import pandas as pd
+          from core import Family, StrategyConfig, add_causal_features
+          from run_discovery import download_archives, month_keys, build_symbol_frame
+
+          cfg = StrategyConfig(family=Family.CONTINUATION, abs_return_z=3.0, dislocation_z=1.0)
+          symbols = ['BTCUSDT', 'ETHUSDT']
+          jobs = [
+              (2023, Path('../../.cache/v12_binance')),
+              (2024, Path('../../.cache/v12_binance_2024')),
+          ]
+          for year, cache in jobs:
+              start = pd.Timestamp(f'{year}-01-01', tz='UTC')
+              end = pd.Timestamp(f'{year + 1}-01-01', tz='UTC')
+              out = Path(f'../../artifacts/v14-public/{year}')
+              out.mkdir(parents=True, exist_ok=True)
+              months = month_keys(start, end)
+              manifest = download_archives(cache, symbols=symbols, months=months, workers=8)
+              manifest.to_csv(out / 'input_manifest.csv', index=False)
+              summary = []
+              for symbol in symbols:
+                  raw = build_symbol_frame(cache, symbol, months, start, end)
+                  featured = add_causal_features(raw, cfg)
+                  path = out / f'{symbol}_causal_features.csv.gz'
+                  featured.to_csv(path, index=False, compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0})
+                  summary.append({
+                      'symbol': symbol,
+                      'rows': len(featured),
+                      'segments': int(featured.segment_id.nunique()),
+                      'first_open_time': str(featured.open_time.min()),
+                      'last_open_time': str(featured.open_time.max()),
+                      'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  })
+              (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          PY
+
+      - name: Extract exact first-10-second quarter-hour data for 2023
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/v14-exact/2023
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2023-01-01 --end 2024-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2023 \
+            --output artifacts/v14-exact/2023 \
+            --workers 4
+
+      - name: Extract exact first-10-second quarter-hour data for 2024
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/v14-exact/2024
+          python /tmp/v14_quarter_hour_aggtrade.py \
+            --start 2024-01-01 --end 2025-01-01 \
+            --symbols BTCUSDT ETHUSDT \
+            --cache .cache/v14_aggtrades_2024 \
+            --output artifacts/v14-exact/2024 \
+            --workers 4
+
+      - name: Run frozen 2024 OOS once
+        id: oos
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          rm -rf artifacts/v14-oos-2024
+          python /tmp/v14_qh_public_state_model.py \
+            --public-dir artifacts/v14-public/2023 \
+            --public-dir artifacts/v14-public/2024 \
+            --exact-dir artifacts/v14-exact/2023 \
+            --exact-dir artifacts/v14-exact/2024 \
+            --evaluation-start 2024-01-01 \
+            --evaluation-end 2025-01-01 \
+            --output artifacts/v14-oos-2024 \
+            2>&1 | tee artifacts-v14-oos.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build OOS summary
+        if: always()
+        env:
+          OOS_EXIT_CODE: ${{ steps.oos.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          out = Path('artifacts/v14-oos-2024')
+          lines = [
+              '## V14 frozen 2024 OOS', '',
+              f"- run_id: `{os.environ.get('RUN_ID')}`",
+              f"- process exit code: `{os.environ.get('OOS_EXIT_CODE', 'unknown')}`",
+          ]
+          verdict_path = out / 'verdict.json'
+          if verdict_path.exists():
+              verdict = json.loads(verdict_path.read_text())
+              lines += [
+                  f"- status: `{verdict.get('status')}`",
+                  f"- promote: `{verdict.get('promote')}`",
+                  f"- next step: `{verdict.get('next_step')}`", '',
+              ]
+              metrics = pd.read_csv(out / 'scenario_metrics.csv')
+              lines += ['### Cost scenarios', '', metrics.to_markdown(index=False), '']
+              symbols = pd.read_csv(out / 'symbol_metrics.csv')
+              lines += ['### Symbol contribution', '', symbols.to_markdown(index=False), '']
+          else:
+              lines += ['- status: `FAILED_BEFORE_VERDICT`', '']
+              log = Path('artifacts-v14-oos.log')
+              if log.exists():
+                  lines += ['```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```']
+          lines += ['', '_Frozen one-shot OOS. A passing screen still requires exact candidate-day protective-stop replay._']
+          Path('artifacts/v14-oos-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Upload OOS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-qh-public-state-2024-oos-${{ github.run_id }}
+          path: |
+            artifacts/v14-oos-2024
+            artifacts/v14-public
+            artifacts/v14-exact
+            artifacts-v14-oos.log
+            artifacts/v14-oos-pr-comment.md
+            research/v14_qh_public_state_model.py.gz.b64
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish OOS summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file artifacts/v14-oos-pr-comment.md --edit-last --create-if-none
+
+      - name: Preserve OOS process failure
+        if: always() && steps.oos.outputs.exit_code != '0'
+        env:
+          OOS_EXIT_CODE: ${{ steps.oos.outputs.exit_code }}
+        run: |
+          echo "V14 OOS process failed with exit code ${OOS_EXIT_CODE}"
+          exit 1
