@@ -1,0 +1,90 @@
+name: Relative Flow Real-Data Quick Screen
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/relative-flow-realdata-quick.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  quick-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout frozen runner source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC-trading-system
+          ref: 8d7bd272f0b47ca8e93b72a7e0bde9d37d26de7e
+          path: runner-source
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore, verify and install runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runner rf-data rf-results
+          cat runner-source/research/relative_flow_v08/runner_bundle.part-* | base64 --decode > /tmp/runner.tar.gz
+          echo "372d75e008e9ed9cbbae9cce02c76309aa08e1ae77bda379da53ffe83f4110d5  /tmp/runner.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/runner.tar.gz -C runner
+          python -m pip install --upgrade pip
+          python -m pip install -e "runner[dev]"
+          python -m compileall -q runner/src runner/scripts
+          python - <<'PY' | tee rf-results/verification.log
+          from pathlib import Path
+          from smcict.settings import load_research_config
+          cfg = load_research_config(Path("runner/configs/relative_flow_raid_reversal_v0_8.yaml"))
+          assert cfg["strategy"].flow_require_counterpart_confluence
+          assert cfg["portfolio"].max_active_orders_and_positions == 1
+          print(cfg["metadata"]["name"])
+          PY
+
+      - name: Download hash-verified perpetual inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 --retry-all-errors -o rf-data/BTCUSDT.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/btcusdt_perp_1m_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o rf-data/ETHUSDT.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/ethusdt_perp_1m_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o rf-data/BTCUSDT_funding.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/btcusdt_perp_funding_8h_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o rf-data/ETHUSDT_funding.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/ethusdt_perp_funding_8h_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          echo "40e0cb41e8623a49d1e7561197f0bef4c1e1cc8fb471ae8ac9dde7a116cdc4ae  rf-data/BTCUSDT.parquet" | sha256sum -c -
+          echo "369c49083c31293e6f96ef4ef8e04a0fd5cb853753464d6ec123043c17d87537  rf-data/ETHUSDT.parquet" | sha256sum -c -
+          sha256sum rf-data/*.parquet | tee rf-data/download_sha256.txt
+
+      - name: Run quick development and validation screen
+        shell: bash
+        run: |
+          set -o pipefail
+          python runner/scripts/run_realdata_relative_flow_research.py \
+            --config runner/configs/relative_flow_raid_reversal_v0_8.yaml \
+            --btc rf-data/BTCUSDT.parquet \
+            --eth rf-data/ETHUSDT.parquet \
+            --btc-funding rf-data/BTCUSDT_funding.parquet \
+            --eth-funding rf-data/ETHUSDT_funding.parquet \
+            --output rf-results \
+            --quick \
+            2>&1 | tee rf-results/workflow.log
+
+      - name: Upload quick research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-flow-realdata-quick-${{ github.run_id }}
+          path: |
+            rf-results/**
+            rf-data/download_sha256.txt
+          if-no-files-found: warn
+          retention-days: 30
