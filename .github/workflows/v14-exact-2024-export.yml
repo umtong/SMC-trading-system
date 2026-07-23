@@ -20,12 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore and verify extractor
+      - name: Restore and verify immutable extractor
         shell: bash
         run: |
           set -euo pipefail
-          encoded=$(tr -d '\r\n\t ' < research/v14_quarter_hour_aggtrade.py.gz.b64)
-          printf '%s' "$encoded" | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          curl --fail --location --retry 5 --retry-all-errors \
+            https://raw.githubusercontent.com/umtong/SMC-trading-system/6545dee8c862565674c4eec1534a9791e4df3de8/research/v14_quarter_hour_aggtrade.py.gz.b64 \
+            -o /tmp/v14_quarter_hour_aggtrade.py.gz.b64
+          tr -d '\r\n\t ' < /tmp/v14_quarter_hour_aggtrade.py.gz.b64 | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
           echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
           python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
 
