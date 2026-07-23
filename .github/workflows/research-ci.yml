@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   tests:
@@ -45,3 +47,105 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  v9-alpha-search:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v9-alpha-search-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install alpha-search dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas
+
+      - name: Restore Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/xsmc-v9
+          key: xsmc-v9-binance-usdm-15m-2019-2026-v1
+
+      - name: Run fixed-candidate chronological alpha search
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/v9-alpha-search
+          base64 -d research/v9_alpha_search.py.gz.b64 | gzip -d > /tmp/v9_alpha_search.py
+          python /tmp/v9_alpha_search.py \
+            --start-month 2019-01 \
+            --end-month 2026-06 \
+            --evaluation-start 2024-01 \
+            --evaluation-end 2026-06 \
+            --symbols BTCUSDT ETHUSDT \
+            --output-dir artifacts/v9-alpha-search \
+            2>&1 | tee artifacts-v9.log
+
+      - name: Build PR research summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path('artifacts/v9-alpha-search')
+          comment = Path('artifacts/v9-pr-comment.md')
+          lines = ['## V9 chronological alpha search', '']
+          summary_path = out / 'summary.json'
+          if summary_path.exists():
+              s = json.loads(summary_path.read_text())
+              lines += [
+                  f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
+                  f"- candidates: `{s.get('candidate_count')}`",
+                  f"- OOS trades: `{s.get('trades')}`",
+                  f"- OOS final multiple: `{s.get('final_multiple')}`",
+                  f"- OOS geometric daily net: `{s.get('geo_daily')}`",
+                  f"- OOS max drawdown: `{s.get('max_drawdown')}`",
+                  f"- positive-month ratio: `{s.get('positive_month_ratio')}`",
+                  f"- no-trade months: `{s.get('no_trade_months')}`",
+                  '',
+              ]
+          else:
+              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+          top_path = out / 'top30_pre2024.csv'
+          if top_path.exists():
+              top = pd.read_csv(top_path).head(10)
+              cols = [c for c in ['candidate_id','family','pre2x_final_multiple','pre_final_multiple','post2024_diag_final_multiple','pre_trades','pre2x_max_drawdown'] if c in top.columns]
+              lines += ['### Top pre-2024 diagnostics', '', top[cols].to_markdown(index=False), '']
+          months_path = out / 'walkforward_months.csv'
+          if months_path.exists():
+              months = pd.read_csv(months_path)
+              lines += ['### Walk-forward monthly tail', '', months.tail(12).to_markdown(index=False), '']
+          lines += ['', '_Research-only. No paper/live/order/sizing changes._']
+          comment.write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Upload V9 research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v9-alpha-search-${{ github.run_id }}
+          path: |
+            artifacts/v9-alpha-search
+            artifacts-v9.log
+            artifacts/v9-pr-comment.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish V9 summary to this draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body-file artifacts/v9-pr-comment.md --edit-last --create-if-none
