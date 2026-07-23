@@ -1,0 +1,94 @@
+name: V10.2 Strict Causal Event Meta Search
+
+on:
+  push:
+    branches:
+      - "research/v10-event-meta-20260724"
+    paths:
+      - "research/v10_causality_patch.py"
+      - ".github/workflows/v10-event-meta-v2.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/v10_causality_patch.py"
+      - ".github/workflows/v10-event-meta-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pip "numpy<3" "pandas<3" requests lightgbm scikit-learn
+      - name: Restore, patch, and syntax-check source
+        run: |
+          mkdir -p artifacts/v10-event-meta-v2
+          python research/v10_restore.py research/v10_event_meta_search.py.gz.b64 /tmp/v10_event_meta_search.py | tee artifacts/v10-event-meta-v2/restore.log
+          python research/v10_causality_patch.py /tmp/v10_event_meta_search.py | tee artifacts/v10-event-meta-v2/patch.log
+          python /tmp/v10_event_meta_search.py --synthetic-test | tee artifacts/v10-event-meta-v2/synthetic-test.json
+      - name: Restore Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/xsmc-v10
+          key: xsmc-v10-binance-usdm-15m-2020-2026-v2
+      - name: Run patched multi-family causal event-meta search
+        shell: bash
+        run: |
+          set -o pipefail
+          python /tmp/v10_event_meta_search.py \
+            --start-month 2020-01 \
+            --end-month 2026-06 \
+            --validation-start 2023-01 \
+            --validation-end 2023-12 \
+            --oos-start 2024-01 \
+            --oos-end 2026-06 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --cache-dir .cache/xsmc-v10 \
+            --output-dir artifacts/v10-event-meta-v2 \
+            2>&1 | tee artifacts/v10-event-meta-v2/run.log
+      - name: Build concise report
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path('artifacts/v10-event-meta-v2')
+          summary = out / 'summary.json'
+          lines = ['# V10.2 strict causal event-meta search', '']
+          if summary.exists():
+              s = json.loads(summary.read_text())
+              lines += [
+                  f"- status: `{s.get('status')}`",
+                  f"- chosen config: `{s.get('chosen_config')}`",
+                  f"- chosen score quantile: `{s.get('chosen_quantile')}`",
+                  f"- chosen risk: `{s.get('chosen_risk')}`",
+                  f"- validation gate passed: `{s.get('validation_gate_passed')}`",
+                  f"- OOS base: `{s.get('oos_base')}`",
+                  f"- OOS 1.5x-cost stress: `{s.get('oos_cost_stress_1_5x')}`",
+                  f"- target 1% daily met: `{s.get('target_1pct_daily_met')}`",
+              ]
+          else:
+              lines += ['- status: `FAILED_BEFORE_SUMMARY`']
+              log = out / 'run.log'
+              if log.exists():
+                  lines += ['', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```']
+          (out / 'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+      - name: Upload research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-event-meta-v2-${{ github.run_id }}
+          path: artifacts/v10-event-meta-v2
+          if-no-files-found: error
+          retention-days: 14
