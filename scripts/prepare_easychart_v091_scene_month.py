@@ -20,7 +20,7 @@ from ictbt.easychart_v0.pipeline import (
 from ictbt.easychart_v0.strategy import SimpleExecutionCosts
 from ictbt.easychart_v0.v04 import build_baseline_event_authorities
 from ictbt.easychart_v0.v05 import build_m15_m5_liquidity_delivery_result
-from ictbt.easychart_v0.v07 import build_v07_scene_family_result
+from ictbt.easychart_v0.v07_indexed import build_v07_scene_family_result_indexed
 from ictbt.microstructure import adapt_authority_to_dual_clock_scene
 from ictbt.microstructure.scene_manifest_v2 import record_from_dual_clock_scene
 from scripts.v09_contract import (
@@ -145,7 +145,7 @@ def main() -> int:
         for authority in v05_result.authorities
         if _inside(authority, evaluation_start, evaluation_end)
     )
-    v07_result = build_v07_scene_family_result(book)
+    v07_result = build_v07_scene_family_result_indexed(book)
     v07 = tuple(
         authority
         for authority in v07_result.authorities
@@ -221,6 +221,7 @@ def main() -> int:
             "v03_selected_roots": len(v03),
             "v05_authorities": len(v05),
             "v07_authorities": len(v07),
+            "v07_builder": "indexed_lifecycle_causally_equivalent",
             "target_rejections": dict(target_rejections),
             "adaptation_rejections": dict(adaptation_rejections),
             "family_counts": dict(family_counts),
