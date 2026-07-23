@@ -1,7 +1,8 @@
 {
   "candidate_id": "v13_us_session_flow_v1",
-  "status": "FROZEN_BEFORE_2024_OOS",
+  "status": "REJECTED_AFTER_FROZEN_2024_OOS",
   "frozen_at_utc": "2026-07-23T09:50:00Z",
+  "rejected_at_utc": "2026-07-23T10:14:10Z",
   "evaluator_sha256": "b19cfc0e3b54e0126a24afe62073b0ac83b933d8075a08467cf473c6d72d814b",
   "discovery_data": {
     "venue": "Binance USD-M perpetual futures public archive",
@@ -52,26 +53,43 @@
     "btc_expectancy_r": 0.036329,
     "eth_expectancy_r": 0.105708
   },
-  "robustness_observed_but_not_used_for_selection": {
-    "signal_hour_neighborhood_utc": "13-15",
-    "imbalance_threshold_neighborhood": [0.3, 0.4, 0.5],
-    "volume_z_neighborhood": [0.0, 0.5, 1.0],
-    "hold_neighborhood_minutes": [480, 720],
-    "stop_neighborhood_fraction": [0.02, 0.03, 0.05]
-  },
-  "oos_policy": {
-    "first_unopened_period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
-    "no_parameter_changes_after_open": true,
-    "minimum_requirements_at_20bps": {
-      "expectancy_r_greater_than": 0.0,
-      "profit_factor_at_least": 1.1,
-      "terminal_multiple_at_1pct_risk_greater_than": 1.0,
-      "btc_net_r_greater_than": 0.0,
-      "eth_net_r_greater_than": 0.0,
-      "positive_month_ratio_at_least": 0.5
+  "frozen_2024_oos": {
+    "run_id": 29998479744,
+    "period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "at_13bps": {
+      "trades": 184,
+      "net_r": -3.120300,
+      "expectancy_r": -0.0169581,
+      "profit_factor": 0.928313,
+      "terminal_multiple_at_1pct_risk": 0.965812,
+      "max_drawdown_at_1pct_risk": -0.0844847,
+      "positive_month_ratio": 0.416667
     },
-    "severe_cost_30bps_net_r_greater_than": 0.0,
-    "result_if_failed": "reject this candidate without refitting on 2024"
+    "at_20bps": {
+      "trades": 184,
+      "net_r": -7.077040,
+      "expectancy_r": -0.0384622,
+      "profit_factor": 0.842202,
+      "terminal_multiple_at_1pct_risk": 0.928475,
+      "max_drawdown_at_1pct_risk": -0.0988265,
+      "positive_month_ratio": 0.416667
+    },
+    "at_30bps": {
+      "trades": 184,
+      "net_r": -12.438300,
+      "expectancy_r": -0.0675997,
+      "profit_factor": 0.733911,
+      "terminal_multiple_at_1pct_risk": 0.880161,
+      "max_drawdown_at_1pct_risk": -0.135390,
+      "positive_month_ratio": 0.416667
+    },
+    "symbol_contribution_at_13bps": {
+      "BTCUSDT": {"trades": 100, "net_r": -0.140976, "gross_bps": 12.5587},
+      "ETHUSDT": {"trades": 84, "net_r": -2.979320, "gross_bps": 1.89848}
+    },
+    "verdict": "FAIL"
   },
+  "rejection_reason": "The positive 2023 neighborhood did not persist in the first unopened 2024 period. The candidate failed expectancy, profit factor, terminal multiple, both-symbol contribution, positive-month ratio, and 30 bp severe-cost requirements. No 2024-driven refit is permitted.",
+  "next_hypothesis": "V14 first-10-second quarter-hour aggregate-trade order imbalance at the paper's native resolution, with 4/8/12-hour horizons and a 2023-only discovery followed by 2025 OOS.",
   "paper_or_live_authority": false
 }
