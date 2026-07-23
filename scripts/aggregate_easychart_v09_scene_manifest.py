@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import csv
+from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
@@ -176,13 +177,24 @@ def main() -> int:
         args.output_dir / "v09_scene_inventory.csv",
         [
             {
-                **record.__dict__,
+                **asdict(record),
                 "required_utc_dates": "|".join(record.required_utc_dates),
             }
             for record in manifest.records
         ],
     )
-    print(json.dumps({key: value for key, value in summary.items() if key != "checkpoint_provenance"}, ensure_ascii=False, indent=2), flush=True)
+    print(
+        json.dumps(
+            {
+                key: value
+                for key, value in summary.items()
+                if key != "checkpoint_provenance"
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
     return 0
 
 
