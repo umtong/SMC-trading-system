@@ -7,6 +7,12 @@ on:
     paths:
       - "research/remote/cross_asset_wfv.py.b64.part*"
       - ".github/workflows/cross-asset-wfv-research.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/remote/cross_asset_wfv.py.b64.part*"
+      - ".github/workflows/cross-asset-wfv-research.yml"
 
 concurrency:
   group: cross-asset-wfv-research-20260723
