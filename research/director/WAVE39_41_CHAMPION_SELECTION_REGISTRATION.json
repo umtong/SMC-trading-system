@@ -1,0 +1,36 @@
+{
+  "schema": "wave39-41-champion-selection-registration-v1",
+  "registered_before_2024_strategy_outcomes": true,
+  "candidate_universe": "Only Wave39, Wave40 or Wave41 candidates whose unchanged frozen version passes both the registered 2023 and 2024 gates.",
+  "selection_rule": [
+    "Maximize the minimum 32bp net log growth across calendar years 2023 and 2024.",
+    "Then maximize the minimum quarter net log growth across all eight 2023-2024 quarters at 24bp.",
+    "Then maximize the minimum annual 40bp net log growth across 2023 and 2024.",
+    "Then minimize the maximum annual top-10-winner share at 24bp.",
+    "Then maximize the minimum annual net growth after removing the five largest winning trades at 24bp.",
+    "If still tied exactly, choose the numerically smaller wave number."
+  ],
+  "not_selection_inputs": [
+    "the final geometric daily-return target",
+    "risk fraction",
+    "leverage",
+    "bank allocation",
+    "2025 or later prices, signals or outcomes",
+    "competition returns",
+    "explanation elegance or SMC naming"
+  ],
+  "multiple_testing_control": {
+    "maximum_surviving_candidates": 3,
+    "one_champion_before_terminal_oos": true,
+    "challengers_do_not_open_terminal_oos": true,
+    "failed_or_nonselected_candidates_remain_append-only research records": true
+  },
+  "post_selection_steps": [
+    "Reconstruct the champion's complete 2022-2024 causal signal and execution ledger with entry, stop, exit, funding, costs and official source-gap state.",
+    "Select a fixed risk fraction, leverage cap and manual trading-account/bank-account allocation using only 2022-2024 block bootstrap and capacity constraints.",
+    "Freeze code, data hashes, candidate, execution, risk and treasury policy.",
+    "Only then permit one sealed terminal OOS execution."
+  ],
+  "sealed_terminal_oos_opened": false,
+  "risk_or_leverage_optimization_allowed_before_champion_selection": false
+}
