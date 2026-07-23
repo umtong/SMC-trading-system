@@ -1,4 +1,5 @@
 name: V0.10 Multi-Year One-Minute Taker Flow
+# Outcome-blind data contract: no strategy outcome is used to select archive shards.
 
 on:
   pull_request:
