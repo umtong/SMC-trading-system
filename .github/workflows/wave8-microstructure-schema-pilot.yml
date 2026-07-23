@@ -1,0 +1,228 @@
+name: Wave8 Microstructure Schema Pilot
+
+on:
+  push:
+    branches:
+      - agent/wave8-microstructure-schema-pilot
+    paths:
+      - registrations/microstructure_wave8_v1_2026_07_23.json
+      - .github/workflows/wave8-microstructure-schema-pilot.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - registrations/microstructure_wave8_v1_2026_07_23.json
+      - .github/workflows/wave8-microstructure-schema-pilot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  schema-only-no-pnl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download, checksum and inspect one fixed day
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import hashlib
+          import io
+          import json
+          import re
+          import time
+          import urllib.request
+          import zipfile
+          from collections import deque
+          from pathlib import Path
+
+          DATE = "2023-06-01"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          DATASETS = ("bookTicker", "aggTrades")
+          BASE = "https://data.binance.vision/data/futures/um/daily"
+          CHECKSUM = re.compile(r"\b([0-9a-fA-F]{64})\b")
+          OUT = Path("results/microstructure_wave8_schema_pilot")
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def get(url: str, attempts: int = 7) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url, headers={"User-Agent": "smc-ict-wave8-schema/1.0"}
+                      )
+                      with urllib.request.urlopen(request, timeout=180) as response:
+                          return response.read()
+                  except Exception as exc:
+                      error = exc
+                      if attempt + 1 < attempts:
+                          time.sleep(min(2 ** attempt, 20))
+              raise RuntimeError(f"download failed {url}: {error!r}")
+
+          def is_header(row):
+              numeric = 0
+              for value in row:
+                  try:
+                      float(value)
+                      numeric += 1
+                  except ValueError:
+                      pass
+              return numeric < len(row) / 2
+
+          def epoch_ms(raw):
+              try:
+                  value = int(float(raw))
+              except (ValueError, OverflowError):
+                  return None
+              absolute = abs(value)
+              if absolute < 10**10:
+                  return None
+              if absolute >= 10**17:
+                  return value // 1_000_000
+              if absolute >= 10**14:
+                  return value // 1_000
+              if absolute >= 10**11:
+                  return value
+              return value * 1_000
+
+          def write_sample(path, header, rows):
+              with path.open("w", encoding="utf-8", newline="") as target:
+                  writer = csv.writer(target)
+                  writer.writerow(header)
+                  writer.writerows(rows)
+
+          archives = []
+          started_all = time.perf_counter()
+          for symbol in SYMBOLS:
+              for dataset in DATASETS:
+                  started = time.perf_counter()
+                  name = f"{symbol}-{dataset}-{DATE}.zip"
+                  url = f"{BASE}/{dataset}/{symbol}/{name}"
+                  checksum_url = url + ".CHECKSUM"
+                  checksum_payload = get(checksum_url)
+                  match = CHECKSUM.search(checksum_payload.decode("utf-8", errors="strict"))
+                  if match is None:
+                      raise ValueError(f"no SHA-256 in {checksum_url}")
+                  official = match.group(1).lower()
+                  payload = get(url)
+                  actual = hashlib.sha256(payload).hexdigest()
+                  if actual != official:
+                      raise ValueError(f"checksum mismatch {url}: {actual} != {official}")
+
+                  with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                      members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                      if len(members) != 1:
+                          raise ValueError(f"expected one CSV in {url}: {members}")
+                      member = members[0]
+                      info = archive.getinfo(member)
+                      with io.TextIOWrapper(archive.open(member), encoding="utf-8-sig", newline="") as text:
+                          reader = csv.reader(text)
+                          first = next(reader)
+                          header_detected = is_header(first)
+                          header = first if header_detected else [f"column_{i}" for i in range(len(first))]
+                          first_data = next(reader) if header_detected else first
+                          width = len(first_data)
+                          if len(header) != width:
+                              raise ValueError(f"header width mismatch {url}")
+                          head = [first_data]
+                          tail = deque([first_data], maxlen=5)
+                          ts = {}
+                          rows = 0
+
+                          def inspect(row):
+                              nonlocal rows
+                              if len(row) != width:
+                                  raise ValueError(f"ragged row {url}: {len(row)} != {width}")
+                              rows += 1
+                              for index, raw in enumerate(row):
+                                  value = epoch_ms(raw)
+                                  if value is None:
+                                      continue
+                                  stat = ts.setdefault(index, [value, value, 0])
+                                  stat[0] = min(stat[0], value)
+                                  stat[1] = max(stat[1], value)
+                                  stat[2] += 1
+
+                          inspect(first_data)
+                          for row in reader:
+                              if not row:
+                                  continue
+                              inspect(row)
+                              if len(head) < 5:
+                                  head.append(row)
+                              tail.append(row)
+
+                  timestamp_columns = {
+                      header[index]: {
+                          "min_epoch_ms": values[0],
+                          "max_epoch_ms": values[1],
+                          "parseable_rows": values[2],
+                      }
+                      for index, values in ts.items()
+                      if values[2] >= max(2, int(rows * 0.95))
+                  }
+                  stem = f"{symbol}_{dataset}_{DATE}"
+                  write_sample(OUT / f"{stem}_head.csv", header, head)
+                  write_sample(OUT / f"{stem}_tail.csv", header, list(tail))
+                  record = {
+                      "symbol": symbol,
+                      "dataset": dataset,
+                      "date": DATE,
+                      "url": url,
+                      "checksum_url": checksum_url,
+                      "official_sha256": official,
+                      "actual_sha256": actual,
+                      "zip_bytes": len(payload),
+                      "csv_member": member,
+                      "csv_uncompressed_bytes": info.file_size,
+                      "header_detected": header_detected,
+                      "header": header,
+                      "column_count": width,
+                      "data_rows": rows,
+                      "first_row": first_data,
+                      "last_row": list(tail)[-1],
+                      "timestamp_columns": timestamp_columns,
+                      "processing_seconds": time.perf_counter() - started,
+                  }
+                  archives.append(record)
+                  print(json.dumps(record, separators=(",", ":")), flush=True)
+                  del payload
+
+          manifest = {
+              "research_wave": "microstructure_wave8_v1",
+              "registration_sha256": "945300dd572a73e7a1f0691be4689e16268e5682c76a5c826677c14bacd3cab5",
+              "mode": "SCHEMA_ONLY_NO_PNL",
+              "date": DATE,
+              "symbols": list(SYMBOLS),
+              "datasets": list(DATASETS),
+              "archive_count": len(archives),
+              "total_zip_bytes": sum(item["zip_bytes"] for item in archives),
+              "total_uncompressed_csv_bytes": sum(item["csv_uncompressed_bytes"] for item in archives),
+              "total_data_rows": sum(item["data_rows"] for item in archives),
+              "total_processing_seconds": time.perf_counter() - started_all,
+              "archives": archives,
+          }
+          canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+          manifest["manifest_sha256"] = hashlib.sha256(canonical).hexdigest()
+          (OUT / "schema_manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload schema-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave8-microstructure-schema-pilot-${{ github.sha }}
+          path: results/microstructure_wave8_schema_pilot
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
