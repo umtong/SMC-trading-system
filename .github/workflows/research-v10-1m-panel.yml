@@ -1,0 +1,93 @@
+name: V0.10 Multi-Year One-Minute Panel
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          - symbol: BTCUSDT
+            label: 2022
+            start: 2022-01-01
+            end: 2023-01-01
+          - symbol: BTCUSDT
+            label: 2023
+            start: 2023-01-01
+            end: 2024-01-01
+          - symbol: BTCUSDT
+            label: 2024
+            start: 2024-01-01
+            end: 2025-01-01
+          - symbol: BTCUSDT
+            label: 2025
+            start: 2025-01-01
+            end: 2026-01-01
+          - symbol: BTCUSDT
+            label: 2026H1
+            start: 2026-01-01
+            end: 2026-07-01
+          - symbol: ETHUSDT
+            label: 2022
+            start: 2022-01-01
+            end: 2023-01-01
+          - symbol: ETHUSDT
+            label: 2023
+            start: 2023-01-01
+            end: 2024-01-01
+          - symbol: ETHUSDT
+            label: 2024
+            start: 2024-01-01
+            end: 2025-01-01
+          - symbol: ETHUSDT
+            label: 2025
+            start: 2025-01-01
+            end: 2026-01-01
+          - symbol: ETHUSDT
+            label: 2026H1
+            start: 2026-01-01
+            end: 2026-07-01
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download checksum-verified one-minute chunk
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.download_binance_um_1m_range \
+            --symbols '${{ matrix.symbol }}' \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --output-dir 'data/v10_1m/${{ matrix.symbol }}/${{ matrix.label }}' \
+            2>&1 | tee 'v10-1m-${{ matrix.symbol }}-${{ matrix.label }}.log'
+
+      - name: Upload immutable one-minute chunk
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v10-1m-panel-${{ matrix.symbol }}-${{ matrix.label }}-${{ github.run_id }}
+          path: |
+            data/v10_1m/${{ matrix.symbol }}/${{ matrix.label }}/${{ matrix.symbol }}_1m.csv.gz
+            data/v10_1m/${{ matrix.symbol }}/${{ matrix.label }}/v10_1m_data_manifest.json
+            v10-1m-${{ matrix.symbol }}-${{ matrix.label }}.log
+          if-no-files-found: error
+          retention-days: 14
