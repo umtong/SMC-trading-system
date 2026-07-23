@@ -1,6 +1,12 @@
 name: V20 Binance Spot Minute Export
 
 on:
+  push:
+    branches:
+      - research/v12-run-20260723
+    paths:
+      - '.github/workflows/v20-spot-minute-export.yml'
+      - 'research/v20_spot_data_trigger.json'
   pull_request:
     paths:
       - '.github/workflows/v20-spot-minute-export.yml'
@@ -14,7 +20,7 @@ permissions:
 
 jobs:
   export-spot-2023-2024:
-    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723'
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.head_ref == 'research/v12-run-20260723')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -42,7 +48,6 @@ jobs:
           import hashlib, json, re, zipfile
           import pandas as pd
           import requests
-
           BASE='https://data.binance.vision/data/spot/monthly/klines'
           symbols=['BTCUSDT','ETHUSDT']
           months=[f'{y}-{m:02d}' for y in (2023,2024) for m in range(1,13)]
@@ -108,13 +113,6 @@ jobs:
             artifacts-v20-spot.log
           if-no-files-found: warn
           retention-days: 30
-      - name: Publish status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
-        run: gh pr comment "$PR_NUMBER" --body "## V20 spot-minute export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- symbols: \`BTCUSDT, ETHUSDT\`\n- period: \`2023-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only._"
       - name: Preserve failure
         if: always() && steps.export.outputs.exit_code != '0'
         env:
