@@ -1,0 +1,137 @@
+name: V26 Binance Futures Metrics Export
+
+on:
+  pull_request:
+    paths:
+      - 'research/v26_metrics_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  export-metrics-2023-2024:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.head_ref == 'research/v20-run-20260723')
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pandas requests
+      - name: Restore metrics cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v26_metrics
+          key: v26-binance-usdm-metrics-2023-2024-btc-eth-v1
+      - name: Download, checksum-verify, and export metrics
+        id: export
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee artifacts-v26-metrics.log
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import date, timedelta
+          from pathlib import Path
+          import hashlib, json, re, zipfile
+          import pandas as pd
+          import requests
+
+          BASE='https://data.binance.vision/data/futures/um/daily/metrics'
+          SYMBOLS=['BTCUSDT','ETHUSDT']
+          START=date(2023,1,1); END=date(2025,1,1)
+          cache=Path('.cache/v26_metrics')
+          out=Path('artifacts/v26-futures-metrics-2023-2024'); out.mkdir(parents=True,exist_ok=True)
+          session=requests.Session()
+
+          def sha(path):
+              h=hashlib.sha256()
+              with path.open('rb') as f:
+                  for b in iter(lambda:f.read(1024*1024),b''): h.update(b)
+              return h.hexdigest()
+
+          def get(url):
+              for attempt in range(6):
+                  r=session.get(url,timeout=180)
+                  if r.status_code==200: return r.content
+                  if r.status_code==404: raise FileNotFoundError(url)
+                  if attempt==5: r.raise_for_status()
+              raise RuntimeError(url)
+
+          def one(symbol,day):
+              ds=day.isoformat(); name=f'{symbol}-metrics-{ds}.zip'; url=f'{BASE}/{symbol}/{name}'
+              folder=cache/symbol; folder.mkdir(parents=True,exist_ok=True)
+              path=folder/name; cp=folder/(name+'.CHECKSUM')
+              if not cp.exists(): cp.write_bytes(get(url+'.CHECKSUM'))
+              m=re.search(rb'([0-9a-fA-F]{64})',cp.read_bytes())
+              if not m: raise ValueError(f'bad checksum {cp}')
+              expected=m.group(1).decode().lower()
+              if not path.exists() or sha(path)!=expected:
+                  tmp=path.with_suffix('.tmp'); tmp.write_bytes(get(url))
+                  if sha(tmp)!=expected: raise ValueError(f'checksum mismatch {url}')
+                  tmp.replace(path)
+              return {'symbol':symbol,'date':ds,'path':str(path),'sha256':expected,'bytes':path.stat().st_size}
+
+          days=[]; d=START
+          while d<END: days.append(d); d+=timedelta(days=1)
+          rows=[]
+          with ThreadPoolExecutor(max_workers=12) as ex:
+              fs=[ex.submit(one,s,d) for s in SYMBOLS for d in days]
+              for f in as_completed(fs): rows.append(f.result())
+          pd.DataFrame(rows).sort_values(['symbol','date']).to_csv(out/'input_manifest.csv',index=False)
+
+          summaries=[]
+          for symbol in SYMBOLS:
+              pieces=[]
+              for day in days:
+                  path=cache/symbol/f'{symbol}-metrics-{day.isoformat()}.zip'
+                  with zipfile.ZipFile(path) as zf:
+                      names=[n for n in zf.namelist() if not n.endswith('/')]
+                      if len(names)!=1: raise ValueError(f'unexpected members {path}')
+                      x=pd.read_csv(zf.open(names[0]))
+                  expected_cols=['create_time','symbol','sum_open_interest','sum_open_interest_value','count_toptrader_long_short_ratio','sum_toptrader_long_short_ratio','count_long_short_ratio','sum_taker_long_short_vol_ratio']
+                  missing=[c for c in expected_cols if c not in x.columns]
+                  if missing: raise ValueError(f'missing columns {missing} {path}')
+                  x=x[expected_cols].copy()
+                  x['create_time']=pd.to_datetime(x.create_time,utc=True,format='mixed')
+                  for c in expected_cols[2:]: x[c]=pd.to_numeric(x[c],errors='raise')
+                  pieces.append(x)
+              frame=pd.concat(pieces,ignore_index=True).sort_values('create_time',kind='mergesort').drop_duplicates('create_time').reset_index(drop=True)
+              diffs=frame.create_time.diff(); frame['segment_id']=(diffs.isna()|diffs.ne(pd.Timedelta(minutes=5))).cumsum().astype('int64')-1
+              path=out/f'{symbol}_metrics_5m.csv.gz'
+              frame.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+              summaries.append({'symbol':symbol,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.create_time.min()),'last':str(frame.create_time.max()),'sha256':sha(path)})
+          (out/'summary.json').write_text(json.dumps(summaries,indent=2),encoding='utf-8')
+          print(json.dumps(summaries,indent=2))
+          PY
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload metrics evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v26-futures-metrics-2023-2024-${{ github.run_id }}
+          path: |
+            artifacts/v26-futures-metrics-2023-2024
+            artifacts-v26-metrics.log
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Publish status
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: gh pr comment "$PR_NUMBER" --body "## V26 futures metrics export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- period: \`2023-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only._"
+      - name: Preserve failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
