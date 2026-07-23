@@ -6,6 +6,10 @@ on:
       - research/phase20-maker-calibration-20260723
     paths:
       - '.github/workflows/phase20-maker-calibration.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/phase20-maker-calibration.yml'
+      - 'research/phase20-maker-calibration.md'
   workflow_dispatch:
 
 permissions:
