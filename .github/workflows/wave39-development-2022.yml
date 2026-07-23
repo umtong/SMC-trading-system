@@ -1,0 +1,150 @@
+name: Wave39 registered development 2022
+
+on:
+  push:
+    branches:
+      - research/wave39-quarterhour-exact-aggtrades-20260723
+    paths:
+      - "research/wave39/generated/2022/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Check that feature and execution streams are both present
+        id: ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          feature="research/wave39/generated/2022/manifest.json"
+          support="research/wave39/generated/2022/support/manifest.json"
+          if [[ -f "${feature}" && -f "${support}" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            printf 'feature=%s support=%s\n' "$(test -f "${feature}" && echo present || echo absent)" "$(test -f "${support}" && echo present || echo absent)"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.ready.outputs.ready == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install locked research dependencies
+        if: steps.ready.outputs.ready == 'true'
+        run: python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2"
+
+      - name: Compile and import the registered engine
+        if: steps.ready.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/wave39
+          python - <<'PY'
+          from research.wave39.wave39_engine import simulate_stop_time_paths, stable_candidate_id
+          from research.wave39 import run_wave39_development_v2
+          assert stable_candidate_id({"a": 1}) == stable_candidate_id({"a": 1})
+          print("wave39 import contract passed")
+          PY
+
+      - name: Run 2022-only registered candidate screen
+        if: steps.ready.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf research/wave39/results/development_2022
+          mkdir -p research/wave39/results/development_2022
+          python -m research.wave39.run_wave39_development_v2 \
+            --data-root research/wave39/generated/2022 \
+            --output-dir research/wave39/results/development_2022 \
+            --registration research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json \
+            2>&1 | tee research/wave39/results/development_2022/run.log
+
+      - name: Adversarially recompute result hashes and gate identity
+        if: steps.ready.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          result = Path("research/wave39/results/development_2022")
+          manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
+          candidates = pd.read_csv(result / "wave39_all_candidates_2022.csv.gz")
+          if len(candidates) != manifest["candidate_count"]:
+              raise RuntimeError("candidate registry count mismatch")
+          if candidates["candidate_id"].duplicated().any():
+              raise RuntimeError("duplicate candidate ids")
+          actual_gate = int(candidates["development_gate"].astype(bool).sum())
+          if actual_gate != manifest["development_gate_count"]:
+              raise RuntimeError("development gate count mismatch")
+          if manifest["2023_opened"] or manifest["2024_opened"] or manifest["sealed_terminal_oos_opened"]:
+              raise RuntimeError("future split was opened")
+          if manifest["risk_or_leverage_optimized"]:
+              raise RuntimeError("risk/leverage optimization contract violated")
+          for name, record in manifest["results"].items():
+              path = result / name
+              if not path.exists():
+                  raise RuntimeError(f"missing result {name}")
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != record["sha256"]:
+                  raise RuntimeError(f"result hash mismatch {name}")
+          summary = {
+              "candidate_count": len(candidates),
+              "pre_neighborhood_gate_count": int(candidates["pre_neighborhood_gate"].astype(bool).sum()),
+              "development_gate_count": actual_gate,
+              "selected_candidate_id": manifest["selected_candidate_id"],
+          }
+          (result / "independent_recompute.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit immutable development registry and results
+        if: steps.ready.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/wave39/results/development_2022
+          if git diff --cached --quiet; then
+            echo "identical result already committed"
+            exit 0
+          fi
+          git commit -m "Record Wave39 2022 exact boundary-flow screen"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/wave39-quarterhour-exact-aggtrades-20260723; then
+              exit 0
+            fi
+            git fetch origin research/wave39-quarterhour-exact-aggtrades-20260723
+            git rebase origin/research/wave39-quarterhour-exact-aggtrades-20260723
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - name: Upload complete development evidence
+        if: always() && steps.ready.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave39-development-2022-${{ github.run_id }}
+          path: research/wave39/results/development_2022/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
