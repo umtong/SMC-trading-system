@@ -58,7 +58,7 @@ jobs:
                       m = 1
 
           def get(url: str) -> bytes:
-              req = urllib.request.Request(url, headers={"User-Agent": "smc-research-data-export/1.0"})
+              req = urllib.request.Request(url, headers={"User-Agent": "smc-research-data-export/1.1"})
               with urllib.request.urlopen(req, timeout=120) as response:
                   return response.read()
 
@@ -71,6 +71,10 @@ jobs:
               "interval": "1m",
               "start_month": "2025-01",
               "end_month": "2026-06",
+              "columns": [
+                  "open_time", "open", "high", "low", "close", "volume", "close_time",
+                  "quote_volume", "n_trades", "taker_buy_base", "taker_buy_quote"
+              ],
               "symbols": {},
           }
 
@@ -84,7 +88,7 @@ jobs:
 
               with gzip.open(out_path, "wt", newline="", encoding="utf-8") as gz:
                   writer = csv.writer(gz)
-                  writer.writerow(("open_time", "open", "high", "low", "close", "volume", "close_time"))
+                  writer.writerow(manifest["columns"])
 
                   for month in months(START, END):
                       filename = f"{symbol}-1m-{month}.zip"
@@ -110,7 +114,7 @@ jobs:
                                       continue
                                   if not fields[0].lstrip("-").isdigit():
                                       continue
-                                  if len(fields) < 7:
+                                  if len(fields) < 11:
                                       raise RuntimeError(f"short row in {filename}: {fields}")
                                   open_time = int(fields[0])
                                   close_time = int(fields[6])
@@ -120,7 +124,10 @@ jobs:
                                       )
                                   if close_time != open_time + 59_999:
                                       raise RuntimeError(f"bad close_time for {symbol}: {open_time}, {close_time}")
-                                  writer.writerow((open_time, fields[1], fields[2], fields[3], fields[4], fields[5], close_time))
+                                  writer.writerow((
+                                      open_time, fields[1], fields[2], fields[3], fields[4], fields[5], close_time,
+                                      fields[7], fields[8], fields[9], fields[10]
+                                  ))
                                   prior_open = open_time
                                   first_open = open_time if first_open is None else first_open
                                   last_open = open_time
