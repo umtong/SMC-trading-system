@@ -1,0 +1,84 @@
+name: V2.41 Depth Feature Discovery Intake
+
+on:
+  push:
+    branches: [research/v241-depth-feature-intake]
+    paths: [.github/workflows/v241-depth-feature-intake.yml]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/v241-depth-feature-intake.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download feature-only public dataset snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade huggingface_hub pyarrow pandas
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          from pathlib import Path
+          import hashlib, json, pandas as pd
+          root=Path('v241-depth-features')
+          snap=snapshot_download(
+              repo_id='ibrahimdaud/binance-btcusdt',
+              repo_type='dataset',
+              allow_patterns=['features/BTCUSDT/*.parquet','README.md'],
+              local_dir=root,
+          )
+          files=sorted((root/'features'/'BTCUSDT').glob('*.parquet'))
+          if not files:
+              raise SystemExit('no feature parquet files downloaded')
+          records=[]
+          rows=0
+          for p in files:
+              pf=pd.read_parquet(p,columns=None)
+              required={'bar_time_ms','close','depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance','hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio'}
+              missing=required-set(pf.columns)
+              if missing: raise SystemExit(f'{p}: missing {sorted(missing)}')
+              rows += len(pf)
+              records.append({'path':str(p.relative_to(root)),'bytes':p.stat().st_size,'rows':len(pf),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'min_time':int(pf.bar_time_ms.min()),'max_time':int(pf.bar_time_ms.max()),'depth_nonnull':int(pf.depth_imbalance_1pct.notna().sum())})
+          manifest={'upstream_repo':'ibrahimdaud/binance-btcusdt','resolved_snapshot':str(snap),'feature_files':len(files),'rows':rows,'records':records,'usage':'discovery_only; all fwd_* columns forbidden as model inputs; promoted hypotheses require official Binance archive reconstruction'}
+          (root/'MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+          print(json.dumps({k:manifest[k] for k in ['upstream_repo','feature_files','rows','usage']},indent=2))
+          PY
+      - name: Remove outcome columns into a separate safe analysis panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd, pyarrow as pa, pyarrow.parquet as pq, hashlib, json
+          root=Path('v241-depth-features'); out=root/'safe'
+          out.mkdir(exist_ok=True)
+          cols=['bar_time_ms','symbol','close','log_ret_1m','log_ret_5m','log_ret_15m','log_ret_60m','realized_vol_30m','rsi_14','vol_5m','taker_buy_ratio_5m','trade_count_5m','avg_trade_size_5m','depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance','hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio']
+          records=[]
+          for p in sorted((root/'features'/'BTCUSDT').glob('*.parquet')):
+              d=pd.read_parquet(p,columns=cols)
+              q=out/p.name
+              d.to_parquet(q,index=False,compression='zstd')
+              records.append({'path':str(q.relative_to(root)),'sha256':hashlib.sha256(q.read_bytes()).hexdigest(),'rows':len(d)})
+          (root/'SAFE_MANIFEST.json').write_text(json.dumps({'columns':cols,'records':records},indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v241-depth-features-safe-${{ github.run_id }}
+          path: |
+            v241-depth-features/safe
+            v241-depth-features/MANIFEST.json
+            v241-depth-features/SAFE_MANIFEST.json
+            v241-depth-features/README.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
