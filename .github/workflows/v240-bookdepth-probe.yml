@@ -1,0 +1,104 @@
+name: V2.40 Official BookDepth Probe
+
+on:
+  push:
+    branches: [research/v240-bookdepth-probe]
+    paths: [.github/workflows/v240-bookdepth-probe.yml]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/v240-bookdepth-probe.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {market: um, symbol: BTCUSDT, day: '2023-06-01'}
+          - {market: um, symbol: ETHUSDT, day: '2023-06-01'}
+          - {market: cm, symbol: BTCUSD_PERP, day: '2023-06-01'}
+          - {market: cm, symbol: ETHUSD_PERP, day: '2023-06-01'}
+          - {market: um, symbol: BTCUSDT, day: '2024-03-15'}
+          - {market: um, symbol: ETHUSDT, day: '2024-03-15'}
+          - {market: cm, symbol: BTCUSD_PERP, day: '2024-03-15'}
+          - {market: cm, symbol: ETHUSD_PERP, day: '2024-03-15'}
+          - {market: um, symbol: BTCUSDT, day: '2025-01-15'}
+          - {market: um, symbol: ETHUSDT, day: '2025-01-15'}
+          - {market: cm, symbol: BTCUSD_PERP, day: '2025-01-15'}
+          - {market: cm, symbol: ETHUSD_PERP, day: '2025-01-15'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Probe, checksum and summarize one official archive
+        env:
+          MARKET: ${{ matrix.market }}
+          SYMBOL: ${{ matrix.symbol }}
+          DAY: ${{ matrix.day }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          python - <<'PY'
+          from __future__ import annotations
+          import csv, hashlib, io, json, os, urllib.error, urllib.request, zipfile
+          from pathlib import Path
+
+          market=os.environ['MARKET']; symbol=os.environ['SYMBOL']; day=os.environ['DAY']
+          name=f'{symbol}-bookDepth-{day}.zip'
+          url=f'https://data.binance.vision/data/futures/{market}/daily/bookDepth/{symbol}/{name}'
+          result={'market':market,'symbol':symbol,'day':day,'url':url,'status':'unknown'}
+          def get(u: str) -> bytes:
+              req=urllib.request.Request(u,headers={'User-Agent':'smc-v240-bookdepth/1.0'})
+              with urllib.request.urlopen(req,timeout=300) as r:
+                  return r.read()
+          try:
+              checksum_payload=get(url+'.CHECKSUM')
+              payload=get(url)
+          except urllib.error.HTTPError as exc:
+              result.update(status='not_available',http_status=exc.code,error=str(exc))
+          except Exception as exc:
+              result.update(status='error',error=repr(exc))
+          else:
+              expected=checksum_payload.decode('utf-8-sig').strip().split()[0].lower()
+              actual=hashlib.sha256(payload).hexdigest()
+              if actual!=expected:
+                  raise SystemExit(f'checksum mismatch: {actual} != {expected}')
+              result.update(status='verified',sha256=actual,archive_bytes=len(payload))
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  members=[x for x in z.namelist() if x.lower().endswith('.csv')]
+                  if len(members)!=1:
+                      raise SystemExit(f'unexpected CSV members: {members}')
+                  member=members[0]
+                  info=z.getinfo(member)
+                  result['member']=member
+                  result['uncompressed_bytes']=info.file_size
+                  first=[]; rows=0; widths={}
+                  with io.TextIOWrapper(z.open(member),encoding='utf-8-sig',newline='') as fh:
+                      reader=csv.reader(fh)
+                      for row in reader:
+                          if rows<8: first.append(row)
+                          widths[str(len(row))]=widths.get(str(len(row)),0)+1
+                          rows+=1
+                  result['rows']=rows
+                  result['column_width_counts']=widths
+                  result['first_rows']=first
+                  Path('out/sample.csv').write_text('\n'.join(','.join(r) for r in first)+'\n',encoding='utf-8')
+          Path('out/report.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+          print(json.dumps(result,indent=2,ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v240-bookdepth-${{ matrix.market }}-${{ matrix.symbol }}-${{ matrix.day }}-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 14
