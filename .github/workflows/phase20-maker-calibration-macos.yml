@@ -7,6 +7,11 @@ on:
     paths:
       - '.github/workflows/phase20-maker-calibration-macos.yml'
       - 'research/phase20_maker_calibration.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase20-maker-calibration-macos.yml'
+      - 'research/phase20_maker_calibration.py'
   workflow_dispatch:
 
 permissions:
@@ -42,7 +47,7 @@ jobs:
           mkdir -p "queue-input/${SYMBOL}"
           python - <<'PY'
           from __future__ import annotations
-          import hashlib, json, os, shutil, urllib.request
+          import hashlib, json, os, urllib.request
           from pathlib import Path
           S=os.environ['SYMBOL']
           DAYS=('2023-05-16','2023-06-10','2023-08-18','2023-11-09')
