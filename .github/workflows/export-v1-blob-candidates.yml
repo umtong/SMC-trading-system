@@ -1,0 +1,62 @@
+name: Export EasyChart V1 blob candidates
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/blob-candidate-trigger-*"
+      - ".github/workflows/export-v1-blob-candidates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+          fetch-depth: 1
+      - name: Export candidate blobs
+        shell: bash
+        run: |
+          set -u
+          mkdir -p /tmp/blob-candidates
+          candidates=(
+            e42e41f41147bedf91b2e159ef28eaea8935b1ab
+            001a5a24f851de446b3e96b7a9c81e5f5a8704e8
+            b7f1ac3b4d1da53dc4895141f97b5b0d08061a06
+            0a18cfb35e3580e55d85cda672a1d6d9b9546864
+            feb182a0c108ee52d8936661e7c49dd590554b99
+            2c8d6b88d0603ed231e2a7a1b9c3c6621a560a97
+            86b03f3f3624232d11f5f1057d67f54ba66f0857
+            e5390a4fc8f003dedc55bf9b7b2d89debdb56ea3
+            9f9e00da3da51d7bf6b816abd93206afabc4b5b9
+            1139e2260efe8a7fb79b2f903080bc5a25874a1d
+          )
+          : > /tmp/blob-candidates/status.txt
+          for sha in "${candidates[@]}"; do
+            out="/tmp/blob-candidates/${sha}.blob"
+            if gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${sha}" --jq .content 2>/tmp/blob-candidates/${sha}.err \
+              | tr -d '\n' | base64 --decode > "$out"; then
+              size="$(wc -c < "$out")"
+              actual="$(git hash-object "$out")"
+              printf 'OK %s size=%s actual=%s\n' "$sha" "$size" "$actual" | tee -a /tmp/blob-candidates/status.txt
+            else
+              rm -f "$out"
+              printf 'FAIL %s\n' "$sha" | tee -a /tmp/blob-candidates/status.txt
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-v1-blob-candidates-${{ github.run_id }}
+          path: /tmp/blob-candidates
+          if-no-files-found: error
+          retention-days: 14

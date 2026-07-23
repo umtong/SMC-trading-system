@@ -1,0 +1,121 @@
+name: EasyChart V1 verified-source preflight
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/**"
+      - ".github/workflows/easychart-v1-verified-preflight.yml"
+      - "src/ictbt/easychart_v1/**"
+      - "tests/easychart_v1/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: easychart-v1-verified-source-preflight
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+
+      - name: Verify or restore source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v1-preflight
+          expected_sha=e351a75589317526b35a244d2378c098bc53012cfeec5eff953a3a10530468c2
+          if test -f src/ictbt/easychart_v1/strategy.py; then
+            echo materialized_branch > /tmp/v1-preflight/source-mode.txt
+          else
+            echo verified_bundle > /tmp/v1-preflight/source-mode.txt
+            restore_blob() {
+              local sha="$1" target="$2"
+              gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${sha}" --jq .content \
+                | tr -d '\n' | base64 --decode > "$target"
+              test "$(git hash-object "$target")" = "$sha"
+            }
+            restore_blob e42e41f41147bedf91b2e159ef28eaea8935b1ab .github/v1-bundle/part-01
+            restore_blob 001a5a24f851de446b3e96b7a9c81e5f5a8704e8 .github/v1-bundle/part-02
+            mapfile -d '' parts < <(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 | sort -z)
+            test "${#parts[@]}" -eq 7
+            for part in "${parts[@]}"; do
+              size="$(wc -c < "$part")"
+              case "$(basename "$part")" in
+                part-06) test "$size" -eq 18640 ;;
+                *) test "$size" -eq 18642 ;;
+              esac
+            done
+            cat "${parts[@]}" > /tmp/v1-preflight/archive.b64
+            test "$(wc -c < /tmp/v1-preflight/archive.b64)" -eq 130492
+            base64 --decode /tmp/v1-preflight/archive.b64 > /tmp/v1-preflight/archive.tar.gz
+            test "$(sha256sum /tmp/v1-preflight/archive.tar.gz | awk '{print $1}')" = "$expected_sha"
+            gzip -t /tmp/v1-preflight/archive.tar.gz
+            tar -xzf /tmp/v1-preflight/archive.tar.gz
+          fi
+          test -f src/ictbt/easychart_v1/strategy.py
+          test -f src/ictbt/easychart_v1/backtest.py
+          test -f src/ictbt/easychart_v1/paper_live.py
+          test -f tests/easychart_v1/test_backtest.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install and test V0 plus V1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev]" > /tmp/v1-preflight/install.log 2>&1
+          python -m pytest tests/easychart_v0 tests/easychart_v1 -q \
+            > /tmp/v1-preflight/pytest.log 2>&1
+          python -m ictbt.easychart_v1 required-edge --trades 141 280 \
+            > /tmp/v1-preflight/required-edge.log 2>&1
+          easychart-v1 --help > /tmp/v1-preflight/cli-help.txt
+          cat /tmp/v1-preflight/pytest.log
+
+      - name: Upload preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: easychart-v1-preflight-${{ github.run_id }}
+          path: /tmp/v1-preflight/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Comment result on PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: |
+          result='failed'
+          test "${{ job.status }}" = success && result='passed'
+          {
+            echo "### EasyChart V1 verified-source preflight: ${result}"
+            echo
+            echo "Source mode: $(cat /tmp/v1-preflight/source-mode.txt 2>/dev/null || echo unknown)"
+            echo
+            tail -n 20 /tmp/v1-preflight/pytest.log 2>/dev/null || true
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo 'This verifies source custody and execution contracts only; it does not prove the 990/1000 five-times profitability gate.'
+          } > /tmp/v1-preflight-comment.md
+          gh pr comment 8 --body-file /tmp/v1-preflight-comment.md

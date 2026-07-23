@@ -1,0 +1,48 @@
+name: Export EasyChart V1 bundle
+
+on:
+  push:
+    branches:
+      - agent/easychart-v1-robust-growth-gate
+    paths:
+      - ".github/v1-bundle/export-trigger-*"
+      - ".github/workflows/export-v1-bundle.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/export-trigger-*"
+      - ".github/workflows/export-v1-bundle.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+          fetch-depth: 1
+      - name: Export exact bundle parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v1-export
+          cp .github/v1-bundle/part-* /tmp/v1-export/
+          wc -c /tmp/v1-export/part-* | tee /tmp/v1-export/sizes.txt
+          sha256sum /tmp/v1-export/part-* | tee /tmp/v1-export/parts.sha256
+          cat /tmp/v1-export/part-* > /tmp/v1-export/easychart-v1.tar.gz.b64
+          base64 --decode /tmp/v1-export/easychart-v1.tar.gz.b64 > /tmp/v1-export/easychart-v1.tar.gz || true
+          sha256sum /tmp/v1-export/easychart-v1.tar.gz | tee /tmp/v1-export/archive.sha256
+          gzip -t /tmp/v1-export/easychart-v1.tar.gz && echo gzip_ok > /tmp/v1-export/gzip.status || echo gzip_failed > /tmp/v1-export/gzip.status
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-v1-exact-bundle-${{ github.run_id }}
+          path: /tmp/v1-export
+          if-no-files-found: error
+          retention-days: 14

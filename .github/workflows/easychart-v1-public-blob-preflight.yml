@@ -1,0 +1,88 @@
+name: EasyChart V1 public-blob preflight
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/v1-bundle/**"
+      - ".github/workflows/easychart-v1-public-blob-preflight.yml"
+      - "src/ictbt/easychart_v1/**"
+      - "tests/easychart_v1/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: easychart-v1-public-blob-preflight
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+
+      - name: Restore and verify source without authenticated GitHub API
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v1-public-preflight
+          if test -f src/ictbt/easychart_v1/strategy.py; then
+            echo materialized_branch > /tmp/v1-public-preflight/source-mode.txt
+            exit 0
+          fi
+          echo verified_public_blobs > /tmp/v1-public-preflight/source-mode.txt
+          restore() {
+            local sha="$1" target="$2"
+            curl --fail --silent --show-error --location \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs/${sha}" \
+              | jq -r .content | tr -d '\n' | base64 --decode > "$target"
+            test "$(git hash-object "$target")" = "$sha"
+          }
+          restore e42e41f41147bedf91b2e159ef28eaea8935b1ab .github/v1-bundle/part-01
+          restore 001a5a24f851de446b3e96b7a9c81e5f5a8704e8 .github/v1-bundle/part-02
+          mapfile -d '' parts < <(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 | sort -z)
+          test "${#parts[@]}" -eq 7
+          for part in "${parts[@]}"; do
+            size="$(wc -c < "$part")"
+            case "$(basename "$part")" in
+              part-06) test "$size" -eq 18640 ;;
+              *) test "$size" -eq 18642 ;;
+            esac
+          done
+          cat "${parts[@]}" > /tmp/v1-public-preflight/archive.b64
+          test "$(wc -c < /tmp/v1-public-preflight/archive.b64)" -eq 130492
+          base64 --decode /tmp/v1-public-preflight/archive.b64 > /tmp/v1-public-preflight/archive.tar.gz
+          echo 'e351a75589317526b35a244d2378c098bc53012cfeec5eff953a3a10530468c2  /tmp/v1-public-preflight/archive.tar.gz' | sha256sum -c -
+          gzip -t /tmp/v1-public-preflight/archive.tar.gz
+          tar -xzf /tmp/v1-public-preflight/archive.tar.gz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install and execute complete regression contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e '.[dev]' > /tmp/v1-public-preflight/install.log 2>&1
+          python -m pytest tests/easychart_v0 tests/easychart_v1 -q > /tmp/v1-public-preflight/pytest.log 2>&1
+          python -m ictbt.easychart_v1 required-edge --trades 141 280 > /tmp/v1-public-preflight/required-edge.log 2>&1
+          easychart-v1 --help > /tmp/v1-public-preflight/cli-help.txt
+          cat /tmp/v1-public-preflight/pytest.log
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: easychart-v1-public-blob-preflight-${{ github.run_id }}
+          path: /tmp/v1-public-preflight/**
+          if-no-files-found: warn
+          retention-days: 14

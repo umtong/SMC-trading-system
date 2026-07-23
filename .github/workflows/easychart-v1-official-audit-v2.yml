@@ -1,0 +1,301 @@
+name: EasyChart V1 verified official-data audit
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/v1-bundle/**"
+      - ".github/workflows/easychart-v1-official-audit-v2.yml"
+      - "src/ictbt/easychart_v1/**"
+      - "tests/easychart_v1/**"
+      - "scripts/download_binance_vision_5m.py"
+      - "scripts/run_easychart_v1_random_validation.py"
+      - "scripts/optimize_easychart_v1_until_promotion.py"
+      - "configs/easychart_v1/**"
+  push:
+    branches:
+      - agent/easychart-v1-robust-growth-gate
+    paths:
+      - ".github/workflows/easychart-v1-official-audit-v2.yml"
+      - "src/ictbt/easychart_v1/**"
+      - "tests/easychart_v1/**"
+      - "scripts/download_binance_vision_5m.py"
+      - "scripts/run_easychart_v1_random_validation.py"
+      - "scripts/optimize_easychart_v1_until_promotion.py"
+      - "configs/easychart_v1/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: easychart-v1-verified-official-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: agent/easychart-v1-robust-growth-gate
+
+      - name: Prepare verified source tree when not yet materialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/easychart_v1_official_audit
+          diagnostic=results/easychart_v1_official_audit/source-preparation.txt
+          expected_sha=e351a75589317526b35a244d2378c098bc53012cfeec5eff953a3a10530468c2
+          if test -f src/ictbt/easychart_v1/strategy.py; then
+            echo "source_mode=materialized_branch" | tee "$diagnostic"
+            exit 0
+          fi
+
+          echo "source_mode=verified_bundle" | tee "$diagnostic"
+          test -d .github/v1-bundle
+          restore_blob() {
+            local sha="$1"
+            local target="$2"
+            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${sha}" --jq .content \
+              | tr -d '\n' \
+              | base64 --decode > "$target"
+            actual="$(git hash-object "$target")"
+            printf 'blob %s expected=%s actual=%s\n' "$target" "$sha" "$actual" | tee -a "$diagnostic"
+            test "$actual" = "$sha"
+          }
+          restore_blob e42e41f41147bedf91b2e159ef28eaea8935b1ab .github/v1-bundle/part-01
+          restore_blob 001a5a24f851de446b3e96b7a9c81e5f5a8704e8 .github/v1-bundle/part-02
+
+          mapfile -d '' parts < <(find .github/v1-bundle -maxdepth 1 -type f -name 'part-*' -print0 | sort -z)
+          printf 'part_count=%s\n' "${#parts[@]}" | tee -a "$diagnostic"
+          test "${#parts[@]}" -eq 7
+          for part in "${parts[@]}"; do
+            size="$(wc -c < "$part")"
+            printf 'part %s bytes=%s\n' "$part" "$size" | tee -a "$diagnostic"
+            case "$(basename "$part")" in
+              part-06) test "$size" -eq 18640 ;;
+              *) test "$size" -eq 18642 ;;
+            esac
+          done
+          cat "${parts[@]}" > /tmp/easychart-v1.tar.gz.b64
+          test "$(wc -c < /tmp/easychart-v1.tar.gz.b64)" -eq 130492
+          base64 --decode /tmp/easychart-v1.tar.gz.b64 > /tmp/easychart-v1.tar.gz
+          actual_sha="$(sha256sum /tmp/easychart-v1.tar.gz | awk '{print $1}')"
+          printf 'archive expected=%s actual=%s\n' "$expected_sha" "$actual_sha" | tee -a "$diagnostic"
+          test "$actual_sha" = "$expected_sha"
+          gzip -t /tmp/easychart-v1.tar.gz
+          tar -tzf /tmp/easychart-v1.tar.gz > results/easychart_v1_official_audit/archive-files.txt
+          for required in \
+            README.md \
+            pyproject.toml \
+            src/ictbt/easychart_v1/strategy.py \
+            src/ictbt/easychart_v1/features.py \
+            src/ictbt/easychart_v1/backtest.py \
+            src/ictbt/easychart_v1/validation.py \
+            src/ictbt/easychart_v1/paper_live.py \
+            src/ictbt/easychart_v1/live_app.py \
+            src/ictbt/easychart_v1/market_data.py \
+            tests/easychart_v1/test_backtest.py \
+            configs/easychart_v1/promotion_gate.json \
+            scripts/download_binance_vision_5m.py \
+            scripts/run_easychart_v1_random_validation.py \
+            scripts/optimize_easychart_v1_until_promotion.py; do
+            grep -qx "$required" results/easychart_v1_official_audit/archive-files.txt
+          done
+          tar -xzf /tmp/easychart-v1.tar.gz
+          echo "source_verified=true" | tee -a "$diagnostic"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install candidate and record environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev]" 2>&1 \
+            | tee results/easychart_v1_official_audit/install.log
+          python --version | tee results/easychart_v1_official_audit/python-version.txt
+          python -m pip freeze | sort > results/easychart_v1_official_audit/pip-freeze.txt
+          git rev-parse HEAD > results/easychart_v1_official_audit/branch-head.txt
+          sha256sum configs/easychart_v1/*.json \
+            > results/easychart_v1_official_audit/config-sha256.txt
+
+      - name: Run V0 and V1 regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest tests/easychart_v0 tests/easychart_v1 -q 2>&1 \
+            | tee results/easychart_v1_official_audit/pytest.log
+          python -m ictbt.easychart_v1 required-edge --trades 141 280 2>&1 \
+            | tee results/easychart_v1_official_audit/required-edge.log
+
+      - name: Record executable command contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/download_binance_vision_5m.py --help \
+            > results/easychart_v1_official_audit/download-help.txt
+          python scripts/run_easychart_v1_random_validation.py --help \
+            > results/easychart_v1_official_audit/validation-help.txt
+          python scripts/optimize_easychart_v1_until_promotion.py --help \
+            > results/easychart_v1_official_audit/optimizer-help.txt
+
+      - name: Restore official market-data cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/easychart_v1_official
+            data/binance_vision
+            data/s4_continuous_2021_2026
+          key: easychart-v1-binance-vision-2022-2026-v3
+
+      - name: Acquire and verify official Binance public data
+        id: acquire
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          status=0
+          python scripts/download_binance_vision_5m.py 2>&1 \
+            | tee results/easychart_v1_official_audit/download.log || status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > results/easychart_v1_official_audit/download-status.txt
+          df -h > results/easychart_v1_official_audit/disk-after-download.txt
+          find data -maxdepth 6 -type f -printf '%s %p\n' 2>/dev/null \
+            | sort -k2 > results/easychart_v1_official_audit/data-files.txt
+          exit "$status"
+
+      - name: Run sealed 1,000-sample 2022-2026 audit
+        id: sealed_audit
+        if: steps.acquire.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          status=0
+          python scripts/run_easychart_v1_random_validation.py 2>&1 \
+            | tee results/easychart_v1_official_audit/validation.log || status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > results/easychart_v1_official_audit/validation-status.txt
+          exit "$status"
+
+      - name: Run bounded checkpoint optimizer after a failed audit
+        id: optimizer
+        if: steps.acquire.outcome == 'success' && steps.sealed_audit.outcome != 'success'
+        continue-on-error: true
+        timeout-minutes: 240
+        shell: bash
+        run: |
+          set +e
+          status=0
+          timeout --signal=INT --kill-after=30s 13800s \
+            python scripts/optimize_easychart_v1_until_promotion.py 2>&1 \
+            | tee results/easychart_v1_official_audit/optimizer.log || status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > results/easychart_v1_official_audit/optimizer-status.txt
+          exit 0
+
+      - name: Summarize machine-readable audit evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path('results')
+          out = Path('results/easychart_v1_official_audit')
+          out.mkdir(parents=True, exist_ok=True)
+          interesting = (
+              'trial', 'sample', 'pass', 'promot', 'five', '5x', 'equity',
+              'return', 'trade', 'drawdown', 'risk', 'slot', 'profit_factor',
+              'average_net_r', 'seed', 'manifest', 'sha256', 'failure',
+          )
+          records: list[dict[str, object]] = []
+          for path in sorted(root.rglob('*.json')):
+              try:
+                  payload = json.loads(path.read_text(encoding='utf-8-sig'))
+              except Exception as exc:
+                  records.append({'path': str(path), 'parse_error': repr(exc)})
+                  continue
+              selected: dict[str, object] = {}
+              stack = [('', payload)]
+              while stack:
+                  prefix, value = stack.pop()
+                  if isinstance(value, dict):
+                      for key, child in value.items():
+                          name = f'{prefix}.{key}' if prefix else str(key)
+                          stack.append((name, child))
+                  elif isinstance(value, list):
+                      if len(value) <= 10:
+                          selected[prefix] = value
+                      else:
+                          selected[prefix + '.__len__'] = len(value)
+                  elif any(token in prefix.lower() for token in interesting):
+                      selected[prefix] = value
+              records.append({'path': str(path), 'selected': selected})
+          (out / 'json-evidence-index.json').write_text(
+              json.dumps(records, ensure_ascii=False, indent=2, default=str),
+              encoding='utf-8',
+          )
+          lines = ['# EasyChart V1 official audit status', '']
+          for name in ('download-status.txt', 'validation-status.txt', 'optimizer-status.txt'):
+              path = out / name
+              lines.append(f'- {name}: {path.read_text().strip() if path.exists() else "not-run"}')
+          lines += ['', f'- indexed_json_files: {len(records)}']
+          (out / 'STATUS.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print((out / 'STATUS.md').read_text())
+          PY
+
+      - name: Comment concise status on draft PR
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        run: |
+          {
+            echo '### V1 official-data audit run'
+            echo
+            cat results/easychart_v1_official_audit/STATUS.md 2>/dev/null || true
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo 'A successful workflow is not itself a profitability claim; the uploaded JSON ledger and sealed gate determine promotion.'
+          } > /tmp/pr-comment.md
+          gh pr comment 8 --body-file /tmp/pr-comment.md
+
+      - name: Upload complete audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: easychart-v1-verified-official-audit-${{ github.run_id }}
+          path: |
+            results/easychart_v1_official_audit/**
+            results/easychart_v1*/**
+            artifacts/strategy_composition_2026_07_20/**
+            configs/easychart_v1/**
+            data/**/*manifest*
+            data/**/*.sha256
+            data/**/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when acquisition or sealed audit did not pass
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ steps.acquire.outcome }}" = success
+          test "${{ steps.sealed_audit.outcome }}" = success

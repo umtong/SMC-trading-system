@@ -1,0 +1,157 @@
+name: Export official BTC ETH 1m market data
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/market-data-1m-trigger-*"
+      - ".github/workflows/export-official-market-data-1m.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/easychart-v1-robust-growth-gate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/easychart-v1-robust-growth-gate
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install pandas pyarrow
+      - name: Download checksum-verified Binance Vision USD-M 1m data
+        id: download
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          mkdir -p /tmp/official-market-data-1m
+          python - <<'PY' > /tmp/official-market-data-1m/download.log 2>&1
+          from __future__ import annotations
+          import calendar, hashlib, io, json, urllib.error, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+
+          OUT=Path('/tmp/official-market-data-1m')
+          BASE='https://data.binance.vision/data/futures/um'
+          SYMBOLS=('BTCUSDT','ETHUSDT')
+          MONTHS=[(y,m) for y in range(2022,2027) for m in range(1,13) if (y,m)<=(2026,6)]
+          COLS=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_base','taker_buy_quote','ignore']
+          manifest={'schema':'ictbt.official_market_data.v1','source':'Binance Vision USD-M','dataset':'contract klines','timeframe':'1m','range':['2022-01-01T00:00:00Z','2026-07-01T00:00:00Z'],'files':[],'outputs':{},'gaps':{}}
+
+          def fetch(url):
+              req=urllib.request.Request(url,headers={'User-Agent':'SMC-research/2.0'})
+              with urllib.request.urlopen(req,timeout=240) as response:
+                  return response.read()
+
+          def verified_zip(url):
+              payload=fetch(url)
+              actual=hashlib.sha256(payload).hexdigest()
+              expected=None
+              try:
+                  expected=fetch(url+'.CHECKSUM').decode('utf-8',errors='replace').strip().split()[0].lower()
+                  if actual!=expected:
+                      raise RuntimeError(f'checksum mismatch {url} expected={expected} actual={actual}')
+              except urllib.error.HTTPError as exc:
+                  if exc.code!=404: raise
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  bad=archive.testzip()
+                  if bad is not None: raise RuntimeError(f'zip CRC failure {url}: {bad}')
+              return payload,actual,expected
+
+          def parse(payload,source):
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  names=[n for n in archive.namelist() if n.lower().endswith('.csv')]
+                  if len(names)!=1: raise RuntimeError(f'unexpected CSV members {source}: {names}')
+                  raw=archive.read(names[0])
+              frame=pd.read_csv(io.BytesIO(raw),header=None,names=COLS,low_memory=False)
+              numeric=pd.to_numeric(frame['open_time'],errors='coerce')
+              frame=frame.loc[numeric.notna()].copy()
+              frame['open_time']=numeric.loc[numeric.notna()].astype('int64')
+              for col in ('open','high','low','close','volume','quote_volume','taker_buy_base','taker_buy_quote'):
+                  frame[col]=pd.to_numeric(frame[col],errors='raise').astype('float64')
+              for col in ('close_time','trades'):
+                  frame[col]=pd.to_numeric(frame[col],errors='raise').astype('int64')
+              frame['timestamp']=pd.to_datetime(frame['open_time'],unit='ms',utc=True)
+              return frame[['timestamp','open','high','low','close','volume','quote_volume','trades','taker_buy_base','taker_buy_quote','open_time','close_time']]
+
+          def monthly_url(symbol,y,m):
+              ym=f'{y:04d}-{m:02d}'; name=f'{symbol}-1m-{ym}.zip'
+              return f'{BASE}/monthly/klines/{symbol}/1m/{name}'
+
+          def daily_url(symbol,day):
+              ds=day.strftime('%Y-%m-%d'); name=f'{symbol}-1m-{ds}.zip'
+              return f'{BASE}/daily/klines/{symbol}/1m/{name}'
+
+          start=pd.Timestamp('2022-01-01',tz='UTC'); end=pd.Timestamp('2026-07-01',tz='UTC')
+          for symbol in SYMBOLS:
+              frames=[]
+              for y,m in MONTHS:
+                  ym=f'{y:04d}-{m:02d}'; url=monthly_url(symbol,y,m)
+                  try:
+                      payload,actual,expected=verified_zip(url)
+                      frame=parse(payload,url)
+                      manifest['files'].append({'kind':'monthly','symbol':symbol,'period':ym,'url':url,'sha256':actual,'checksum_sha256':expected,'bytes':len(payload),'rows':len(frame)})
+                      frames.append(frame)
+                      print('monthly',symbol,ym,len(frame),actual[:12],flush=True)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code!=404: raise
+                      for day_num in range(1,calendar.monthrange(y,m)[1]+1):
+                          day=pd.Timestamp(year=y,month=m,day=day_num,tz='UTC'); durl=daily_url(symbol,day)
+                          payload,actual,expected=verified_zip(durl); frame=parse(payload,durl)
+                          manifest['files'].append({'kind':'daily_fallback','symbol':symbol,'period':day.strftime('%Y-%m-%d'),'url':durl,'sha256':actual,'checksum_sha256':expected,'bytes':len(payload),'rows':len(frame)})
+                          frames.append(frame)
+              merged=pd.concat(frames,ignore_index=True).sort_values('timestamp').drop_duplicates('timestamp',keep='last')
+              merged=merged.loc[(merged.timestamp>=start)&(merged.timestamp<end)].reset_index(drop=True)
+              expected_index=pd.date_range(start,end-pd.Timedelta(minutes=1),freq='1min',tz='UTC')
+              missing=expected_index.difference(pd.DatetimeIndex(merged.timestamp))
+              if len(missing):
+                  patches=[]
+                  for day in sorted({ts.normalize() for ts in missing}):
+                      durl=daily_url(symbol,day)
+                      try: payload,actual,checksum=verified_zip(durl)
+                      except urllib.error.HTTPError as exc:
+                          if exc.code==404: continue
+                          raise
+                      patch=parse(payload,durl); patches.append(patch)
+                      manifest['files'].append({'kind':'daily_gap_patch','symbol':symbol,'period':day.strftime('%Y-%m-%d'),'url':durl,'sha256':actual,'checksum_sha256':checksum,'bytes':len(payload),'rows':len(patch)})
+                  if patches:
+                      merged=pd.concat([merged,*patches],ignore_index=True).sort_values('timestamp').drop_duplicates('timestamp',keep='last').reset_index(drop=True)
+                  missing=expected_index.difference(pd.DatetimeIndex(merged.timestamp))
+              manifest['gaps'][symbol]={'count':len(missing),'first_100':[x.isoformat() for x in missing[:100]]}
+              if len(missing): raise RuntimeError(f'{symbol} has {len(missing)} unresolved 1m gaps')
+              if merged.timestamp.duplicated().any() or not merged.timestamp.is_monotonic_increasing: raise RuntimeError(f'{symbol} timestamp integrity failure')
+              merged.insert(1,'symbol',symbol)
+              out=OUT/f'{symbol}_contract_1m_2022-01_2026-06.parquet'
+              merged.to_parquet(out,index=False,compression='zstd')
+              manifest['outputs'][out.name]={'sha256':hashlib.sha256(out.read_bytes()).hexdigest(),'bytes':out.stat().st_size,'rows':len(merged),'start':merged.timestamp.iloc[0].isoformat(),'end':merged.timestamp.iloc[-1].isoformat()}
+              print('output',out.name,manifest['outputs'][out.name],flush=True)
+          manifest_path=OUT/'manifest.json'; manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+          (OUT/'MANIFEST_SHA256').write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest()+'  manifest.json\n',encoding='utf-8')
+          PY
+          status=$?
+          cat /tmp/official-market-data-1m/download.log
+          echo "$status" > /tmp/official-market-data-1m/download.status
+          exit "$status"
+      - name: Upload official 1m data and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-btc-eth-contract-1m-2022-2026-${{ github.run_id }}
+          path: /tmp/official-market-data-1m
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Preserve download failure
+        if: always()
+        shell: bash
+        run: |
+          status="$(cat /tmp/official-market-data-1m/download.status 2>/dev/null || echo 1)"
+          test "$status" -eq 0
