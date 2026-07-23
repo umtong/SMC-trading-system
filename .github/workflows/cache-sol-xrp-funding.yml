@@ -1,0 +1,79 @@
+name: Cache SOL XRP Official USD-M Funding
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-sol-xrp-funding.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-funding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Download and verify funding archives
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p sol-xrp-funding
+          python - <<'PY' 2>&1 | tee sol-xrp-funding/build.log
+          from __future__ import annotations
+          import hashlib, io, json, traceback, zipfile
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT=Path('sol-xrp-funding')
+          START=pd.Timestamp('2021-12-01T00:00:00Z')
+          END=pd.Timestamp('2025-07-01T00:00:00Z')
+          BASE='https://data.binance.vision/data/futures/um/monthly/fundingRate'
+          session=requests.Session(); session.headers['User-Agent']='SMC-funding-cache/1.0'
+          manifest={'source':'official Binance Vision USD-M fundingRate','start':START.isoformat(),'end_exclusive':END.isoformat(),'symbols':{}}
+          try:
+              for symbol in ('SOLUSDT','XRPUSDT'):
+                  frames=[];archives=[]
+                  for period in pd.period_range('2021-12','2025-06',freq='M'):
+                      stamp=str(period);name=f'{symbol}-fundingRate-{stamp}.zip';url=f'{BASE}/{symbol}/{name}'
+                      cr=session.get(url+'.CHECKSUM',timeout=(30,120));cr.raise_for_status();expected=cr.text.strip().split()[0].lower()
+                      ar=session.get(url,timeout=(30,300));ar.raise_for_status();payload=ar.content;actual=hashlib.sha256(payload).hexdigest()
+                      if actual!=expected:raise RuntimeError(f'{name}: checksum mismatch')
+                      with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                          names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+                          if len(names)!=1:raise RuntimeError(f'{name}: CSV entries={names}')
+                          raw=zf.read(names[0])
+                      df=pd.read_csv(io.BytesIO(raw));df.columns=[str(c).strip().lower().replace(' ','_') for c in df.columns]
+                      aliases={'fundingtime':'funding_time','calctime':'calc_time','lastfundingrate':'last_funding_rate','fundingrate':'funding_rate','markprice':'mark_price'}
+                      df=df.rename(columns={c:aliases.get(c,c) for c in df.columns})
+                      tcol=next((c for c in ('funding_time','calc_time','timestamp','time') if c in df.columns),None)
+                      rcol=next((c for c in ('funding_rate','last_funding_rate','rate') if c in df.columns),None)
+                      if tcol is None or rcol is None:raise RuntimeError(f'{name}: schema={list(df.columns)}')
+                      raw_t=pd.to_numeric(df[tcol],errors='raise');med=float(raw_t.abs().median());unit='us' if med>1e14 else 'ms' if med>1e11 else 's'
+                      out=pd.DataFrame({'timestamp':pd.to_datetime(raw_t,unit=unit,utc=True,errors='raise'),'funding_rate':pd.to_numeric(df[rcol],errors='raise')})
+                      if 'mark_price' in df.columns:out['mark_price']=pd.to_numeric(df['mark_price'],errors='raise')
+                      frames.append(out);archives.append({'period':stamp,'url':url,'bytes':len(payload),'sha256':actual,'rows':len(out),'timestamp_unit':unit,'columns':list(df.columns)})
+                      print('OK',symbol,stamp,len(out),unit,list(df.columns),flush=True)
+                  data=pd.concat(frames,ignore_index=True);data=data[(data.timestamp>=START)&(data.timestamp<END)].sort_values('timestamp').reset_index(drop=True)
+                  if data.timestamp.duplicated().any():raise RuntimeError(f'{symbol}: duplicate funding timestamps')
+                  path=OUT/f'{symbol}_funding_preholdout.parquet';data.to_parquet(path,index=False,compression='zstd')
+                  manifest['symbols'][symbol]={'rows':len(data),'start':data.timestamp.iloc[0].isoformat(),'end':data.timestamp.iloc[-1].isoformat(),'path':str(path),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'archives':archives}
+              (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          except Exception:
+              (OUT/'failure.txt').write_text(traceback.format_exc(),encoding='utf-8');traceback.print_exc();raise
+          PY
+      - name: Upload funding cache or diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-official-funding-${{ github.run_id }}
+          path: sol-xrp-funding/**
+          retention-days: 7
+          if-no-files-found: error
