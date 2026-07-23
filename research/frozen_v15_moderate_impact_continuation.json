@@ -1,0 +1,75 @@
+{
+  "candidate_id": "v15_moderate_impact_continuation_v1",
+  "status": "FROZEN_BEFORE_2024_OOS",
+  "frozen_at_utc": "2026-07-23T12:15:00Z",
+  "evaluator_sha256": "1835e648705e6b75fd399d25ee0e4dee1de63eea862384705be5dbd01d050c3d",
+  "discovery_data": {
+    "venue": "Binance USD-M perpetual futures public archive",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "start_inclusive": "2023-07-01T00:00:00Z",
+    "end_exclusive": "2024-01-01T00:00:00Z",
+    "sources": ["1m klines", "1m markPriceKlines", "aggTrades first 10 seconds of each quarter-hour"],
+    "checksum_required": true,
+    "missing_reference_minutes": "drop and start a new causal segment; never impute"
+  },
+  "economic_hypothesis": "Moderate aggressive flow with unusually high contemporaneous price impact is more likely informed repricing and continues for several hours; extreme imbalance is excluded because it is more consistent with liquidation/exhaustion.",
+  "signal": {
+    "decision_time": "quarter-hour boundary plus completion of the first 10 seconds",
+    "entry": "first actual aggregate trade after the first 10 seconds",
+    "absolute_imbalance_lower_inclusive": 0.30,
+    "absolute_imbalance_upper_exclusive": 0.40,
+    "minimum_prior_only_signal_quote_volume_z": 1.0,
+    "impact_efficiency": "opening_return * sign(imbalance) / max(abs(imbalance), 0.05)",
+    "minimum_prior_only_impact_z": 1.5,
+    "impact_z_window_events": 1920,
+    "minimum_impact_prior_events": 960,
+    "require_opening_return_direction_equals_imbalance_direction": true,
+    "side": "sign(imbalance)",
+    "same_time_priority": "descending impact_z + abs(imbalance), then BTCUSDT before ETHUSDT"
+  },
+  "execution": {
+    "global_pending_plus_open_limit": 1,
+    "maximum_holding_minutes": 480,
+    "fixed_protective_stop_fraction": 0.03,
+    "profit_target": null,
+    "cross_segment_trade": false,
+    "screening_stop_policy": "minute high/low with adverse bar-open gap; exact candidate-day aggTrade replay required after an OOS pass"
+  },
+  "cost_stress_all_in_bps": [13, 20, 30],
+  "comparison_risk_fraction": 0.01,
+  "discovery_evidence_at_20bps": {
+    "trades": 55,
+    "net_r": 8.167356309183265,
+    "expectancy_r": 0.14849738743969573,
+    "profit_factor": 2.0191102518769153,
+    "terminal_multiple_at_1pct_risk": 1.0837232810620119,
+    "max_drawdown_at_1pct_risk": -0.01567149204675089,
+    "positive_month_ratio": 0.8333333333333334,
+    "btc_net_r": 3.4228478531741686,
+    "eth_net_r": 4.744508456009097,
+    "protective_stops": 1
+  },
+  "selection_disclosure": {
+    "theory_driven_rule_cells_screened": 858,
+    "robust_neighborhood": "positive results were observed around imbalance bands 0.25-0.50, volume-z 0-1, impact-z 1.5-2.0, horizons 240-720 minutes, and stops 3-5%; the frozen rule uses the narrower 0.30-0.40 band and 3% stop",
+    "period_split": "required positive aggregate result in both 2023Q3 and 2023Q4, both symbols positive over H2, and positive 30bp stress",
+    "not_claimed": "discovery is exposed and multiple-testing affected; only the one-shot 2024 OOS can promote it"
+  },
+  "oos_policy": {
+    "first_unopened_period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "no_parameter_changes_after_open": true,
+    "minimum_requirements_at_20bps": {
+      "trades_at_least": 30,
+      "expectancy_r_greater_than": 0.0,
+      "profit_factor_at_least": 1.1,
+      "terminal_multiple_at_1pct_risk_greater_than": 1.0,
+      "btc_net_r_greater_than": 0.0,
+      "eth_net_r_greater_than": 0.0,
+      "positive_month_ratio_at_least": 0.5
+    },
+    "severe_cost_30bps_net_r_greater_than": 0.0,
+    "result_if_failed": "reject without refitting on 2024",
+    "result_if_passed": "exact candidate-day aggTrade protective-stop replay, then untouched 2025 holdout"
+  },
+  "paper_or_live_authority": false
+}
