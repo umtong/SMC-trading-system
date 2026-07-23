@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   export-public-2025:
@@ -27,12 +29,14 @@ jobs:
           path: .cache/v24_public
           key: v24-binance-spot-futures-minute-2025-2026jan-btc-eth-v2
       - name: Export corrected official public inputs
+        id: export
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          set -o pipefail
           rm -rf artifacts/v24-public-2025
           mkdir -p artifacts/v24-public-2025
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee artifacts-v24-public-push.log
           from concurrent.futures import ThreadPoolExecutor,as_completed
           from pathlib import Path
           import hashlib,json,re,zipfile
@@ -87,12 +91,28 @@ jobs:
                   d=frame.open_time.diff();frame['segment_id']=(d.isna()|d.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
                   p=out/f'{s}_{kind}_1m.csv.gz';frame.to_csv(p,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
                   summaries.append({'symbol':s,'kind':kind,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(p),'bytes':p.stat().st_size})
-          (out/'summary.json').write_text(json.dumps(summaries,indent=2),encoding='utf-8')
-          print(json.dumps(summaries,indent=2))
+          (out/'summary.json').write_text(json.dumps(summaries,indent=2),encoding='utf-8');print(json.dumps(summaries,indent=2))
           PY
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: v24-frozen-2025-public-push-${{ github.run_id }}
-          path: artifacts/v24-public-2025
-          if-no-files-found: error
+          path: |
+            artifacts/v24-public-2025
+            artifacts-v24-public-push.log
+          if-no-files-found: warn
           retention-days: 30
+      - name: Publish run locator
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: gh pr comment 77 --repo umtong/SMC-trading-system --body "## V24 frozen public push\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- artifact: \`v24-frozen-2025-public-push-${GITHUB_RUN_ID}\`\n\n_Data-only repair; candidate unchanged._"
+      - name: Preserve failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
