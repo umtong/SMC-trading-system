@@ -1,0 +1,80 @@
+name: V12 liquidity shock discovery
+
+on:
+  push:
+    branches:
+      - research/v12-discovery-20260723
+    paths:
+      - 'research/v12_liquidity_shock_bundle.tgz.b64'
+      - '.github/workflows/v12-liquidity-shock-discovery.yml'
+  pull_request:
+    paths:
+      - 'research/v12_liquidity_shock_bundle.tgz.b64'
+      - '.github/workflows/v12-liquidity-shock-discovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery-2023:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore V12 research source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode research/v12_liquidity_shock_bundle.tgz.b64 > /tmp/v12_liquidity_shock.tgz
+          echo '746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89  /tmp/v12_liquidity_shock.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/v12_liquidity_shock.tgz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache checksum-verified Binance archives
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance
+          key: v12-binance-um-2023-btc-eth-v1
+
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pip numpy pandas requests pytest
+
+      - name: Run causal core tests
+        working-directory: research/v12_liquidity_shock
+        run: pytest -q
+
+      - name: Run 2023 BTC/ETH frozen discovery screen
+        working-directory: research/v12_liquidity_shock
+        run: |
+          python run_discovery.py \
+            --start 2023-01-01 \
+            --end 2024-01-01 \
+            --cache ../../.cache/v12_binance \
+            --output ../../research_outputs/v12_2023
+
+      - name: Publish verdict in job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f research_outputs/v12_2023/verdict.json ]]; then
+            echo '## V12 2023 discovery verdict' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat research_outputs/v12_2023/verdict.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-liquidity-shock-discovery-2023
+          path: |
+            research_outputs/v12_2023
+            research/v12_liquidity_shock
+          if-no-files-found: error
+          retention-days: 30
