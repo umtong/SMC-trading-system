@@ -1,0 +1,130 @@
+name: v0.27.1 canonical 4k transport scout
+
+on:
+  pull_request:
+    paths:
+      - 'research/v0271_bundle_v2/**'
+      - '.github/workflows/v0271-scout-pr3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ARCHIVE_SHA256: e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9
+  PLAN_FILE_SHA256: 723245a408b66808b588be329a1a2cb2f563aaedad260455f4d6626f01f559b1
+  PLAN_PAYLOAD_SHA256: c0cf8dacfdcc5474fd58f7570bb18a875481371658ed02ade3e2c0a5d2815f8f
+  SOURCE_MANIFEST_SHA256: 9de4136de0c0bb74c8bc3d5cdf7ab235040a56e5e81568e3fee1ffd3a4968a11
+
+jobs:
+  scout:
+    runs-on: ubuntu-slim
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and verify exact locked runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v0271 evidence
+          python - <<'PY' | tee evidence/reconstruction.json
+          import base64, hashlib, json
+          from pathlib import Path
+
+          root = Path('research/v0271_bundle_v2')
+          manifest = json.loads((root / 'TRANSPORT_MANIFEST.json').read_text())
+          assert manifest['schema_version'] == 2
+          assert manifest['study_id'] == 'quarter_hour_component_rotation_v0_27_1'
+          assert manifest['part_count'] == len(manifest['parts']) == 9
+          assert manifest['candidate_pnl_observed'] is False
+          assert manifest['terminal_holdout_opened'] is False
+          assert manifest['production_enabled'] is False
+
+          encoded = []
+          records = []
+          for item in manifest['parts']:
+              path = root / item['name']
+              raw = path.read_bytes()
+              actual = hashlib.sha256(raw).hexdigest()
+              assert actual == item['sha256'], (item['name'], actual, item['sha256'])
+              text = raw.decode('ascii')
+              assert len(raw) == item['bytes']
+              assert len(text) == item['characters']
+              assert not any(ch.isspace() for ch in text)
+              encoded.append(text)
+              records.append({'name': item['name'], 'bytes': len(raw), 'sha256': actual})
+
+          archive = base64.b64decode(''.join(encoded), validate=True)
+          archive_sha = hashlib.sha256(archive).hexdigest()
+          assert archive_sha == manifest['archive_sha256'] == 'e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9'
+          assert len(archive) == manifest['archive_bytes'] == 25084
+          Path('/tmp/v0271_locked_runner.tar.xz').write_bytes(archive)
+          print(json.dumps({'archive_sha256': archive_sha, 'archive_bytes': len(archive), 'parts': records}, sort_keys=True, indent=2))
+          PY
+          echo "${ARCHIVE_SHA256}  /tmp/v0271_locked_runner.tar.xz" | sha256sum -c -
+          xz -t /tmp/v0271_locked_runner.tar.xz
+          tar -xJf /tmp/v0271_locked_runner.tar.xz -C v0271
+          echo "${PLAN_FILE_SHA256}  v0271/artifacts/v027/research_plan_locked.json" | sha256sum -c -
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v0271/requirements-lock.txt
+
+      - name: Verify frozen research closure
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p evidence
+          python - <<'PY' | tee evidence/preregistration.json
+          import hashlib, json, os
+          from pathlib import Path
+
+          def canonical(value):
+              return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+          def digest(path):
+              return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+          plan = json.loads(Path('artifacts/v027/research_plan_locked.json').read_text())
+          payload = dict(plan)
+          declared = payload.pop('plan_payload_sha256')
+          assert plan['study_id'] == 'quarter_hour_component_rotation_v0_27_1'
+          assert plan['candidate_count'] == 192
+          assert canonical(payload) == declared == os.environ['PLAN_PAYLOAD_SHA256']
+          assert canonical(plan['source_files']) == plan['source_tree_manifest_sha256'] == os.environ['SOURCE_MANIFEST_SHA256']
+          for name, expected in plan['source_files'].items():
+              assert digest(name) == expected, name
+          assert plan['candidate_pnl_observed_before_plan'] is False
+          assert plan['terminal_holdout_opened_before_plan'] is False
+          assert plan['periods']['terminal_holdout_locked'] is True
+          assert plan['production_enabled'] is False
+          print(json.dumps({'study_id': plan['study_id'], 'candidate_count': 192, 'plan_payload_sha256': declared, 'source_manifest_sha256': plan['source_tree_manifest_sha256'], 'candidate_pnl_observed': False, 'terminal_holdout_opened': False, 'production_enabled': False}, sort_keys=True, indent=2))
+          PY
+          python -m pytest -q | tee evidence/pytest.txt
+          python -m compileall -q research scripts tests
+
+      - name: Probe official companion checksums and compressed size
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          python -m research.v027.qh_pipeline scout \
+            --output evidence/scout.json \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            2>&1 | tee evidence/scout.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v0271-canonical-4k-scout-${{ github.run_id }}
+          path: |
+            evidence
+            v0271/evidence
+            v0271/artifacts/v027/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30
