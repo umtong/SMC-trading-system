@@ -1,0 +1,190 @@
+name: Official Futures Data Validation
+
+on:
+  push:
+    branches:
+      - agent/official-futures-data-validation-20260724
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  materialize-official-klines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify Binance USD-M monthly klines
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official_input/raw official_input/out
+          months=(
+            2024-10 2024-11 2024-12
+            2025-01 2025-02 2025-03 2025-04 2025-05 2025-06
+            2025-07 2025-08 2025-09 2025-10 2025-11 2025-12
+            2026-01 2026-02 2026-03 2026-04 2026-05 2026-06
+          )
+          for symbol in BTCUSDT ETHUSDT; do
+            mkdir -p "official_input/raw/${symbol}"
+            for month in "${months[@]}"; do
+              stem="${symbol}-1m-${month}.zip"
+              base="https://data.binance.vision/data/futures/um/monthly/klines/${symbol}/1m/${stem}"
+              curl --fail --location --retry 5 --retry-all-errors \
+                --connect-timeout 20 --max-time 240 \
+                --output "official_input/raw/${symbol}/${stem}" "${base}"
+              curl --fail --location --retry 5 --retry-all-errors \
+                --connect-timeout 20 --max-time 120 \
+                --output "official_input/raw/${symbol}/${stem}.CHECKSUM" "${base}.CHECKSUM"
+              (
+                cd "official_input/raw/${symbol}"
+                sha256sum --check "${stem}.CHECKSUM"
+              )
+            done
+          done
+
+      - name: Normalize, validate, and compress
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import gzip
+          import hashlib
+          import json
+          import zipfile
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path("official_input")
+          raw_root = root / "raw"
+          out_root = root / "out"
+          out_root.mkdir(parents=True, exist_ok=True)
+          header = [
+              "open_time", "open", "high", "low", "close", "volume",
+              "close_time", "quote_volume", "n_trades",
+              "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
+          ]
+          manifest: dict[str, object] = {
+              "source": "Binance public USD-M futures monthly klines",
+              "interval": "1m",
+              "downloaded_at_utc": datetime.now(timezone.utc).isoformat(),
+              "symbols": {},
+          }
+
+          for symbol in ("BTCUSDT", "ETHUSDT"):
+              zip_paths = sorted((raw_root / symbol).glob(f"{symbol}-1m-*.zip"))
+              if len(zip_paths) != 21:
+                  raise RuntimeError(f"{symbol}: expected 21 monthly ZIPs, got {len(zip_paths)}")
+
+              out_path = out_root / f"{symbol}_1m_2024-10_2026-06.csv.gz"
+              sha_rows = hashlib.sha256()
+              first_open: int | None = None
+              last_open: int | None = None
+              last_close: int | None = None
+              rows = 0
+              gaps = 0
+              duplicates = 0
+              abnormal_ohlc = 0
+              zero_volume = 0
+              sources: list[dict[str, object]] = []
+
+              with gzip.open(out_path, "wt", encoding="utf-8", newline="") as dst:
+                  writer = csv.writer(dst, lineterminator="\n")
+                  writer.writerow(header)
+                  for zip_path in zip_paths:
+                      zip_sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+                      checksum_text = zip_path.with_suffix(zip_path.suffix + ".CHECKSUM").read_text(
+                          encoding="utf-8"
+                      ).strip()
+                      expected_sha = checksum_text.split()[0]
+                      if zip_sha != expected_sha:
+                          raise RuntimeError(f"checksum mismatch: {zip_path.name}")
+                      sources.append(
+                          {
+                              "file": zip_path.name,
+                              "sha256": zip_sha,
+                              "official_sha256": expected_sha,
+                              "bytes": zip_path.stat().st_size,
+                          }
+                      )
+                      with zipfile.ZipFile(zip_path) as archive:
+                          members = [n for n in archive.namelist() if not n.endswith("/")]
+                          if len(members) != 1:
+                              raise RuntimeError(f"{zip_path.name}: expected one CSV member")
+                          with archive.open(members[0], "r") as binary:
+                              text = (line.decode("utf-8") for line in binary)
+                              reader = csv.reader(text)
+                              for row in reader:
+                                  if not row:
+                                      continue
+                                  if not row[0].strip().lstrip("-").isdigit():
+                                      continue
+                                  if len(row) < 12:
+                                      raise RuntimeError(
+                                          f"{zip_path.name}: expected at least 12 columns, got {len(row)}"
+                                      )
+                                  row = row[:12]
+                                  open_time = int(row[0])
+                                  close_time = int(row[6])
+                                  o, h, l, c, volume = map(float, row[1:6])
+                                  if first_open is None:
+                                      first_open = open_time
+                                  if last_open is not None:
+                                      delta = open_time - last_open
+                                      if delta == 0:
+                                          duplicates += 1
+                                      elif delta != 60_000:
+                                          gaps += max(1, delta // 60_000 - 1)
+                                  if not (l <= min(o, c) <= max(o, c) <= h):
+                                      abnormal_ohlc += 1
+                                  if volume == 0.0:
+                                      zero_volume += 1
+                                  normalized = [str(v).strip() for v in row]
+                                  line = ",".join(normalized) + "\n"
+                                  sha_rows.update(line.encode("utf-8"))
+                                  writer.writerow(normalized)
+                                  rows += 1
+                                  last_open = open_time
+                                  last_close = close_time
+
+              if rows == 0 or first_open is None or last_open is None:
+                  raise RuntimeError(f"{symbol}: no rows")
+              if duplicates or gaps or abnormal_ohlc:
+                  raise RuntimeError(
+                      f"{symbol}: duplicates={duplicates}, gaps={gaps}, abnormal_ohlc={abnormal_ohlc}"
+                  )
+              manifest["symbols"][symbol] = {
+                  "rows": rows,
+                  "start_open_time_ms": first_open,
+                  "end_open_time_ms": last_open,
+                  "end_close_time_ms": last_close,
+                  "duplicates": duplicates,
+                  "missing_intervals": gaps,
+                  "abnormal_ohlc": abnormal_ohlc,
+                  "zero_volume_bars": zero_volume,
+                  "normalized_rows_sha256": sha_rows.hexdigest(),
+                  "compressed_file": out_path.name,
+                  "compressed_sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+                  "compressed_bytes": out_path.stat().st_size,
+                  "sources": sources,
+              }
+
+          manifest_path = out_root / "official_input_manifest.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(manifest_path.read_text(encoding="utf-8"))
+          PY
+
+      - name: Upload verified official input
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-btc-eth-1m-2024-10_2026-06
+          path: official_input/out/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
