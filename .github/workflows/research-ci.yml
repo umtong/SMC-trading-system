@@ -45,3 +45,64 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  verified-data:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install downloader dependencies
+        run: python -m pip install "pandas>=2.2"
+
+      - name: Download and verify BTCUSDT and ETHUSDT 5m archives
+        run: |
+          python scripts/download_binance_vision_klines.py \
+            --symbols BTCUSDT ETHUSDT \
+            --interval 5m \
+            --start-month 2020-12 \
+            --end-month 2026-06 \
+            --workers 8 \
+            --output-dir data/s4_continuous_2020_2026 \
+            --cache-dir data/archive_cache
+
+      - name: Show data manifest summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(
+              Path("data/s4_continuous_2020_2026/manifest.json").read_text()
+          )
+          for item in payload["series"]:
+              print(
+                  item["symbol"],
+                  item["rows"],
+                  item["first_open_time"],
+                  item["last_open_time"],
+                  "gaps=", item["gap_count"],
+                  "missing=", item["missing_bar_count"],
+                  "sha256=", item["output_sha256"],
+              )
+          PY
+
+      - name: Upload verified research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-5m-2020-12_2026-06-${{ github.sha }}
+          path: |
+            data/s4_continuous_2020_2026/BTCUSDT_5m.csv.gz
+            data/s4_continuous_2020_2026/ETHUSDT_5m.csv.gz
+            data/s4_continuous_2020_2026/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
