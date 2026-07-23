@@ -1,0 +1,52 @@
+name: Research official Binance USD-M data bundle
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/research-binance-um-data.yml"
+      - "research_tools/binance_um_bundle.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-binance-um-data-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-data-artifact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download, verify, normalize, and audit official archives
+        run: |
+          python research_tools/binance_um_bundle.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start-month 2021-01 \
+            --end-month 2026-06 \
+            --output-dir research_artifact/binance_um_15m
+
+      - name: Inspect manifest and artifact hashes
+        run: |
+          python -m json.tool research_artifact/binance_um_15m/manifest.json | tail -n 100
+          sha256sum research_artifact/binance_um_15m/*
+          du -h research_artifact/binance_um_15m/*
+
+      - name: Upload checksum-verified research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-um-15m-2021-01_2026-06
+          path: research_artifact/binance_um_15m
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
