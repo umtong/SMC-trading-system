@@ -1,0 +1,76 @@
+{
+  "candidate_id": "v13_us_session_flow_v1",
+  "status": "FROZEN_BEFORE_2024_OOS",
+  "frozen_at_utc": "2026-07-23T09:50:00Z",
+  "discovery_data": {
+    "venue": "Binance USD-M perpetual futures public archive",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "start_inclusive": "2023-01-01T00:00:00Z",
+    "end_exclusive": "2024-01-01T00:00:00Z",
+    "interval": "1m",
+    "sources": ["klines", "markPriceKlines"],
+    "checksum_required": true,
+    "missing_reference_minutes": "drop and start a new causal segment; never impute"
+  },
+  "signal": {
+    "decision_bar_open_hours_utc": [13, 14, 15],
+    "decision_after_completed_bar": true,
+    "entry": "next exact 1m open",
+    "taker_imbalance_formula": "(2 * taker_buy_quote - quote_volume) / quote_volume",
+    "minimum_absolute_taker_imbalance": 0.4,
+    "minimum_prior_only_quote_volume_z": 0.5,
+    "feature_window_minutes": 1440,
+    "minimum_prior_observations": 1440,
+    "side": "sign(taker_imbalance)",
+    "same_time_priority": "descending abs(taker_imbalance) + 0.1 * max(volume_z, 0), then BTCUSDT before ETHUSDT"
+  },
+  "execution": {
+    "global_pending_plus_open_limit": 1,
+    "entry_order": "marketable at next exact minute open; missing minute cancels",
+    "fixed_protective_stop_fraction": 0.03,
+    "profit_target": null,
+    "maximum_holding_minutes": 720,
+    "stop_gap_fill": "first adverse minute open if beyond stop, otherwise stop price",
+    "intrabar_policy": "protective stop has priority",
+    "time_exit": "exact entry+720 minute open in the same causal segment",
+    "cross_segment_trade": false
+  },
+  "cost_stress_all_in_bps": [13, 20, 30],
+  "comparison_risk_fraction": 0.01,
+  "risk_note": "1% is a reporting scale, not an optimized live risk. Planned loss denominator equals stop fraction plus scenario all-in cost.",
+  "discovery_evidence_at_20bps": {
+    "trades": 174,
+    "net_r": 12.842884,
+    "expectancy_r": 0.073810,
+    "profit_factor": 1.455693,
+    "terminal_multiple_at_1pct_risk": 1.133365,
+    "max_drawdown_at_1pct_risk": -0.035800,
+    "positive_month_ratio": 0.666667,
+    "first_half_expectancy_r": 0.094121,
+    "second_half_expectancy_r": 0.059129,
+    "btc_expectancy_r": 0.036329,
+    "eth_expectancy_r": 0.105708
+  },
+  "robustness_observed_but_not_used_for_selection": {
+    "signal_hour_neighborhood_utc": "13-15",
+    "imbalance_threshold_neighborhood": [0.3, 0.4, 0.5],
+    "volume_z_neighborhood": [0.0, 0.5, 1.0],
+    "hold_neighborhood_minutes": [480, 720],
+    "stop_neighborhood_fraction": [0.02, 0.03, 0.05]
+  },
+  "oos_policy": {
+    "first_unopened_period": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "no_parameter_changes_after_open": true,
+    "minimum_requirements_at_20bps": {
+      "expectancy_r_greater_than": 0.0,
+      "profit_factor_at_least": 1.1,
+      "terminal_multiple_at_1pct_risk_greater_than": 1.0,
+      "btc_net_r_greater_than": 0.0,
+      "eth_net_r_greater_than": 0.0,
+      "positive_month_ratio_at_least": 0.5
+    },
+    "severe_cost_30bps_net_r_greater_than": 0.0,
+    "result_if_failed": "reject this candidate without refitting on 2024"
+  },
+  "paper_or_live_authority": false
+}
