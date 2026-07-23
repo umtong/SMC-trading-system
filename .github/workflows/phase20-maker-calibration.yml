@@ -1,4 +1,4 @@
-name: Phase20 maker calibration data
+name: V1.98 Universal LOB Research
 
 on:
   push:
@@ -6,137 +6,168 @@ on:
       - research/phase20-maker-calibration-20260723
     paths:
       - '.github/workflows/phase20-maker-calibration.yml'
-      - 'research/phase20_maker_calibration.py'
-  pull_request:
-    paths:
-      - '.github/workflows/phase20-maker-calibration.yml'
-      - 'research/phase20-maker-calibration.md'
-      - 'research/phase20_maker_calibration.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: phase20-maker-calibration-${{ github.ref }}
+  group: v198-universal-lob-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  acquire-and-calibrate:
+  panel:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
-        symbol: [BTCUSDT, ETHUSDT]
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-
-      - name: Install calibration dependencies
-        run: python -m pip install --disable-pip-version-check 'numpy==2.3.5' 'pandas==2.2.3'
-
-      - name: Download checksum-verified bookTicker and aggTrades dates
-        shell: bash
+          python-version: '3.11'
+          cache: pip
+      - name: Install locked panel dependencies
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - name: Build checksum-verified one-second LOB panel
         env:
           SYMBOL: ${{ matrix.symbol }}
+        shell: bash
         run: |
           set -euo pipefail
+          mkdir -p v198-panel/${SYMBOL}
           python - <<'PY'
-          import csv
-          import hashlib
-          import io
-          import json
-          import os
-          import urllib.request
-          import zipfile
+          from __future__ import annotations
+          import hashlib, io, json, os, time, urllib.request, zipfile
           from pathlib import Path
+          import numpy as np, pandas as pd
 
-          symbol = os.environ['SYMBOL']
-          days = ['2023-05-16', '2023-06-10', '2023-08-18', '2023-11-09']
-          root = Path('artifacts/phase20-maker-calibration') / symbol
-          root.mkdir(parents=True, exist_ok=True)
-          manifest = {
-              'schema_version': 1,
-              'symbol': symbol,
-              'days': days,
-              'sources': [],
-              'credentials_used': False,
-              'orders_submitted': False,
-              'purpose': 'research-only top-of-book queue and post-fill markout calibration',
-          }
-
-          def request(url):
-              return urllib.request.Request(url, headers={'User-Agent':'smc-phase20-maker-calibration/1.0'})
-
-          for day in days:
-              for dtype in ('bookTicker', 'aggTrades'):
-                  filename = f'{symbol}-{dtype}-{day}.zip'
-                  url = f'https://data.binance.vision/data/futures/um/daily/{dtype}/{symbol}/{filename}'
-                  with urllib.request.urlopen(request(url + '.CHECKSUM'), timeout=180) as response:
-                      expected = response.read().decode('utf-8-sig').strip().split()[0].lower()
-                  with urllib.request.urlopen(request(url), timeout=900) as response:
-                      payload = response.read()
-                  actual = hashlib.sha256(payload).hexdigest()
-                  if actual != expected:
-                      raise SystemExit(f'{filename}: checksum mismatch {actual} != {expected}')
-                  path = root / filename
-                  path.write_bytes(payload)
-                  (root / (filename + '.CHECKSUM')).write_text(f'{actual}  {filename}\n', encoding='utf-8')
-                  with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-                      members = [x for x in archive.namelist() if x.lower().endswith('.csv')]
-                      if len(members) != 1:
-                          raise SystemExit(f'{filename}: expected one CSV, got {members}')
-                      info = archive.getinfo(members[0])
-                      with archive.open(members[0]) as fh:
-                          reader = csv.reader(io.TextIOWrapper(fh, encoding='utf-8-sig', newline=''))
-                          header = next(reader)
-                          first_data = next(reader, None)
-                  manifest['sources'].append({
-                      'day': day,
-                      'dtype': dtype,
-                      'url': url,
-                      'sha256': actual,
-                      'archive_bytes': len(payload),
-                      'uncompressed_bytes': info.file_size,
-                      'member': members[0],
-                      'header': header,
-                      'first_data': first_data,
-                  })
-          raw = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
-          (root / 'MANIFEST.json').write_text(raw + '\n', encoding='utf-8')
-          (root / 'MANIFEST.sha256').write_text(hashlib.sha256((raw + '\n').encode()).hexdigest() + '  MANIFEST.json\n')
-          print(raw)
+          S=os.environ['SYMBOL']; DAYS=('2023-05-16','2023-06-10','2023-08-18','2023-11-09')
+          ROOT='https://data.binance.vision/data/futures/um/daily';OUT=Path('v198-panel')/S;OUT.mkdir(parents=True,exist_ok=True)
+          FEATS=['spread_rel','l1_imb','micro_dev','flow_imb_1','flow_imb_5','flow_imb_30','volume_z','count_z','buy_vwap_dev','sell_vwap_dev','ret_1','ret_5','rv_30']
+          def get(url,attempts=6):
+              err=None
+              for i in range(attempts):
+                  try:
+                      q=urllib.request.Request(url,headers={'User-Agent':'smc-v198-universal-lob/1.0'})
+                      with urllib.request.urlopen(q,timeout=600) as r:return r.read()
+                  except Exception as e:
+                      err=e
+                      if i+1<attempts:time.sleep(min(2**i,20))
+              raise RuntimeError(f'{url}: {err!r}')
+          def verified(dtype,day):
+              name=f'{S}-{dtype}-{day}.zip';url=f'{ROOT}/{dtype}/{S}/{name}'
+              expected=get(url+'.CHECKSUM').decode('utf-8-sig').strip().split()[0].lower();payload=get(url)
+              actual=hashlib.sha256(payload).hexdigest()
+              if actual!=expected:raise ValueError(f'checksum {name}')
+              return payload,{'url':url,'sha256':actual,'bytes':len(payload)}
+          def zprior(x,w,minp):
+              return (x-x.rolling(w,min_periods=minp).mean().shift(1))/x.rolling(w,min_periods=minp).std(ddof=0).shift(1).replace(0,np.nan)
+          def book_second(payload):
+              parts=[]
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  member=[n for n in z.namelist() if n.endswith('.csv')][0]
+                  for c in pd.read_csv(z.open(member),usecols=['best_bid_price','best_bid_qty','best_ask_price','best_ask_qty','event_time'],chunksize=1_000_000):
+                      c['sec']=(pd.to_numeric(c.event_time,errors='raise').astype('int64')//1000).astype('int64')
+                      for x in ['best_bid_price','best_bid_qty','best_ask_price','best_ask_qty']:c[x]=pd.to_numeric(c[x],errors='raise')
+                      parts.append(c.groupby('sec',sort=False).tail(1))
+              return pd.concat(parts,ignore_index=True).sort_values(['sec','event_time'],kind='mergesort').groupby('sec',sort=True).tail(1).set_index('sec').sort_index()
+          def trade_second(payload):
+              parts=[]
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  member=[n for n in z.namelist() if n.endswith('.csv')][0]
+                  for c in pd.read_csv(z.open(member),usecols=['price','quantity','transact_time','is_buyer_maker'],chunksize=1_000_000):
+                      p=pd.to_numeric(c.price,errors='raise').to_numpy(float);q=pd.to_numeric(c.quantity,errors='raise').to_numpy(float);t=pd.to_numeric(c.transact_time,errors='raise').astype('int64').to_numpy();t=np.where(t>=10**14,t//1000,t);sec=t//1000;v=p*q;maker=c.is_buyer_maker.astype(str).str.lower().isin(['true','1']).to_numpy();buy=~maker
+                      d=pd.DataFrame({'sec':sec,'quote':v,'signed':np.where(buy,v,-v),'buyq':np.where(buy,v,0.),'sellq':np.where(buy,0.,v),'buypx':np.where(buy,p*v,0.),'sellpx':np.where(buy,0.,p*v),'count':1,'px':p,'px2':p*p})
+                      parts.append(d.groupby('sec',sort=False).agg({'quote':'sum','signed':'sum','buyq':'sum','sellq':'sum','buypx':'sum','sellpx':'sum','count':'sum','px':'mean','px2':'mean'}))
+              return pd.concat(parts).groupby(level=0).sum().sort_index()
+          records=[]
+          for day in DAYS:
+              bp,bm=verified('bookTicker',day);tp,tm=verified('aggTrades',day);book=book_second(bp);trade=trade_second(tp)
+              start=int(pd.Timestamp(day,tz='UTC').timestamp());idx=np.arange(start,start+86400,dtype=np.int64);x=pd.DataFrame(index=idx).join(book).join(trade)
+              for c in ['best_bid_price','best_bid_qty','best_ask_price','best_ask_qty']:x[c]=x[c].ffill()
+              for c in ['quote','signed','buyq','sellq','buypx','sellpx','count','px','px2']:x[c]=x[c].fillna(0.)
+              x=x.dropna(subset=['best_bid_price','best_ask_price']).copy();bid=x.best_bid_price;ask=x.best_ask_price;bq=x.best_bid_qty;aq=x.best_ask_qty;mid=(bid+ask)/2;tot=bq+aq
+              x['spread_rel']=(ask-bid)/mid;x['l1_imb']=(bq-aq)/tot.replace(0,np.nan);x['micro_dev']=((ask*bq+bid*aq)/tot.replace(0,np.nan)-mid)/mid
+              x['flow_imb_1']=x.signed/x.quote.replace(0,np.nan);x['flow_imb_5']=x.signed.rolling(5,min_periods=2).sum()/x.quote.rolling(5,min_periods=2).sum().replace(0,np.nan);x['flow_imb_30']=x.signed.rolling(30,min_periods=15).sum()/x.quote.rolling(30,min_periods=15).sum().replace(0,np.nan)
+              x['volume_z']=zprior(np.log1p(x.quote),600,300);x['count_z']=zprior(np.log1p(x['count']),600,300)
+              bv=x.buypx/x.buyq.replace(0,np.nan);sv=x.sellpx/x.sellq.replace(0,np.nan);x['buy_vwap_dev']=(bv-mid)/mid;x['sell_vwap_dev']=(sv-mid)/mid
+              x['ret_1']=np.log(mid/mid.shift(1));x['ret_5']=np.log(mid/mid.shift(5));x['rv_30']=x.ret_1.rolling(30,min_periods=15).std(ddof=0).shift(1)
+              x['entry_bid']=bid.shift(-1);x['entry_ask']=ask.shift(-1);x['entry_mid']=(x.entry_bid+x.entry_ask)/2
+              for h in (3,10,30,60):x[f'exit_bid_{h}']=bid.shift(-(1+h));x[f'exit_ask_{h}']=ask.shift(-(1+h));x[f'target_{h}']=np.log(mid.shift(-(1+h))/x.entry_mid)
+              keep=FEATS+['entry_bid','entry_ask','entry_mid']+[f'{a}_{h}' for h in (3,10,30,60) for a in ('exit_bid','exit_ask','target')]
+              y=x[keep].replace([np.inf,-np.inf],np.nan).dropna().copy();y.insert(0,'time_ms',y.index.to_numpy(np.int64)*1000);y['symbol']=S;y['day']=day
+              p=OUT/f'{S}_{day}.csv.gz';y.to_csv(p,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0});records.append({'day':day,'rows':len(y),'output_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'book':bm,'trades':tm})
+              del bp,tp,book,trade,x,y
+          manifest={'version':'V1.98_UNIVERSAL_LOB','symbol':S,'records':records,'features':FEATS,'future_fields_excluded_from_features':True,'orders_submitted':False}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n');print(json.dumps(manifest,indent=2))
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v198-panel-${{ matrix.symbol }}-${{ github.run_id }}
+          path: v198-panel/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
-      - name: Compute queue and post-fill markout calibration
+  aggregate:
+    needs: panel
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'catboost==1.2.8' 'scikit-learn==1.6.1'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v198-panel-*-${{ github.run_id }}
+          path: v198-input
+          merge-multiple: true
+      - name: Train frozen universal model and open final day once
         shell: bash
-        env:
-          SYMBOL: ${{ matrix.symbol }}
         run: |
           set -euo pipefail
-          python research/phase20_maker_calibration.py \
-            --symbol "${SYMBOL}" \
-            --root "artifacts/phase20-maker-calibration/${SYMBOL}" \
-            --output "artifacts/phase20-maker-calibration-summary/${SYMBOL}"
-          cp "artifacts/phase20-maker-calibration/${SYMBOL}/MANIFEST.json" \
-             "artifacts/phase20-maker-calibration-summary/${SYMBOL}/SOURCE_MANIFEST.json"
-          cp "artifacts/phase20-maker-calibration/${SYMBOL}/MANIFEST.sha256" \
-             "artifacts/phase20-maker-calibration-summary/${SYMBOL}/SOURCE_MANIFEST.sha256"
-          find "artifacts/phase20-maker-calibration-summary/${SYMBOL}" -type f -print0 | sort -z | xargs -0 sha256sum > "artifacts/phase20-maker-calibration-summary/${SYMBOL}/FILES.sha256"
-
-      - name: Remove raw archives before artifact upload
-        if: always()
-        shell: bash
-        run: rm -rf artifacts/phase20-maker-calibration
-
-      - name: Upload compact immutable calibration evidence
-        uses: actions/upload-artifact@v4
+          mkdir -p v198-results
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import numpy as np,pandas as pd
+          from catboost import CatBoostRegressor
+          from sklearn.impute import SimpleImputer
+          F=['spread_rel','l1_imb','micro_dev','flow_imb_1','flow_imb_5','flow_imb_30','volume_z','count_z','buy_vwap_dev','sell_vwap_dev','ret_1','ret_5','rv_30']
+          files=sorted(Path('v198-input').rglob('*.csv.gz'));d=pd.concat([pd.read_csv(p) for p in files],ignore_index=True);d=d.sort_values(['time_ms','symbol'],kind='mergesort').reset_index(drop=True);d['sym_i']=d.symbol.map({'BTCUSDT':0,'ETHUSDT':1,'SOLUSDT':2,'XRPUSDT':3}).astype(float)
+          def trim(v,n):return float(np.sort(v)[:-n].mean()) if len(v)>n else np.nan
+          def route(x,pred,h,cost,day,threshold):
+              use=(x.day==day)&(np.abs(pred)>=threshold);q=x[use].copy();q['pred']=pred[use];q=q.sort_values(['time_ms','pred','symbol'],ascending=[True,False,True],key=lambda s:-s.abs() if s.name=='pred' else s,kind='mergesort');rows=[];free=-1
+              for t,g in q.groupby('time_ms',sort=True):
+                  ent=int(t)
+                  if ent<free:continue
+                  r=g.iloc[g.pred.abs().argmax()];side=1 if r.pred>0 else -1;ep=r.entry_ask if side>0 else r.entry_bid;xp=r[f'exit_bid_{h}'] if side>0 else r[f'exit_ask_{h}'];ret=side*(xp/ep-1)-cost/1e4;rows.append((ent,ret,r.symbol));free=ent+h*1000
+              return pd.DataFrame(rows,columns=['time_ms','ret','symbol'])
+          def metric(z):
+              if z.empty:return {'n':0,'mean_bps':np.nan,'top20_bps':np.nan,'pf':0.,'net':0.,'gday':0.,'mdd':0.}
+              v=z.ret.to_numpy(float);eq=np.cumprod(1+v);curve=np.r_[1.,eq];dd=1-curve/np.maximum.accumulate(curve);pos=v[v>0].sum();neg=-v[v<0].sum();return {'n':len(v),'mean_bps':v.mean()*1e4,'top20_bps':trim(v,20)*1e4,'pf':pos/neg if neg else 999.,'net':eq[-1]-1,'gday':eq[-1]-1,'mdd':dd.max()}
+          rows=[];train=d.day.eq('2023-05-16');X=d[F+['sym_i']].replace([np.inf,-np.inf],np.nan);imp=SimpleImputer(strategy='median');A=imp.fit_transform(X[train]);B=imp.transform(X)
+          for h in (3,10,30,60):
+              m=CatBoostRegressor(iterations=350,depth=7,learning_rate=.04,loss_function='RMSE',random_seed=198,verbose=False,l2_leaf_reg=15,random_strength=1);m.fit(A,d.loc[train,f'target_{h}']);pred=m.predict(B);sel=d.day.eq('2023-06-10')
+              for q in (.90,.95,.975,.99,.995,.999):
+                  th=float(np.quantile(np.abs(pred[sel]),q))
+                  for cost in (10.,12.,18.):
+                      a=metric(route(d,pred,h,cost,'2023-06-10',th));b=metric(route(d,pred,h,cost,'2023-08-18',th));c=metric(route(d,pred,h,cost,'2023-11-09',th));eligible=cost>=12 and a['n']>=100 and b['n']>=100 and a['mean_bps']>0 and b['mean_bps']>0 and a['top20_bps']>0 and b['top20_bps']>0 and a['pf']>=1.1 and b['pf']>=1.1
+                      rows.append({'horizon_s':h,'quantile':q,'threshold':th,'cost_bps':cost,'eligible_pretest':eligible,**{'selection_'+k:v for k,v in a.items()},**{'validation_'+k:v for k,v in b.items()},**{'test_'+k:v for k,v in c.items()}})
+          r=pd.DataFrame(rows);r['score']=np.where(r.eligible_pretest,np.minimum(r.selection_top20_bps,r.validation_top20_bps),-1e9);r=r.sort_values(['score','test_gday'],ascending=False);r.to_csv('v198-results/screen.csv',index=False);e=r[r.eligible_pretest];target=e[(e.test_gday>=.01)&(e.test_top20_bps>0)]
+          summary={'version':'V1.98_UNIVERSAL_LOB','files':len(files),'rows':len(d),'screened':len(r),'eligible_pretest':len(e),'target_1pct_final_day':len(target),'best':r.head(30).replace([np.nan,np.inf,-np.inf],None).to_dict('records'),'orders_submitted':False,'paper_or_live_started':False};Path('v198-results/summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
         with:
-          name: phase20-maker-calibration-summary-${{ matrix.symbol }}-${{ github.run_id }}
-          path: artifacts/phase20-maker-calibration-summary/${{ matrix.symbol }}
+          name: v198-universal-lob-results-${{ github.run_id }}
+          path: v198-results
           if-no-files-found: error
           retention-days: 30
