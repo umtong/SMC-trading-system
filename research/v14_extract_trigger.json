@@ -4,5 +4,7 @@
   "start_inclusive": "2023-01-01T00:00:00Z",
   "end_exclusive": "2024-01-01T00:00:00Z",
   "extractor_sha256": "4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f",
+  "transport_repair_workflow_commit": "9ffd5d37c1b0f2979bdc9a3a7e5d49c151d2665c",
+  "triggered_at_utc": "2026-07-23T10:22:00Z",
   "paper_or_live_authority": false
 }
