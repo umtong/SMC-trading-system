@@ -98,7 +98,7 @@ jobs:
       fail-fast: false
       matrix:
         symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       DATA_DIR: ${{ github.workspace }}/.v0271-data/${{ matrix.symbol }}
@@ -140,7 +140,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .v0271-data/${{ matrix.symbol }}
-          key: v0271-strict-normalized-${{ matrix.symbol }}-${{ env.PLAN_PAYLOAD_SHA256 }}-v2
+          key: v0271-strict-normalized-${{ matrix.symbol }}-${{ env.PLAN_PAYLOAD_SHA256 }}-v3
 
       - name: Build checksum-verified causal panel
         shell: bash
@@ -172,7 +172,7 @@ jobs:
 
   evaluate:
     needs: [preflight, build]
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       COMBINED: ${{ github.workspace }}/.v0271-combined
@@ -214,22 +214,22 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .v0271-data/BTCUSDT
-          key: v0271-strict-normalized-BTCUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v2
+          key: v0271-strict-normalized-BTCUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v3
           fail-on-cache-miss: true
       - uses: actions/cache@v4
         with:
           path: .v0271-data/ETHUSDT
-          key: v0271-strict-normalized-ETHUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v2
+          key: v0271-strict-normalized-ETHUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v3
           fail-on-cache-miss: true
       - uses: actions/cache@v4
         with:
           path: .v0271-data/SOLUSDT
-          key: v0271-strict-normalized-SOLUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v2
+          key: v0271-strict-normalized-SOLUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v3
           fail-on-cache-miss: true
       - uses: actions/cache@v4
         with:
           path: .v0271-data/XRPUSDT
-          key: v0271-strict-normalized-XRPUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v2
+          key: v0271-strict-normalized-XRPUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v3
           fail-on-cache-miss: true
 
       - name: Run strict frozen selection and untouched preholdout evaluation
@@ -245,6 +245,7 @@ jobs:
           done
           /usr/bin/time -v python - <<'PY' 2>&1 | tee "${OUTPUT}/evaluation.log"
           import json
+          import os
           from pathlib import Path
           from research.v027 import qh_pipeline as q
 
@@ -256,8 +257,9 @@ jobs:
               )
           q.candidate_signal_frame = strict_fixed_signal_frame
 
-          output = Path('${OUTPUT}')
-          result = q.run_evaluation(Path('${COMBINED}'), Path('${COMBINED}'), output)
+          output = Path(os.environ['OUTPUT'])
+          combined = Path(os.environ['COMBINED'])
+          result = q.run_evaluation(combined, combined, output)
           audit = {
               'schema_version': 1,
               'study_id': q.STUDY_ID,
@@ -266,9 +268,9 @@ jobs:
               'terminal_holdout_opened': False,
               'production_enabled': False,
               'any_target_met': bool(result['any_target_met']),
-              'archive_sha256': '${ARCHIVE_SHA256}',
-              'plan_payload_sha256': '${PLAN_PAYLOAD_SHA256}',
-              'source_manifest_sha256': '${SOURCE_MANIFEST_SHA256}',
+              'archive_sha256': os.environ['ARCHIVE_SHA256'],
+              'plan_payload_sha256': os.environ['PLAN_PAYLOAD_SHA256'],
+              'source_manifest_sha256': os.environ['SOURCE_MANIFEST_SHA256'],
           }
           q.write_json(output / 'strict_execution_audit.json', audit)
           print(json.dumps(q.json_safe(audit), indent=2, sort_keys=True))
