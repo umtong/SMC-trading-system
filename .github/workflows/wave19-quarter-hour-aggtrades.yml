@@ -8,6 +8,13 @@ on:
       - scripts/build_quarter_hour_aggtrade_features.py
       - registrations/wave19_quarter_hour_aggtrades_v1.json
       - .github/workflows/wave19-quarter-hour-aggtrades.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/build_quarter_hour_aggtrade_features.py
+      - registrations/wave19_quarter_hour_aggtrades_v1.json
+      - .github/workflows/wave19-quarter-hour-aggtrades.yml
   workflow_dispatch:
 
 permissions:
