@@ -1,0 +1,24 @@
+{
+  "archive_bytes": 25084,
+  "archive_name": "v0271_locked_runner.tar.xz",
+  "archive_sha256": "e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9",
+  "candidate_pnl_observed": false,
+  "concatenation": "concatenate_in_manifest_order",
+  "encoding": "base64",
+  "part_count": 9,
+  "parts": [
+    {"bytes": 4000, "characters": 4000, "name": "part-000.b64", "sha256": "5d2a38d7b2df5eee22617ac9e46fcdf915126c5f92c013782d435c0e61535200"},
+    {"bytes": 4000, "characters": 4000, "name": "part-001.b64", "sha256": "b7150f3910ee96b8f9470a022e2754ba1cf3905b4a1db836f3265dcae6566450"},
+    {"bytes": 4000, "characters": 4000, "name": "part-002.b64", "sha256": "c6cc6d2fc01e8de02c3f1450db22a5323c9965e20734081aa3b03c31c796fade"},
+    {"bytes": 4000, "characters": 4000, "name": "part-003.b64", "sha256": "f035ea2d5693747f04b7f9beee90d59426b2cc8358c5c741c7f0b7b17246ba45"},
+    {"bytes": 4000, "characters": 4000, "name": "part-004.b64", "sha256": "4a7038dae391a9cb2e036c7cbb209db0eb45b12cded3d2826d994f5eef9c855e"},
+    {"bytes": 4000, "characters": 4000, "name": "part-005.b64", "sha256": "ae3d93c2691f9f69128515c9228626e8271100ce4110e4d3e0847f720b335f20"},
+    {"bytes": 4000, "characters": 4000, "name": "part-006.b64", "sha256": "102a0ff92d1865e3391f1882dd05858c3dd7431db29c47258172bcfad41cf12e"},
+    {"bytes": 4000, "characters": 4000, "name": "part-007.b64", "sha256": "d0eaf7b661ffaea05cfdd47bfc7a576c8adb0cdefc6e3cf171faf3be8bbc3bf6"},
+    {"bytes": 1448, "characters": 1448, "name": "part-008.b64", "sha256": "a83fb266f532ff81ecdf837151a369927280df41680761138aa2fd680fb97503"}
+  ],
+  "production_enabled": false,
+  "schema_version": 2,
+  "study_id": "quarter_hour_component_rotation_v0_27_1",
+  "terminal_holdout_opened": false
+}
