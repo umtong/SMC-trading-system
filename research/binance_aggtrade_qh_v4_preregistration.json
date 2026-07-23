@@ -5,7 +5,10 @@
     "impact_efficiency": "signed log return divided by max(abs(quote imbalance), 0.05)",
     "min_history_days": 30,
     "standardization": "rolling median and MAD using only prior completed quarter-hour events for the same symbol and observation window",
-    "standardization_lookbacks_days": [30, 90]
+    "standardization_lookbacks_days": [
+      30,
+      90
+    ]
   },
   "content_digest": "e5d26832acff34376a30f426b312d2582464ee458fef374b8f6922cf0e6c1623",
   "created_before_outcome_access": true,
@@ -26,7 +29,12 @@
     "decision_time": "event_start + observation_window; only trades with exchange timestamps strictly before decision_time enter features",
     "entry": "first complete Binance 1-minute open at or after decision_time + 1 second; this is normally event+60 seconds for W<60 and event+120 seconds for W=60",
     "event": "UTC timestamps divisible by 900 seconds",
-    "observation_windows_seconds": [5, 15, 30, 60],
+    "observation_windows_seconds": [
+      5,
+      15,
+      30,
+      60
+    ],
     "same_minute_entry": false
   },
   "evidence_boundary": {
@@ -38,7 +46,11 @@
   },
   "execution_and_accounting": {
     "base_adverse_execution_bps_per_side": 2.0,
-    "cost_multipliers": [1.0, 1.5, 2.0],
+    "cost_multipliers": [
+      1.0,
+      1.5,
+      2.0
+    ],
     "entry_fee_bps": 5.0,
     "exit_fee_bps": 5.0,
     "funding": "actual archived funding known at its application timestamp",
@@ -66,11 +78,29 @@
     "candidate_id_asc"
   ],
   "raw_event_features": [
-    "taker_buy_quote_notional", "taker_sell_quote_notional", "signed_quote_notional", "quote_notional", "quote_imbalance",
-    "buy_aggtrade_count", "sell_aggtrade_count", "signed_count", "aggtrade_count", "count_imbalance",
-    "first_price", "last_price", "high_price", "low_price", "log_return", "range_over_first", "vwap",
-    "mean_quote_per_aggtrade", "quote_notional_second_moment", "sign_change_count", "longest_same_sign_run",
-    "first_trade_offset_ms", "last_trade_offset_ms"
+    "taker_buy_quote_notional",
+    "taker_sell_quote_notional",
+    "signed_quote_notional",
+    "quote_notional",
+    "quote_imbalance",
+    "buy_aggtrade_count",
+    "sell_aggtrade_count",
+    "signed_count",
+    "aggtrade_count",
+    "count_imbalance",
+    "first_price",
+    "last_price",
+    "high_price",
+    "low_price",
+    "log_return",
+    "range_over_first",
+    "vwap",
+    "mean_quote_per_aggtrade",
+    "quote_notional_second_moment",
+    "sign_change_count",
+    "longest_same_sign_run",
+    "first_trade_offset_ms",
+    "last_trade_offset_ms"
   ],
   "research_id": "BINANCE_USDM_AGGTRADE_QH_SECONDS_V4",
   "research_question": "Do trade-level order-flow and price-impact features from the first seconds of UTC quarter-hours forecast executable BTCUSDT/ETHUSDT perpetual returns after conservative costs?",
@@ -78,48 +108,142 @@
   "source": {
     "aggressor_sign": "+1 when is_buyer_maker is false; -1 when true",
     "archive": "official data.binance.vision monthly aggTrades ZIP plus .CHECKSUM",
-    "columns": ["aggregate_trade_id", "price", "quantity", "first_trade_id", "last_trade_id", "timestamp", "is_buyer_maker"],
+    "columns": [
+      "aggregate_trade_id",
+      "price",
+      "quantity",
+      "first_trade_id",
+      "last_trade_id",
+      "timestamp",
+      "is_buyer_maker"
+    ],
     "integrity": "every monthly ZIP SHA-256 must match its official .CHECKSUM; failures abort closed",
     "months": "2021-10 through 2023-12 only for the development stage",
-    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
     "venue": "Binance USD-M Futures"
   },
   "strategy_families": {
     "CROSS_ASSET_SECONDS_LEAD_LAG": {
-      "horizon_minutes": [15, 60, 240],
-      "leader_flow_abs_z": [2.0, 2.5, 3.0],
-      "leader_target": ["BTCUSDT_TO_ETHUSDT", "ETHUSDT_TO_BTCUSDT"],
+      "horizon_minutes": [
+        15,
+        60,
+        240
+      ],
+      "leader_flow_abs_z": [
+        2.0,
+        2.5,
+        3.0
+      ],
+      "leader_target": [
+        "BTCUSDT_TO_ETHUSDT",
+        "ETHUSDT_TO_BTCUSDT"
+      ],
       "side": "leader signed quote flow direction on the target symbol",
-      "stop_atr": [2.0, 3.0],
-      "target_source_abs_return_z_max": [0.5, 1.0],
-      "window_seconds": [5, 15, 30, 60]
+      "stop_atr": [
+        2.0,
+        3.0
+      ],
+      "target_source_abs_return_z_max": [
+        0.5,
+        1.0
+      ],
+      "window_seconds": [
+        5,
+        15,
+        30,
+        60
+      ]
     },
     "QH_SECONDS_ABSORPTION_REVERSAL": {
-      "absorption_rule": ["OPPOSITE_PRICE_SIGN", "LOW_PRICE_RESPONSE"],
-      "flow_abs_z": [2.0, 2.5, 3.0],
-      "horizon_minutes": [15, 60, 240],
+      "absorption_rule": [
+        "OPPOSITE_PRICE_SIGN",
+        "LOW_PRICE_RESPONSE"
+      ],
+      "flow_abs_z": [
+        2.0,
+        2.5,
+        3.0
+      ],
+      "horizon_minutes": [
+        15,
+        60,
+        240
+      ],
       "side": "opposite sign of signed quote flow",
-      "stop_atr": [2.0, 3.0],
-      "window_seconds": [5, 15, 30, 60]
+      "stop_atr": [
+        2.0,
+        3.0
+      ],
+      "window_seconds": [
+        5,
+        15,
+        30,
+        60
+      ]
     },
     "QH_SECONDS_CONTINUATION": {
-      "activity_z_min": [0.0, 1.0],
-      "flow_abs_z": [1.5, 2.0, 2.5, 3.0],
-      "horizon_minutes": [240, 480, 720],
+      "activity_z_min": [
+        0.0,
+        1.0
+      ],
+      "flow_abs_z": [
+        1.5,
+        2.0,
+        2.5,
+        3.0
+      ],
+      "horizon_minutes": [
+        240,
+        480,
+        720
+      ],
       "side": "sign of signed quote flow",
-      "source_abs_return_z_max": [0.5, 1.0],
-      "stop_atr": [2.0, 3.0],
-      "window_seconds": [5, 15, 30, 60]
+      "source_abs_return_z_max": [
+        0.5,
+        1.0
+      ],
+      "stop_atr": [
+        2.0,
+        3.0
+      ],
+      "window_seconds": [
+        5,
+        15,
+        30,
+        60
+      ]
     },
     "QH_SECONDS_FLOW_ACCELERATION": {
-      "fast_flow_abs_z": [2.0, 2.5, 3.0],
-      "fast_window_seconds": [5, 15],
-      "horizon_minutes": [60, 240],
-      "minimum_abs_z_acceleration": [0.5, 1.0],
+      "fast_flow_abs_z": [
+        2.0,
+        2.5,
+        3.0
+      ],
+      "fast_window_seconds": [
+        5,
+        15
+      ],
+      "horizon_minutes": [
+        60,
+        240
+      ],
+      "minimum_abs_z_acceleration": [
+        0.5,
+        1.0
+      ],
       "same_sign_required": true,
       "side": "fast signed quote flow direction",
-      "slow_window_seconds": [30, 60],
-      "stop_atr": [2.0, 3.0]
+      "slow_window_seconds": [
+        30,
+        60
+      ],
+      "stop_atr": [
+        2.0,
+        3.0
+      ]
     }
   }
 }
