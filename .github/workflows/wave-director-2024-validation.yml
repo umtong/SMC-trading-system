@@ -1,0 +1,262 @@
+name: Wave39-41 authorized validation 2024
+
+on:
+  push:
+    branches:
+      - research/wave39-quarterhour-exact-aggtrades-20260723
+    paths:
+      - "research/director/WAVE39_41_2024_PREACCESS_REGISTRATION.json"
+  pull_request:
+    paths:
+      - ".github/workflows/wave-director-2024-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave39-41-authorized-validation-2024-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Await immutable director registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="research/director/WAVE39_41_2024_PREACCESS_REGISTRATION.json"
+          for attempt in $(seq 1 340); do
+            git fetch origin "${HEAD_BRANCH}" --quiet
+            if git cat-file -e "origin/${HEAD_BRANCH}:${path}" 2>/dev/null; then
+              git show "origin/${HEAD_BRANCH}:${path}" > director_registration.json
+              break
+            fi
+            echo "attempt=${attempt}: awaiting director registration"
+            sleep 60
+          done
+          test -s director_registration.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('director_registration.json').read_text(encoding='utf-8'))
+          if data.get('schema')!='wave39-41-2024-preaccess-registration-v1': raise RuntimeError('schema mismatch')
+          if data.get('registered_before_2024_strategy_outcomes') is not True: raise RuntimeError('chronology mismatch')
+          if data.get('risk_or_leverage_optimization_allowed') is not False: raise RuntimeError('risk authorization mismatch')
+          Path('eligible_waves.txt').write_text('\n'.join(str(item['wave']) for item in data.get('eligible_candidates',[])),encoding='utf-8')
+          print(json.dumps({'eligible':data.get('eligible_candidates',[])},indent=2,sort_keys=True))
+          PY
+
+      - name: Await all common data-only artifacts
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          successful_run() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if r.get("name")==n and r.get("status")=="completed" and r.get("conclusion")=="success"),""))' "$1"
+          }
+          for attempt in $(seq 1 360); do
+            e22="$(successful_run 'Wave39 exact quarter-hour aggTrades 2022 v3')"
+            s22="$(successful_run 'Wave39 official 1m support 2022 v3')"
+            e23="$(successful_run 'Shared exact quarter-hour aggTrades 2023')"
+            s23="$(successful_run 'Shared official support 2023')"
+            e24="$(successful_run 'Shared exact quarter-hour aggTrades 2024')"
+            s24="$(successful_run 'Shared official support 2024')"
+            echo "attempt=${attempt} 2022=${e22:-none}/${s22:-none} 2023=${e23:-none}/${s23:-none} 2024=${e24:-none}/${s24:-none}"
+            if [[ -n "${e22}" && -n "${s22}" && -n "${e23}" && -n "${s23}" && -n "${e24}" && -n "${s24}" ]]; then
+              for pair in e22 s22 e23 s23 e24 s24; do echo "${pair}=${!pair}" >> "$GITHUB_OUTPUT"; done
+              exit 0
+            fi
+            sleep 60
+          done
+          exit 1
+
+      - name: Download and reconstruct immutable 2022-2024 roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          for year in 2022 2023 2024; do mkdir -p "exact${year}" "support${year}" "data${year}/support"; done
+          gh run download "${{ steps.data.outputs.e22 }}" --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v3-${{ steps.data.outputs.e22 }}" --dir exact2022
+          gh run download "${{ steps.data.outputs.s22 }}" --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${{ steps.data.outputs.s22 }}" --dir support2022
+          gh run download "${{ steps.data.outputs.e23 }}" --repo "${REPOSITORY}" \
+            --name "shared-exact-boundary-2023-${{ steps.data.outputs.e23 }}" --dir exact2023
+          gh run download "${{ steps.data.outputs.s23 }}" --repo "${REPOSITORY}" \
+            --name "shared-official-support-2023-${{ steps.data.outputs.s23 }}" --dir support2023
+          gh run download "${{ steps.data.outputs.e24 }}" --repo "${REPOSITORY}" \
+            --name "shared-exact-boundary-2024-${{ steps.data.outputs.e24 }}" --dir exact2024
+          gh run download "${{ steps.data.outputs.s24 }}" --repo "${REPOSITORY}" \
+            --name "shared-official-support-2024-${{ steps.data.outputs.s24 }}" --dir support2024
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              found=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: found.append(path)
+              if len(found)!=1: raise RuntimeError(f'{root}/{schema}: {found}')
+              return found[0]
+          for year in (2022,2023,2024):
+              exact=locate(f'exact{year}','wave39-quarterhour-exact-aggtrades-year-v1')
+              support=locate(f'support{year}','wave39-official-support-combined-v3')
+              target=Path(f'data{year}')
+              for path in exact.parent.glob('*'):
+                  if path.is_file(): shutil.copy2(path,target/path.name)
+              for path in support.parent.glob('*'):
+                  if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cross-check 2024 sources before any candidate PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest \
+            research/wave39/test_wave39_engine_v3.py \
+            research/wave39/test_wave39_engine_v4.py \
+            research/wave41/test_wave41.py -q
+          rm -rf output; mkdir -p output/common-audits
+          python -m research.wave39.audit_boundary_vs_kline \
+            --data-root data2024 --year 2024 --output output/common-audits/source_crosscheck_2024.json
+
+      - name: Materialize authorized frozen inputs from the branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p frozen-inputs
+          while read -r wave; do
+            [[ -z "${wave}" ]] && continue
+            case "${wave}" in
+              39)
+                freeze="research/wave39/frozen/WAVE39_CANDIDATE_BEFORE_2023.json"
+                result="research/wave39/results/validation_2023_final/wave39_validation_2023.json"
+                ;;
+              40)
+                freeze="research/wave40/frozen/WAVE40_CANDIDATE_BEFORE_2023.json"
+                result="research/wave40/results/validation_2023/wave40_validation_2023.json"
+                ;;
+              41)
+                freeze="research/wave41/frozen/WAVE41_CANDIDATE_BEFORE_2023.json"
+                result="research/wave41/results/validation_2023/wave41_validation_2023.json"
+                ;;
+              *) echo "unexpected wave ${wave}" >&2; exit 1 ;;
+            esac
+            git show "origin/${HEAD_BRANCH}:${freeze}" > "frozen-inputs/wave${wave}_freeze.json"
+            git show "origin/${HEAD_BRANCH}:${result}" > "frozen-inputs/wave${wave}_result_2023.json"
+          done < eligible_waves.txt
+
+      - name: Run every authorized candidate unchanged on 2024
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r wave; do
+            [[ -z "${wave}" ]] && continue
+            mkdir -p "output/wave${wave}"
+            case "${wave}" in
+              39) module="research.wave39.run_wave39_validation_2024" ;;
+              40) module="research.wave40.run_wave40_validation_2024" ;;
+              41) module="research.wave41.run_wave41_validation_2024" ;;
+            esac
+            python -m "${module}" \
+              --data-2022 data2022 --data-2023 data2023 --data-2024 data2024 \
+              --freeze "frozen-inputs/wave${wave}_freeze.json" \
+              --result-2023 "frozen-inputs/wave${wave}_result_2023.json" \
+              --director-registration director_registration.json \
+              --output-dir "output/wave${wave}" \
+              2>&1 | tee "output/wave${wave}/run.log"
+            cp output/common-audits/source_crosscheck_2024.json "output/wave${wave}/source_crosscheck_2024.json"
+          done < eligible_waves.txt
+
+      - name: Independently audit all 2024 results
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          eligible=[int(x) for x in Path('eligible_waves.txt').read_text().split()]
+          summary={}
+          for wave in eligible:
+              root=Path(f'output/wave{wave}')
+              manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+              result_path=root/f'wave{wave}_validation_2024.json'
+              ledger_path=root/f'wave{wave}_validation_2024_ledger.csv'
+              result=json.loads(result_path.read_text(encoding='utf-8'))
+              if result.get('sealed_terminal_oos_opened') or result.get('risk_or_leverage_optimized'):
+                  raise RuntimeError(f'Wave{wave}: terminal/risk lock violation')
+              if manifest.get('candidate_id')!=result.get('candidate_id'):
+                  raise RuntimeError(f'Wave{wave}: candidate mismatch')
+              if hashlib.sha256(result_path.read_bytes()).hexdigest()!=manifest['result_sha256']:
+                  raise RuntimeError(f'Wave{wave}: result hash mismatch')
+              if hashlib.sha256(ledger_path.read_bytes()).hexdigest()!=manifest['ledger_sha256']:
+                  raise RuntimeError(f'Wave{wave}: ledger hash mismatch')
+              summary[str(wave)]={
+                  'candidate_id':manifest['candidate_id'],
+                  'gate_passed':bool(manifest['gate_passed']),
+                  'manifest_sha256':hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest(),
+                  'result_sha256':manifest['result_sha256'],
+              }
+          Path('output/DIRECTOR_2024_EXECUTION_SUMMARY.json').write_text(
+              json.dumps({'schema':'wave39-41-2024-execution-summary-v1','waves':summary},indent=2,sort_keys=True),
+              encoding='utf-8'
+          )
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit immutable 2024 results
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r wave; do
+            [[ -z "${wave}" ]] && continue
+            destination="research/wave${wave}/results/validation_2024"
+            rm -rf "${destination}"; mkdir -p "${destination}"
+            cp -a "output/wave${wave}/." "${destination}/"
+          done < eligible_waves.txt
+          mkdir -p research/director
+          cp output/DIRECTOR_2024_EXECUTION_SUMMARY.json research/director/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/director/DIRECTOR_2024_EXECUTION_SUMMARY.json \
+            research/wave39/results/validation_2024 \
+            research/wave40/results/validation_2024 \
+            research/wave41/results/validation_2024 || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record authorized Wave39-41 2024 validations"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${HEAD_BRANCH}"; then exit 0; fi
+            git fetch origin "${HEAD_BRANCH}"; git rebase "origin/${HEAD_BRANCH}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-41-authorized-validation-2024-${{ github.run_id }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
