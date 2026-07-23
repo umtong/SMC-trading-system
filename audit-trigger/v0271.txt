@@ -1,0 +1,3 @@
+trigger=v0271-transport-audit
+candidate_pnl_observed=false
+terminal_holdout_opened=false
