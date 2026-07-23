@@ -1,0 +1,177 @@
+name: Relative Flow Real-Data Research v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/relative-flow-realdata-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout current research trigger
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen runner source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC-trading-system
+          ref: 8d7bd272f0b47ca8e93b72a7e0bde9d37d26de7e
+          path: runner-source
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore frozen runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runner
+          cat runner-source/research/relative_flow_v08/runner_bundle.part-* | base64 --decode > /tmp/runner.tar.gz
+          echo "372d75e008e9ed9cbbae9cce02c76309aa08e1ae77bda379da53ffe83f4110d5  /tmp/runner.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/runner.tar.gz -C runner
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "runner[dev]"
+
+      - name: Verify runner tests
+        run: python -m pytest runner/tests -q
+
+      - name: Download and hash BTC/ETH perpetual inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data results
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          import requests
+
+          targets = [
+              {
+                  "name": "BTCUSDT",
+                  "repo": "Torch-Trade/btcusdt_perp_1m_05_2021_to_02_2026",
+                  "dest": "data/BTCUSDT.parquet",
+                  "expected_original_sha256": "40e0cb41e8623a49d1e7561197f0bef4c1e1cc8fb471ae8ac9dde7a116cdc4ae",
+              },
+              {
+                  "name": "ETHUSDT",
+                  "repo": "Torch-Trade/ethusdt_perp_1m_05_2021_to_02_2026",
+                  "dest": "data/ETHUSDT.parquet",
+                  "expected_original_sha256": "369c49083c31293e6f96ef4ef8e04a0fd5cb853753464d6ec123043c17d87537",
+              },
+              {
+                  "name": "BTCUSDT_funding",
+                  "repo": "Torch-Trade/btcusdt_perp_funding_8h_05_2021_to_02_2026",
+                  "dest": "data/BTCUSDT_funding.parquet",
+              },
+              {
+                  "name": "ETHUSDT_funding",
+                  "repo": "Torch-Trade/ethusdt_perp_funding_8h_05_2021_to_02_2026",
+                  "dest": "data/ETHUSDT_funding.parquet",
+              },
+          ]
+
+          session = requests.Session()
+          session.headers["User-Agent"] = "SMC-trading-system-research/relative-flow-v08"
+
+          def stream(url: str, path: Path) -> tuple[str, int]:
+              h = hashlib.sha256()
+              size = 0
+              with session.get(url, stream=True, timeout=(30, 300), allow_redirects=True) as response:
+                  response.raise_for_status()
+                  content_type = response.headers.get("content-type", "")
+                  if "text/html" in content_type.lower():
+                      raise RuntimeError(f"unexpected HTML response from {url}")
+                  with path.open("wb") as output:
+                      for chunk in response.iter_content(4 * 1024 * 1024):
+                          if not chunk:
+                              continue
+                          output.write(chunk)
+                          h.update(chunk)
+                          size += len(chunk)
+              if size < 1024:
+                  raise RuntimeError(f"download too small: {url} ({size} bytes)")
+              return h.hexdigest(), size
+
+          manifest = []
+          for item in targets:
+              repo = item["repo"]
+              dest = Path(item["dest"])
+              attempts = [
+                  (
+                      "original",
+                      f"https://huggingface.co/datasets/{repo}/resolve/main/data/train-00000-of-00001.parquet?download=true",
+                  ),
+                  (
+                      "dataset_viewer_export",
+                      f"https://huggingface.co/api/datasets/{repo}/parquet/default/train/0.parquet",
+                  ),
+              ]
+              errors = []
+              for source_kind, url in attempts:
+                  try:
+                      digest, size = stream(url, dest)
+                      expected = item.get("expected_original_sha256") if source_kind == "original" else None
+                      if expected and digest != expected:
+                          dest.unlink(missing_ok=True)
+                          raise RuntimeError(f"original SHA-256 mismatch: expected {expected}, got {digest}")
+                      manifest.append({
+                          "name": item["name"],
+                          "repo": repo,
+                          "source_kind": source_kind,
+                          "url": url,
+                          "path": str(dest),
+                          "bytes": size,
+                          "sha256": digest,
+                          "expected_original_sha256": item.get("expected_original_sha256"),
+                          "original_hash_verified": bool(expected),
+                      })
+                      print(f"downloaded {item['name']} {size} bytes {digest} via {source_kind}", flush=True)
+                      break
+                  except Exception as exc:
+                      errors.append(f"{source_kind}: {type(exc).__name__}: {exc}")
+                      dest.unlink(missing_ok=True)
+              else:
+                  raise RuntimeError(f"all downloads failed for {item['name']}: {errors}")
+
+          Path("data/download_manifest.json").write_text(
+              json.dumps({"inputs": manifest}, indent=2), encoding="utf-8"
+          )
+          PY
+
+      - name: Run frozen development and validation research
+        shell: bash
+        run: |
+          set -o pipefail
+          python runner/scripts/run_realdata_relative_flow_research.py \
+            --config runner/configs/relative_flow_raid_reversal_v0_8.yaml \
+            --btc data/BTCUSDT.parquet \
+            --eth data/ETHUSDT.parquet \
+            --btc-funding data/BTCUSDT_funding.parquet \
+            --eth-funding data/ETHUSDT_funding.parquet \
+            --output results \
+            2>&1 | tee results/workflow.log
+
+      - name: Upload research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-flow-realdata-results-v2-${{ github.run_id }}
+          path: |
+            results/**
+            data/download_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
