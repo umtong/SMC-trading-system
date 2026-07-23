@@ -1,0 +1,121 @@
+{
+  "actual_archive_bytes": 25084,
+  "actual_archive_sha256": "e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9",
+  "all_parts_match": true,
+  "archive_bytes_match": true,
+  "archive_sha_match": true,
+  "base64_decode_ok": true,
+  "candidate_pnl_observed": false,
+  "declared_archive_bytes": 25084,
+  "declared_archive_sha256": "e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9",
+  "declared_part_count": 9,
+  "encoded_characters": 33448,
+  "manifest_sha256": "c4fc1b3ff1e7e996721a68f1ed3f3046d08e06ea898b7cf4e043332216d637c7",
+  "parts": [
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "5d2a38d7b2df5eee22617ac9e46fcdf915126c5f92c013782d435c0e61535200",
+      "declared_bytes": 4000,
+      "declared_sha256": "5d2a38d7b2df5eee22617ac9e46fcdf915126c5f92c013782d435c0e61535200",
+      "name": "part-000.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "b7150f3910ee96b8f9470a022e2754ba1cf3905b4a1db836f3265dcae6566450",
+      "declared_bytes": 4000,
+      "declared_sha256": "b7150f3910ee96b8f9470a022e2754ba1cf3905b4a1db836f3265dcae6566450",
+      "name": "part-001.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "c6cc6d2fc01e8de02c3f1450db22a5323c9965e20734081aa3b03c31c796fade",
+      "declared_bytes": 4000,
+      "declared_sha256": "c6cc6d2fc01e8de02c3f1450db22a5323c9965e20734081aa3b03c31c796fade",
+      "name": "part-002.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "f035ea2d5693747f04b7f9beee90d59426b2cc8358c5c741c7f0b7b17246ba45",
+      "declared_bytes": 4000,
+      "declared_sha256": "f035ea2d5693747f04b7f9beee90d59426b2cc8358c5c741c7f0b7b17246ba45",
+      "name": "part-003.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "4a7038dae391a9cb2e036c7cbb209db0eb45b12cded3d2826d994f5eef9c855e",
+      "declared_bytes": 4000,
+      "declared_sha256": "4a7038dae391a9cb2e036c7cbb209db0eb45b12cded3d2826d994f5eef9c855e",
+      "name": "part-004.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "ae3d93c2691f9f69128515c9228626e8271100ce4110e4d3e0847f720b335f20",
+      "declared_bytes": 4000,
+      "declared_sha256": "ae3d93c2691f9f69128515c9228626e8271100ce4110e4d3e0847f720b335f20",
+      "name": "part-005.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "102a0ff92d1865e3391f1882dd05858c3dd7431db29c47258172bcfad41cf12e",
+      "declared_bytes": 4000,
+      "declared_sha256": "102a0ff92d1865e3391f1882dd05858c3dd7431db29c47258172bcfad41cf12e",
+      "name": "part-006.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 4000,
+      "actual_sha256": "d0eaf7b661ffaea05cfdd47bfc7a576c8adb0cdefc6e3cf171faf3be8bbc3bf6",
+      "declared_bytes": 4000,
+      "declared_sha256": "d0eaf7b661ffaea05cfdd47bfc7a576c8adb0cdefc6e3cf171faf3be8bbc3bf6",
+      "name": "part-007.b64",
+      "present": true,
+      "sha_match": true
+    },
+    {
+      "actual_bytes": 1448,
+      "actual_sha256": "a83fb266f532ff81ecdf837151a369927280df41680761138aa2fd680fb97503",
+      "declared_bytes": 1448,
+      "declared_sha256": "a83fb266f532ff81ecdf837151a369927280df41680761138aa2fd680fb97503",
+      "name": "part-008.b64",
+      "present": true,
+      "sha_match": true
+    }
+  ],
+  "production_enabled": false,
+  "schema_version": 1,
+  "tar_first_members": [
+    "research",
+    "research/v027",
+    "research/v027/__init__.py",
+    "research/v027/qh_core.py",
+    "research/v027/qh_pipeline.py",
+    "tests",
+    "tests/test_qh_core.py",
+    "tests/test_qh_pipeline.py",
+    "scripts",
+    "scripts/preregister_v0271.py",
+    "artifacts",
+    "artifacts/v027",
+    "artifacts/v027/preregister_output.json",
+    "artifacts/v027/research_plan_locked.json",
+    "requirements-lock.txt",
+    "pyproject.toml"
+  ],
+  "tar_member_count": 16,
+  "tar_read_ok": true,
+  "terminal_holdout_opened": false,
+  "xz_decode_ok": true
+}
