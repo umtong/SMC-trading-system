@@ -137,3 +137,22 @@
 +        total_round_trip_cost_bps=13.0, entry_slippage_bps=0.0, exit_slippage_bps=0.0,
 +    )
 +    assert trades == []
+--- a/research/v12_liquidity_shock/run_discovery.py
++++ b/research/v12_liquidity_shock/run_discovery.py
+@@ -15,6 +15,8 @@
+ import pandas as pd
+ import requests
+ 
++from event_study import write_horizon_event_study
++
+ from core import (
+     Family,
+     StrategyConfig,
+@@ -258,6 +260,7 @@
+     # Compute the expensive rolling features once per symbol.
+     feature_cfg = StrategyConfig(family=Family.CONTINUATION, abs_return_z=3.0, dislocation_z=1.0)
+     featured_cache = {symbol: add_causal_features(frame, feature_cfg) for symbol, frame in frames.items()}
++    write_horizon_event_study(featured_cache, output=output, start=start, end=end)
+     for family in (Family.CONTINUATION, Family.REVERSAL):
+         for return_z in (3.0, 4.0):
+             for dislocation_z in (1.0, 2.0):
