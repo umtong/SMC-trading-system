@@ -2,6 +2,7 @@
   "candidate_id": "v13_us_session_flow_v1",
   "status": "FROZEN_BEFORE_2024_OOS",
   "frozen_at_utc": "2026-07-23T09:50:00Z",
+  "evaluator_sha256": "b19cfc0e3b54e0126a24afe62073b0ac83b933d8075a08467cf473c6d72d814b",
   "discovery_data": {
     "venue": "Binance USD-M perpetual futures public archive",
     "symbols": ["BTCUSDT", "ETHUSDT"],
@@ -26,7 +27,7 @@
   },
   "execution": {
     "global_pending_plus_open_limit": 1,
-    "entry_order": "marketable at next exact minute open; missing minute cancels",
+    "entry_order": "marketable at next exact 1m open; missing minute cancels",
     "fixed_protective_stop_fraction": 0.03,
     "profit_target": null,
     "maximum_holding_minutes": 720,
