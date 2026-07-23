@@ -7,6 +7,10 @@ on:
     paths:
       - '.github/workflows/v0271-transport-audit.yml'
       - 'research/v0271_bundle_v2/**'
+  pull_request:
+    paths:
+      - '.github/workflows/v0271-transport-audit.yml'
+      - 'research/v0271_bundle_v2/**'
   workflow_dispatch:
 
 permissions:
