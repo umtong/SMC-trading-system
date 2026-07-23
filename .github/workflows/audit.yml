@@ -8,6 +8,11 @@ on:
       - '.github/workflows/audit.yml'
       - 'bundle/**'
       - 'trigger.txt'
+  pull_request:
+    paths:
+      - '.github/workflows/audit.yml'
+      - 'bundle/**'
+      - 'trigger.txt'
   workflow_dispatch:
 
 permissions:
