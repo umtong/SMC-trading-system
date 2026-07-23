@@ -1,0 +1,155 @@
+name: Cache ETH SOL USD-M Futures Metrics v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-usdm-metrics-eth-sol-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [ETHUSDT, SOLUSDT]
+        year: [2022, 2023, 2024, 2025]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Download and verify official daily metrics
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+        run: |
+          set -euo pipefail
+          mkdir -p metrics-cache
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import io
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+
+          import pandas as pd
+          import requests
+
+          symbol = os.environ["SYMBOL"]
+          year = int(os.environ["YEAR"])
+          start = pd.Timestamp(f"{year}-01-01T00:00:00Z")
+          end = pd.Timestamp(f"{year + 1}-01-01T00:00:00Z")
+          if year == 2025:
+              end = pd.Timestamp("2025-07-01T00:00:00Z")
+          base = "https://data.binance.vision/data/futures/um/daily/metrics"
+          out_dir = Path("metrics-cache")
+          session = requests.Session()
+          session.headers["User-Agent"] = "SMC-trading-system-official-metrics-cache/1.0"
+
+          frames = []
+          archives = []
+          missing = []
+          for day in pd.date_range(start, end - pd.Timedelta(days=1), freq="1D"):
+              stamp = day.strftime("%Y-%m-%d")
+              filename = f"{symbol}-metrics-{stamp}.zip"
+              url = f"{base}/{symbol}/{filename}"
+              checksum_url = url + ".CHECKSUM"
+              checksum_response = session.get(checksum_url, timeout=(30, 120))
+              if checksum_response.status_code == 404:
+                  missing.append(stamp)
+                  continue
+              checksum_response.raise_for_status()
+              expected = checksum_response.text.strip().split()[0].lower()
+              archive_response = session.get(url, timeout=(30, 180))
+              archive_response.raise_for_status()
+              payload = archive_response.content
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"{filename}: checksum mismatch expected={expected} actual={actual}")
+              with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                  csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+                  if len(csv_names) != 1:
+                      raise RuntimeError(f"{filename}: expected one CSV, got {csv_names}")
+                  raw = zf.read(csv_names[0])
+              df = pd.read_csv(io.BytesIO(raw))
+              df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+              ts_col = next((c for c in ("create_time", "timestamp", "time") if c in df.columns), None)
+              if ts_col is None:
+                  raise RuntimeError(f"{filename}: timestamp column missing; columns={list(df.columns)}")
+              df["timestamp"] = pd.to_datetime(df[ts_col], utc=True, errors="raise")
+              if "symbol" in df.columns:
+                  bad = df["symbol"].astype(str).str.upper().ne(symbol)
+                  if bad.any():
+                      raise RuntimeError(f"{filename}: symbol mismatch")
+              numeric_cols = [c for c in df.columns if c not in {ts_col, "timestamp", "symbol"}]
+              for col in numeric_cols:
+                  df[col] = pd.to_numeric(df[col], errors="raise")
+              keep = ["timestamp"] + (["symbol"] if "symbol" in df.columns else []) + numeric_cols
+              frames.append(df[keep])
+              archives.append({
+                  "date": stamp,
+                  "url": url,
+                  "checksum_url": checksum_url,
+                  "bytes": len(payload),
+                  "sha256": actual,
+                  "rows": len(df),
+                  "columns": list(df.columns),
+              })
+              if len(archives) == 1 or len(archives) % 50 == 0:
+                  print(symbol, year, stamp, len(df), flush=True)
+
+          if not frames:
+              raise RuntimeError(f"{symbol} {year}: no official metrics archives found")
+          data = pd.concat(frames, ignore_index=True)
+          data = data[(data.timestamp >= start) & (data.timestamp < end)].copy()
+          data = data.sort_values("timestamp").reset_index(drop=True)
+          if data.timestamp.duplicated().any():
+              dup = data.loc[data.timestamp.duplicated(keep=False), "timestamp"].head().astype(str).tolist()
+              raise RuntimeError(f"{symbol} {year}: duplicate timestamps {dup}")
+          numeric = data.select_dtypes(include="number")
+          if not numeric.empty and not numeric.map(pd.notna).all().all():
+              raise RuntimeError(f"{symbol} {year}: non-finite numeric metrics")
+          spacing = data.timestamp.diff().dropna()
+          output = out_dir / f"{symbol}_metrics_{year}.parquet"
+          data.to_parquet(output, index=False, compression="zstd")
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          manifest = {
+              "source": "official Binance Vision USD-M daily metrics",
+              "symbol": symbol,
+              "year": year,
+              "start_inclusive": start.isoformat(),
+              "end_exclusive": end.isoformat(),
+              "rows": len(data),
+              "columns": list(data.columns),
+              "first_timestamp": data.timestamp.iloc[0].isoformat(),
+              "last_timestamp": data.timestamp.iloc[-1].isoformat(),
+              "median_spacing_seconds": float(spacing.median().total_seconds()) if len(spacing) else None,
+              "gap_count_over_5m": int((spacing > pd.Timedelta(minutes=5)).sum()),
+              "largest_gap_seconds": float(spacing.max().total_seconds()) if len(spacing) else 0.0,
+              "missing_archive_dates": missing,
+              "output": str(output),
+              "output_bytes": output.stat().st_size,
+              "output_sha256": digest,
+              "archives": archives,
+          }
+          manifest_path = out_dir / f"{symbol}_metrics_{year}_manifest.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({k: v for k, v in manifest.items() if k != "archives"}, indent=2), flush=True)
+          PY
+      - name: Upload metrics cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: usdm-metrics-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          path: metrics-cache/**
+          retention-days: 7
+          if-no-files-found: error
