@@ -1,0 +1,225 @@
+name: Wave7 Positioning Metrics Development
+
+on:
+  push:
+    branches:
+      - agent/wave7-positioning-metrics-development
+    paths:
+      - .github/workflows/wave7-positioning-metrics-development.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wave7-positioning-metrics-development.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  positioning-metrics-development:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download, checksum and merge Binance Vision daily metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          ROOT = "https://data.binance.vision/data/futures/um/daily/metrics"
+          OUT = Path("data/wave7_positioning_metrics_development")
+          RAW = OUT / "raw"
+          CHECKSUM = re.compile(r"\b([0-9a-fA-F]{64})\b")
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = date(2021, 1, 1)
+          END = date(2023, 12, 31)
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def dates():
+              value = START
+              while value <= END:
+                  yield value.isoformat()
+                  value += timedelta(days=1)
+
+          def get(url: str, attempts: int = 7) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url, headers={"User-Agent": "smc-ict-wave7/2.0"}
+                      )
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          raise
+                      error = exc
+                  except Exception as exc:
+                      error = exc
+                  if attempt + 1 < attempts:
+                      time.sleep(min(2 ** attempt, 20))
+              raise RuntimeError(f"failed {url}: {error!r}")
+
+          def fetch(symbol: str, day: str) -> dict:
+              name = f"{symbol}-metrics-{day}.zip"
+              url = f"{ROOT}/{symbol}/{name}"
+              try:
+                  checksum_payload = get(url + ".CHECKSUM")
+                  payload = get(url)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return {
+                          "symbol": symbol, "day": day, "status": "not_available",
+                          "url": url, "error": f"HTTP {exc.code}",
+                      }
+                  raise
+              match = CHECKSUM.search(checksum_payload.decode("utf-8", errors="strict"))
+              if match is None:
+                  raise ValueError(f"no SHA-256 in {url}.CHECKSUM")
+              official = match.group(1).lower()
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != official:
+                  raise ValueError(f"checksum mismatch {url}: {actual} != {official}")
+              path = RAW / symbol / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(payload)
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [x for x in archive.namelist() if x.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise ValueError(f"unexpected archive members {url}: {members}")
+                  with archive.open(members[0]) as handle:
+                      first_line = handle.readline().decode("utf-8-sig", errors="strict").strip()
+                      second_line = handle.readline().decode("utf-8-sig", errors="strict").strip()
+              return {
+                  "symbol": symbol, "day": day, "status": "verified", "url": url,
+                  "official_sha256": official, "actual_sha256": actual,
+                  "bytes": len(payload), "relative_path": str(path.relative_to(OUT)),
+                  "csv_member": members[0], "header": first_line,
+                  "sample_row": second_line,
+              }
+
+          tasks = [(symbol, day) for symbol in SYMBOLS for day in dates()]
+          records = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+              futures = {pool.submit(fetch, *task): task for task in tasks}
+              for number, future in enumerate(concurrent.futures.as_completed(futures), 1):
+                  symbol, day = futures[future]
+                  try:
+                      record = future.result()
+                  except Exception as exc:
+                      record = {
+                          "symbol": symbol, "day": day, "status": "error",
+                          "url": f"{ROOT}/{symbol}/{symbol}-metrics-{day}.zip",
+                          "error": repr(exc),
+                      }
+                  records.append(record)
+                  if number % 100 == 0 or record["status"] == "error":
+                      print(number, "/", len(tasks), record["status"], symbol, day, record.get("error", ""), flush=True)
+          records.sort(key=lambda item: (item["symbol"], item["day"]))
+          verified = [item for item in records if item["status"] == "verified"]
+          missing = [item for item in records if item["status"] == "not_available"]
+          errors = [item for item in records if item["status"] == "error"]
+
+          merged = []
+          for symbol in SYMBOLS:
+              symbol_records = [item for item in verified if item["symbol"] == symbol]
+              output_path = OUT / f"{symbol}_metrics.csv.gz"
+              expected_header = None
+              rows = 0
+              first_row = None
+              last_row = None
+              with gzip.open(output_path, "wt", encoding="utf-8", newline="") as target:
+                  writer = csv.writer(target)
+                  for item in symbol_records:
+                      payload = (OUT / item["relative_path"]).read_bytes()
+                      with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                          member = item["csv_member"]
+                          with io.TextIOWrapper(archive.open(member), encoding="utf-8-sig", newline="") as source:
+                              reader = csv.reader(source)
+                              header = next(reader)
+                              if expected_header is None:
+                                  expected_header = header
+                                  writer.writerow(header)
+                              elif header != expected_header:
+                                  raise ValueError(f"header drift {symbol} {item['day']}: {header} != {expected_header}")
+                              for row in reader:
+                                  if not row:
+                                      continue
+                                  writer.writerow(row)
+                                  rows += 1
+                                  first_row = row if first_row is None else first_row
+                                  last_row = row
+              merged.append({
+                  "symbol": symbol, "verified_days": len(symbol_records),
+                  "rows": rows, "header": expected_header,
+                  "first_row": first_row, "last_row": last_row,
+                  "output_relative_path": str(output_path.relative_to(OUT)),
+                  "output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+                  "output_bytes": output_path.stat().st_size,
+              })
+
+          counts = {
+              symbol: sum(item["symbol"] == symbol for item in verified)
+              for symbol in SYMBOLS
+          }
+          manifest = {
+              "source": "Binance Vision USD-M daily metrics",
+              "phase": "development_only",
+              "start_date_requested": START.isoformat(),
+              "end_date_requested": END.isoformat(),
+              "validation_not_downloaded_from": "2024-01-01T00:00:00+00:00",
+              "sealed_oos_not_downloaded_from": "2025-08-01T00:00:00+00:00",
+              "verified_archive_count": len(verified),
+              "not_available_count": len(missing),
+              "error_count": len(errors),
+              "verified_by_symbol": counts,
+              "total_verified_bytes": sum(item["bytes"] for item in verified),
+              "merged": merged,
+              "records": records,
+          }
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          (OUT / "diagnostic.txt").write_text(
+              "\n".join(
+                  f"{item['status']} {item['symbol']} {item['day']} {item.get('error','')}"
+                  for item in records if item["status"] != "verified"
+              ) + "\n", encoding="utf-8",
+          )
+          print(json.dumps({
+              "verified_archive_count": len(verified),
+              "not_available_count": len(missing),
+              "error_count": len(errors),
+              "verified_by_symbol": counts,
+              "merged": merged,
+          }, indent=2))
+          PY
+
+      - name: Upload verified development positioning metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave7-positioning-metrics-development-2021_2023-${{ github.sha }}
+          path: data/wave7_positioning_metrics_development
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
