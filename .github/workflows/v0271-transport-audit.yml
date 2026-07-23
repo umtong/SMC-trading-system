@@ -1,0 +1,123 @@
+name: v0.27.1 transport byte audit
+
+on:
+  push:
+    branches:
+      - research/v027-quarter-hour-20260724
+    paths:
+      - '.github/workflows/v0271-transport-audit.yml'
+      - 'research/v0271_bundle_v2/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v0271-transport-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/v027-quarter-hour-20260724
+
+      - name: Audit every transported byte and persist evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/results/v0271-transport-audit
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import lzma
+          import tarfile
+          from io import BytesIO
+          from pathlib import Path
+
+          root = Path('research/v0271_bundle_v2')
+          manifest_path = root / 'TRANSPORT_MANIFEST.json'
+          out_path = Path('research/results/v0271-transport-audit/audit.json')
+          result = {
+              'schema_version': 1,
+              'study_id': 'quarter_hour_component_rotation_v0_27_1',
+              'manifest_present': manifest_path.exists(),
+              'candidate_pnl_observed': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+              'parts': [],
+          }
+          try:
+              manifest_raw = manifest_path.read_bytes()
+              manifest = json.loads(manifest_raw)
+              result['manifest_sha256'] = hashlib.sha256(manifest_raw).hexdigest()
+              result['declared_part_count'] = manifest.get('part_count')
+              result['declared_archive_bytes'] = manifest.get('archive_bytes')
+              result['declared_archive_sha256'] = manifest.get('archive_sha256')
+              pieces = []
+              all_parts_match = True
+              for item in manifest.get('parts', []):
+                  path = root / str(item['name'])
+                  raw = path.read_bytes() if path.exists() else b''
+                  actual_sha = hashlib.sha256(raw).hexdigest()
+                  record = {
+                      'name': item['name'],
+                      'present': path.exists(),
+                      'declared_bytes': item.get('bytes'),
+                      'actual_bytes': len(raw),
+                      'declared_characters': item.get('characters'),
+                      'actual_characters_without_ascii_whitespace': len(b''.join(raw.split())),
+                      'declared_sha256': item.get('sha256'),
+                      'actual_sha256': actual_sha,
+                      'sha_match': actual_sha == item.get('sha256'),
+                  }
+                  result['parts'].append(record)
+                  all_parts_match = all_parts_match and record['present'] and record['sha_match']
+                  pieces.append(b''.join(raw.split()))
+              result['all_parts_match'] = all_parts_match
+              encoded = b''.join(pieces)
+              result['encoded_characters'] = len(encoded)
+              try:
+                  archive = base64.b64decode(encoded, validate=True)
+                  result['base64_decode_ok'] = True
+                  result['actual_archive_bytes'] = len(archive)
+                  result['actual_archive_sha256'] = hashlib.sha256(archive).hexdigest()
+                  result['archive_bytes_match'] = len(archive) == manifest.get('archive_bytes')
+                  result['archive_sha_match'] = result['actual_archive_sha256'] == manifest.get('archive_sha256')
+                  try:
+                      decompressed = lzma.decompress(archive)
+                      result['xz_decode_ok'] = True
+                      result['tar_bytes'] = len(decompressed)
+                      try:
+                          with tarfile.open(fileobj=BytesIO(decompressed), mode='r:') as tf:
+                              names = tf.getnames()
+                          result['tar_read_ok'] = True
+                          result['tar_member_count'] = len(names)
+                          result['tar_first_members'] = names[:20]
+                      except Exception as exc:
+                          result['tar_read_ok'] = False
+                          result['tar_error'] = repr(exc)
+                  except Exception as exc:
+                      result['xz_decode_ok'] = False
+                      result['xz_error'] = repr(exc)
+              except Exception as exc:
+                  result['base64_decode_ok'] = False
+                  result['base64_error'] = repr(exc)
+          except Exception as exc:
+              result['audit_error'] = repr(exc)
+
+          out_path.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
+          print(json.dumps(result, sort_keys=True, indent=2))
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/results/v0271-transport-audit/audit.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record v0.27.1 transport byte audit'
+            git push origin HEAD:research/v027-quarter-hour-20260724
+          fi
