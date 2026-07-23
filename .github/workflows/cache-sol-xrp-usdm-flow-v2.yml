@@ -41,8 +41,8 @@ jobs:
           ALIASES={
               'open_time':'open_time','open_time_ms':'open_time',
               'quote_asset_volume':'quote_volume','quote_volume':'quote_volume',
-              'number_of_trades':'num_trades','trade_count':'num_trades','num_trades':'num_trades',
-              'taker_buy_base_asset_volume':'taker_buy_base_volume','taker_buy_base_volume':'taker_buy_base_volume',
+              'number_of_trades':'num_trades','trade_count':'num_trades','num_trades':'num_trades','count':'num_trades',
+              'taker_buy_base_asset_volume':'taker_buy_base_volume','taker_buy_base_volume':'taker_buy_base_volume','taker_buy_volume':'taker_buy_base_volume',
               'taker_buy_quote_asset_volume':'taker_buy_quote_volume','taker_buy_quote_volume':'taker_buy_quote_volume',
           }
           session=requests.Session(); session.headers['User-Agent']='SMC-research-cache-v2'
