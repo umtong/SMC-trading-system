@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   issues: write
   pull-requests: write
 
@@ -20,14 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore and verify immutable extractor
+      - name: Restore and verify extractor from successful 2023 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --location --retry 5 --retry-all-errors \
-            https://raw.githubusercontent.com/umtong/SMC-trading-system/6545dee8c862565674c4eec1534a9791e4df3de8/research/v14_quarter_hour_aggtrade.py.gz.b64 \
-            -o /tmp/v14_quarter_hour_aggtrade.py.gz.b64
-          tr -d '\r\n\t ' < /tmp/v14_quarter_hour_aggtrade.py.gz.b64 | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          rm -rf /tmp/v14-source
+          gh run download 29998941598 \
+            --repo umtong/SMC-trading-system \
+            --name v14-quarter-hour-aggtrade-2023-29998941598 \
+            --dir /tmp/v14-source
+          source_file=/tmp/v14-source/research/v14_quarter_hour_aggtrade.py.gz.b64
+          test -f "$source_file"
+          tr -d '\r\n\t ' < "$source_file" | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
           echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
           python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
 
