@@ -7,6 +7,12 @@ on:
     paths:
       - .github/workflows/binance-usdm-data-bridge.yml
       - research/data_bridge_trigger.txt
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/binance-usdm-data-bridge.yml
+      - research/data_bridge_trigger.txt
   workflow_dispatch:
 
 permissions:
@@ -31,7 +37,6 @@ jobs:
           import datetime as dt
           import hashlib
           import json
-          import os
           import pathlib
           import time
           import urllib.error
