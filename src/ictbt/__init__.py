@@ -1,24 +1,10 @@
-"""ICT day-trading research engine, isolated from the legacy workspace."""
+"""ICT trading research package.
 
-from .backtest import BacktestConfig, BacktestResult, run_backtest
-from .s2_signals import S2Config
-from .s3_signals import S3Config
-from .s4_signals import S4Config
-from .s5_signals import S5Config
-from .s6_signals import S6Config
-from .s7_signals import S7Config
-from .signals import S1Config, detect_pivot_events
+The active, self-contained implementation lives in :mod:`ictbt.easychart_v0`.
+Legacy strategy modules that used to be re-exported from this package root are
+not part of the current repository snapshot. Keeping the root import free of
+optional-module side effects allows ``import ictbt.easychart_v0`` and its test
+suite to work in a clean checkout.
+"""
 
-__all__ = [
-    "BacktestConfig",
-    "BacktestResult",
-    "S1Config",
-    "S2Config",
-    "S3Config",
-    "S4Config",
-    "S5Config",
-    "S6Config",
-    "S7Config",
-    "detect_pivot_events",
-    "run_backtest",
-]
+__all__: list[str] = []
