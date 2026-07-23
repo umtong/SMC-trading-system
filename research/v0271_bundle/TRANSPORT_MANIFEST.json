@@ -4,6 +4,7 @@
   "archive_sha256": "e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9",
   "candidate_pnl_observed": false,
   "concatenation": "strip_ascii_whitespace_then_concatenate_in_manifest_order",
+  "dispatch_nonce": 1,
   "encoding": "base64",
   "part_count": 3,
   "parts": [
