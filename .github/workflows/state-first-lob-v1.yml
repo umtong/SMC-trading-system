@@ -43,7 +43,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p state-first-runtime
-          cat research_tools/state_first_lob_v1/script.part* | base64 --decode > state-first-runtime/state_first_lob_v1.py
+          python - <<'PY'
+          import base64, pathlib
+          parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
+          if not parts: raise SystemExit('no frozen script chunks')
+          encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
+          pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+          PY
           echo '2d622016999346eca02e98474b5b92e5911fad108e8f88645a5afdc8f9b66afb  state-first-runtime/state_first_lob_v1.py' | shasum -a 256 -c -
           python -m py_compile state-first-runtime/state_first_lob_v1.py
       - name: Build checksum-verified causal panel
@@ -86,7 +92,13 @@ jobs:
         shell: bash
         run: |
           mkdir -p state-first-runtime
-          cat research_tools/state_first_lob_v1/script.part* | base64 --decode > state-first-runtime/state_first_lob_v1.py
+          python - <<'PY'
+          import base64, pathlib
+          parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
+          if not parts: raise SystemExit('no frozen script chunks')
+          encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
+          pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+          PY
           echo '2d622016999346eca02e98474b5b92e5911fad108e8f88645a5afdc8f9b66afb  state-first-runtime/state_first_lob_v1.py' | shasum -a 256 -c -
           python -m py_compile state-first-runtime/state_first_lob_v1.py
       - name: Run train, selection, validation and conditionally open final date once
