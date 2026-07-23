@@ -1,0 +1,110 @@
+name: V11 Causal Microstructure Multi-Arm
+
+on:
+  push:
+    branches:
+      - "research/v11-microstructure-20260724"
+    paths:
+      - "research/v11_microstructure_multiarm.py.gz.b64"
+      - "research/v11_restore.py"
+      - ".github/workflows/v11-microstructure.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/v11_microstructure_multiarm.py.gz.b64"
+      - "research/v11_restore.py"
+      - ".github/workflows/v11-microstructure.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: >-
+          python -m pip install --upgrade pip
+          "numpy<3" "pandas<3" requests
+          lightgbm scikit-learn
+          huggingface_hub pyarrow
+
+      - name: Restore and syntax-check source
+        run: |
+          mkdir -p artifacts/v11-microstructure
+          python research/v11_restore.py research/v11_microstructure_multiarm.py.gz.b64 /tmp/v11_microstructure_multiarm.py | tee artifacts/v11-microstructure/restore.log
+          python /tmp/v11_microstructure_multiarm.py --synthetic-test | tee artifacts/v11-microstructure/synthetic-test.json
+
+      - name: Restore research data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/xsmc-v11
+          key: xsmc-v11-hf-binance-microstructure-2020-2026-v1
+
+      - name: Run causal microstructure multi-arm research
+        shell: bash
+        run: |
+          set -o pipefail
+          python /tmp/v11_microstructure_multiarm.py \
+            --start-month 2020-09 \
+            --end-month 2026-05 \
+            --validation-start 2023-07 \
+            --validation-end 2023-12 \
+            --oos-start 2024-01 \
+            --oos-end 2026-05 \
+            --cache-dir .cache/xsmc-v11 \
+            --output-dir artifacts/v11-microstructure \
+            2>&1 | tee artifacts/v11-microstructure/run.log
+
+      - name: Build concise report
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path('artifacts/v11-microstructure')
+          summary = out / 'summary.json'
+          lines = ['# V11 causal microstructure multi-arm', '']
+          if summary.exists():
+              s = json.loads(summary.read_text())
+              lines += [
+                  f"- status: `{s.get('status')}`",
+                  f"- target 1% daily met: `{s.get('target_1pct_daily_met')}`",
+                  f"- raw events: `{s.get('event_count')}`",
+                  f"- complete labeled events: `{s.get('complete_event_count')}`",
+                  f"- causal features: `{s.get('feature_count')}`",
+                  '',
+                  '## OOS portfolios', '',
+              ]
+              for row in s.get('oos_portfolios', []):
+                  lines.append(
+                      f"- `{row.get('portfolio')}`: trades={row.get('base_trades')}, "
+                      f"multiple={row.get('base_final_multiple')}, daily={row.get('base_geo_daily')}, "
+                      f"DD={row.get('base_max_drawdown')}, stress_multiple={row.get('stress_final_multiple')}"
+                  )
+          else:
+              lines += ['- status: `FAILED_BEFORE_SUMMARY`']
+              log = out / 'run.log'
+              if log.exists():
+                  lines += ['', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-160:]), '```']
+          (out / 'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Upload research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v11-microstructure-${{ github.run_id }}
+          path: artifacts/v11-microstructure
+          if-no-files-found: error
+          retention-days: 14
