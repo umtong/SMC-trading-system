@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
@@ -74,12 +76,7 @@ def test_schema_two_manifest_round_trips_canonically(tmp_path) -> None:
 
 def test_manifest_rejects_entry_clock_not_owned_by_confirmation() -> None:
     record = record_from_dual_clock_scene(adapted())
-    bad = record.__class__(
-        **{
-            **record.__dict__,
-            "entry_time": "2025-01-02T00:26:00+00:00",
-        }
-    )
+    bad = replace(record, entry_time="2025-01-02T00:26:00+00:00")
     with pytest.raises(ValueError, match="entry_time"):
         build_dual_clock_scene_manifest(
             (bad,),
