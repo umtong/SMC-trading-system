@@ -176,7 +176,10 @@ def test_break_continuation_has_separate_flow_semantics(side: Side) -> None:
 
     assert continuation.accepted
     assert not incorrectly_relabelled.accepted
-    assert incorrectly_relabelled.reason == "dual_clock_location_not_confirmed"
+    assert (
+        incorrectly_relabelled.reason
+        == "dual_clock_flow_semantics_not_confirmed"
+    )
 
 
 def test_future_flow_cannot_change_past_decision() -> None:
