@@ -7,11 +7,13 @@ on:
     paths:
       - 'research/v12_liquidity_shock_bundle.tgz.b64'
       - 'research/v12_cross_stream_gap_patch.py'
+      - 'research/v12_gap_budget_patch.py'
       - '.github/workflows/v12-liquidity-shock-discovery.yml'
   pull_request:
     paths:
       - 'research/v12_liquidity_shock_bundle.tgz.b64'
       - 'research/v12_cross_stream_gap_patch.py'
+      - 'research/v12_gap_budget_patch.py'
       - '.github/workflows/v12-liquidity-shock-discovery.yml'
   workflow_dispatch:
 
@@ -46,8 +48,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Apply causal cross-stream gap patch
-        run: python research/v12_cross_stream_gap_patch.py
+      - name: Apply causal cross-stream gap patches
+        run: |
+          python research/v12_cross_stream_gap_patch.py
+          python research/v12_gap_budget_patch.py
 
       - name: Cache checksum-verified Binance archives
         uses: actions/cache@v4
@@ -105,8 +109,7 @@ jobs:
       - name: Publish verdict in job summary
         if: always()
         shell: bash
-        run: |
-          cat v12-pr-comment.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat v12-pr-comment.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish V12 verdict to draft PR
         if: always()
