@@ -57,10 +57,27 @@ jobs:
           set +e
           set -o pipefail
           mkdir -p artifacts/v9-alpha-search
-          base64 -d research/v9_alpha_search.py.gz.b64 | gzip -d > /tmp/v9_alpha_search.py
-          decode_status=$?
+          python - <<'PY' 2>&1 | tee artifacts-v9.log
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          source = Path('research/v9_alpha_search.py.gz.b64')
+          text = ''.join(source.read_text(encoding='utf-8').split())
+          print(f'encoded_chars={len(text)}')
+          try:
+              compressed = base64.b64decode(text, validate=False)
+              print(f'compressed_bytes={len(compressed)} sha256={hashlib.sha256(compressed).hexdigest()}')
+              payload = gzip.decompress(compressed)
+              print(f'source_bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()}')
+              Path('/tmp/v9_alpha_search.py').write_bytes(payload)
+          except Exception as exc:
+              print(f'decode_exception={type(exc).__name__}: {exc}')
+              raise
+          PY
+          decode_status=${PIPESTATUS[0]}
           if [ "$decode_status" -ne 0 ]; then
-            printf 'decode failed with status %s\n' "$decode_status" | tee artifacts-v9.log
             echo "exit_code=$decode_status" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -71,7 +88,7 @@ jobs:
             --evaluation-end 2026-06 \
             --symbols BTCUSDT ETHUSDT \
             --output-dir artifacts/v9-alpha-search \
-            2>&1 | tee artifacts-v9.log
+            2>&1 | tee -a artifacts-v9.log
           status=${PIPESTATUS[0]}
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           exit 0
