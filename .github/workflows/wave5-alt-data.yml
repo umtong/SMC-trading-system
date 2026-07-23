@@ -1,0 +1,228 @@
+name: Wave5 Verified Alt Data
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wave5-alt-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-alt-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, normalize and audit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import time
+          import urllib.request
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          SYMBOLS = ("SOLUSDT", "XRPUSDT")
+          START = (2021, 9)
+          END = (2026, 6)
+          INTERVAL_MS = 5 * 60 * 1000
+          BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
+          OUT = Path("wave5_alt_data")
+          RAW = OUT / "raw"
+          OUT.mkdir(parents=True, exist_ok=True)
+          RAW.mkdir(parents=True, exist_ok=True)
+
+          def months(start, end):
+              year, month = start
+              while (year, month) <= end:
+                  yield f"{year:04d}-{month:02d}"
+                  month += 1
+                  if month == 13:
+                      month = 1
+                      year += 1
+
+          def fetch(url: str) -> bytes:
+              last = None
+              for attempt in range(5):
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "wave5-research/1.0"})
+                      with urllib.request.urlopen(req, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(2 ** attempt)
+              raise RuntimeError(f"download failed: {url}: {last}")
+
+          def download_one(symbol: str, month: str):
+              name = f"{symbol}-5m-{month}.zip"
+              url = f"{BASE}/{symbol}/5m/{name}"
+              checksum_url = url + ".CHECKSUM"
+              checksum_text = fetch(checksum_url).decode("utf-8").strip()
+              official = checksum_text.split()[0].lower()
+              payload = fetch(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != official:
+                  raise RuntimeError(f"checksum mismatch {name}: {actual} != {official}")
+              path = RAW / symbol / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(payload)
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [item for item in archive.namelist() if item.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected archive members {name}: {members}")
+                  archive.getinfo(members[0])
+              return {
+                  "symbol": symbol,
+                  "month": month,
+                  "name": name,
+                  "official_sha256": official,
+                  "actual_sha256": actual,
+                  "bytes": len(payload),
+              }
+
+          tasks = [(symbol, month) for symbol in SYMBOLS for month in months(START, END)]
+          archives = []
+          with ThreadPoolExecutor(max_workers=12) as pool:
+              futures = {pool.submit(download_one, symbol, month): (symbol, month) for symbol, month in tasks}
+              for future in as_completed(futures):
+                  item = future.result()
+                  archives.append(item)
+                  print("verified", item["symbol"], item["month"], item["bytes"], flush=True)
+          archives.sort(key=lambda item: (item["symbol"], item["month"]))
+
+          header = [
+              "open_time", "open", "high", "low", "close", "volume",
+              "close_time", "quote_volume", "trade_count", "taker_buy_volume",
+              "taker_buy_quote_volume"
+          ]
+
+          def epoch_ms(value: str) -> int:
+              raw = int(float(value))
+              if raw >= 10**16:
+                  return raw // 1000
+              if raw >= 10**13:
+                  return raw // 1000
+              if raw >= 10**11:
+                  return raw
+              return raw * 1000
+
+          def iso(ms: int) -> str:
+              return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+          series = []
+          for symbol in SYMBOLS:
+              output_path = OUT / f"{symbol}_5m.csv.gz"
+              row_count = 0
+              first_ms = None
+              last_ms = None
+              previous_ms = None
+              gaps = 0
+              missing = 0
+              duplicates = 0
+              with gzip.open(output_path, "wt", encoding="utf-8", newline="") as output:
+                  writer = csv.writer(output)
+                  writer.writerow(header)
+                  for item in [entry for entry in archives if entry["symbol"] == symbol]:
+                      payload = (RAW / symbol / item["name"]).read_bytes()
+                      with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                          member = next(name for name in archive.namelist() if name.lower().endswith(".csv"))
+                          text = io.TextIOWrapper(archive.open(member), encoding="utf-8", newline="")
+                          for source_row in csv.reader(text):
+                              if not source_row:
+                                  continue
+                              try:
+                                  open_ms = epoch_ms(source_row[0])
+                              except ValueError:
+                                  continue
+                              if len(source_row) < 11:
+                                  raise RuntimeError(f"short row {symbol} {item['month']}: {source_row}")
+                              if previous_ms is not None:
+                                  delta = open_ms - previous_ms
+                                  if delta == 0:
+                                      duplicates += 1
+                                      continue
+                                  if delta != INTERVAL_MS:
+                                      gaps += 1
+                                      if delta > INTERVAL_MS and delta % INTERVAL_MS == 0:
+                                          missing += delta // INTERVAL_MS - 1
+                                      else:
+                                          missing += 1
+                              o, h, l, c = map(float, source_row[1:5])
+                              volume = float(source_row[5])
+                              quote = float(source_row[7])
+                              taker = float(source_row[9])
+                              taker_quote = float(source_row[10])
+                              if min(o, h, l, c) <= 0 or volume < 0 or quote < 0 or taker < 0 or taker_quote < 0:
+                                  raise RuntimeError(f"invalid numeric row {symbol} {item['month']}")
+                              if h + 1e-12 < max(o, c, l) or l - 1e-12 > min(o, c, h):
+                                  raise RuntimeError(f"invalid OHLC row {symbol} {item['month']}")
+                              close_ms = epoch_ms(source_row[6])
+                              writer.writerow([
+                                  iso(open_ms), source_row[1], source_row[2], source_row[3], source_row[4],
+                                  source_row[5], iso(close_ms), source_row[7], int(float(source_row[8])),
+                                  source_row[9], source_row[10]
+                              ])
+                              row_count += 1
+                              first_ms = open_ms if first_ms is None else first_ms
+                              last_ms = open_ms
+                              previous_ms = open_ms
+              if gaps or missing or duplicates:
+                  raise RuntimeError(
+                      f"grid audit failed {symbol}: gaps={gaps} missing={missing} duplicates={duplicates}"
+                  )
+              digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
+              series.append({
+                  "symbol": symbol,
+                  "rows": row_count,
+                  "first_open_time": iso(first_ms),
+                  "last_open_time": iso(last_ms),
+                  "gap_count": gaps,
+                  "missing_bar_count": missing,
+                  "duplicate_rows_removed": duplicates,
+                  "output_sha256": digest,
+                  "output_bytes": output_path.stat().st_size,
+              })
+              print("series", series[-1], flush=True)
+
+          manifest = {
+              "source": "Binance Vision USD-M monthly klines",
+              "interval": "5m",
+              "start_month": "2021-09",
+              "end_month": "2026-06",
+              "archives": archives,
+              "series": series,
+          }
+          (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload verified normalized data
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave5-alt-data-${{ github.sha }}
+          path: |
+            wave5_alt_data/SOLUSDT_5m.csv.gz
+            wave5_alt_data/XRPUSDT_5m.csv.gz
+            wave5_alt_data/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
