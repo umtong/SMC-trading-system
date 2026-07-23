@@ -1,0 +1,61 @@
+name: Wave19 Quarter-Hour AggTrades
+
+on:
+  push:
+    branches:
+      - agent/wave19-quarter-hour-aggtrades
+    paths:
+      - scripts/build_quarter_hour_aggtrade_features.py
+      - registrations/wave19_quarter_hour_aggtrades_v1.json
+      - .github/workflows/wave19-quarter-hour-aggtrades.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-events:
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        year: [2021, 2022, 2023, 2024, 2025]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install "numpy>=2.0" "pandas>=2.2"
+
+      - name: Build checksum-verified quarter-hour event panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          END_MONTH=12
+          if [[ "${{ matrix.year }}" == "2025" ]]; then END_MONTH=7; fi
+          python scripts/build_quarter_hour_aggtrade_features.py \
+            --symbol "${{ matrix.symbol }}" \
+            --year "${{ matrix.year }}" \
+            --end-month "$END_MONTH" \
+            --output-dir wave19_output \
+            --cache-dir wave19_cache \
+            --chunk-size 1000000
+
+      - name: Upload compact verified event panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave19-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.sha }}
+          path: |
+            wave19_output/${{ matrix.symbol }}_quarter_hour_${{ matrix.year }}.csv.gz
+            wave19_output/${{ matrix.symbol }}_quarter_hour_${{ matrix.year }}_manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
