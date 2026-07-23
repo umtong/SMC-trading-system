@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: research-cm-liquidation-tick-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   extract:
@@ -23,7 +23,7 @@ jobs:
       matrix:
         symbol: [BTCUSDT, ETHUSDT]
         month: [2023-06, 2023-07, 2023-08, 2023-09, 2023-10, 2023-11, 2023-12]
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
         run: |
           cat research_tools/cm_liquidation_tick/windows.part* > /tmp/merged_windows_2023.csv.gz.b64
           printf '\n' >> /tmp/merged_windows_2023.csv.gz.b64
-          echo "e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e  /tmp/merged_windows_2023.csv.gz.b64" | sha256sum -c -
+          echo "e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e  /tmp/merged_windows_2023.csv.gz.b64" | shasum -a 256 -c -
       - name: Extract checksum-verified event windows
         run: |
           python research_tools/cm_liquidation_tick/extract_monthly_aggtrades.py \
@@ -46,7 +46,7 @@ jobs:
       - name: Inspect extraction
         run: |
           python -m json.tool "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/manifest_${{ matrix.symbol }}_${{ matrix.month }}.json"
-          sha256sum "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
+          shasum -a 256 "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
           du -h "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
       - uses: actions/upload-artifact@v4
         with:
