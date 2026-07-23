@@ -1,0 +1,85 @@
+name: Research Wave4 Alt Data
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_binance_vision_klines.py
+      - .github/workflows/research-wave4-alt-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verified-alt-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install downloader dependencies
+        run: python -m pip install "pandas>=2.2"
+
+      - name: Download and verify SOLUSDT 5m archives
+        run: |
+          python scripts/download_binance_vision_klines.py \
+            --symbols SOLUSDT \
+            --interval 5m \
+            --start-month 2021-09 \
+            --end-month 2026-06 \
+            --workers 8 \
+            --output-dir data/wave4_alt_assets/sol \
+            --cache-dir data/wave4_archive_cache/sol
+
+      - name: Download and verify XRPUSDT 5m archives
+        run: |
+          python scripts/download_binance_vision_klines.py \
+            --symbols XRPUSDT \
+            --interval 5m \
+            --start-month 2020-12 \
+            --end-month 2026-06 \
+            --workers 8 \
+            --output-dir data/wave4_alt_assets/xrp \
+            --cache-dir data/wave4_archive_cache/xrp
+
+      - name: Verify manifest integrity
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = {"SOLUSDT": 0, "XRPUSDT": 0}
+          for root in (Path("data/wave4_alt_assets/sol"), Path("data/wave4_alt_assets/xrp")):
+              payload = json.loads((root / "manifest.json").read_text())
+              for item in payload["series"]:
+                  symbol = item["symbol"]
+                  expected[symbol] += 1
+                  assert item["gap_count"] == 0, item
+                  assert item["missing_bar_count"] == 0, item
+                  assert item["duplicate_rows_removed"] == 0, item
+                  print(symbol, item["rows"], item["first_open_time"], item["last_open_time"], item["output_sha256"])
+          assert expected == {"SOLUSDT": 1, "XRPUSDT": 1}, expected
+          PY
+
+      - name: Upload verified SOL and XRP data
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-wave4-alt-5m-2020-12_2026-06-${{ github.sha }}
+          path: |
+            data/wave4_alt_assets/sol/SOLUSDT_5m.csv.gz
+            data/wave4_alt_assets/sol/manifest.json
+            data/wave4_alt_assets/xrp/XRPUSDT_5m.csv.gz
+            data/wave4_alt_assets/xrp/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
