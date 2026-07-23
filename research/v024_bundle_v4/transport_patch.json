@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "reason": "Two single-character connector transport substitutions identified by exact remote chunk artifact before any candidate PnL evaluation.",
+  "candidate_pnl_observed_before_patch": false,
+  "terminal_holdout_opened_before_patch": false,
+  "target_archive_sha256": "cd9424d230bc5095bd8b867f5e30c05ff05b26cdc6c4f65b49a99551b3c0d2d8",
+  "patches": [
+    {
+      "path": "research/v024_bundle_v4/part-001a.b64",
+      "unpatched_sha256": "75039b831118b361b823541524decadbe565f1da6f18302ab7d8cf85629c695b",
+      "offset_zero_based": 4720,
+      "observed_ascii": "g",
+      "replacement_ascii": "m",
+      "patched_sha256": "70998c430755a090d4d1b8eb1e51ad4a2941696b934373f1c649793f6a9a427d"
+    },
+    {
+      "path": "research/v024_bundle_v4/part-007.b64",
+      "unpatched_sha256": "6bf178d51e708a3ddafeff1639619e84f2d4aaef8bbc7edfb6c4cd137fb87474",
+      "offset_zero_based": 16147,
+      "observed_ascii": "G",
+      "replacement_ascii": "H",
+      "patched_sha256": "4643cfa0b746be69bb0604484c6c50abeff839c2ed906e624bf8db5186ac6ce9"
+    }
+  ]
+}
