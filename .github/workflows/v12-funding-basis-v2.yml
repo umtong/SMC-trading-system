@@ -1,0 +1,98 @@
+name: V12.1 Strict Causal Funding Basis Multi-Arm
+
+on:
+  push:
+    branches:
+      - "research/v12-funding-basis-20260724"
+    paths:
+      - "research/v12_causality_patch.py"
+      - ".github/workflows/v12-funding-basis-v2.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "research/v12_causality_patch.py"
+      - ".github/workflows/v12-funding-basis-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install research dependencies
+        run: python -m pip install --upgrade pip "numpy<3" "pandas<3" requests
+      - name: Restore, patch, and syntax-check source
+        run: |
+          mkdir -p artifacts/v12-funding-basis-v2
+          python research/v12_restore.py /tmp/v12_funding_basis_multiarm.py | tee artifacts/v12-funding-basis-v2/restore.log
+          python research/v12_causality_patch.py /tmp/v12_funding_basis_multiarm.py | tee artifacts/v12-funding-basis-v2/patch.log
+          python /tmp/v12_funding_basis_multiarm.py --synthetic-test | tee artifacts/v12-funding-basis-v2/synthetic-test.json
+      - name: Restore official Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/xsmc-v12
+          key: xsmc-v12-binance-funding-basis-15m-2020-2026-v1
+      - name: Run patched causal funding-basis search
+        shell: bash
+        run: |
+          set -o pipefail
+          python /tmp/v12_funding_basis_multiarm.py \
+            --start-month 2020-09 \
+            --end-month 2026-06 \
+            --validation-start 2023-01 \
+            --validation-end 2023-12 \
+            --oos-start 2024-01 \
+            --oos-end 2026-06 \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --interval 15m \
+            --cache-dir .cache/xsmc-v12 \
+            --output-dir artifacts/v12-funding-basis-v2 \
+            2>&1 | tee artifacts/v12-funding-basis-v2/run.log
+      - name: Build concise report
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path('artifacts/v12-funding-basis-v2')
+          summary = out / 'summary.json'
+          lines = ['# V12.1 strict causal funding-basis search', '']
+          if summary.exists():
+              s = json.loads(summary.read_text())
+              lines += [
+                  f"- status: `{s.get('status')}`",
+                  f"- target 1% daily met: `{s.get('target_1pct_daily_met')}`",
+                  f"- frozen candidate: `{s.get('frozen_candidate')}`",
+                  f"- frozen validation gate: `{s.get('frozen_validation_gate')}`",
+                  f"- chosen risk: `{s.get('chosen_risk')}`",
+                  f"- risk gate: `{s.get('risk_gate')}`",
+                  '',
+                  '## OOS portfolios', '',
+                  '```json',
+                  json.dumps(s.get('oos_portfolios'), indent=2),
+                  '```',
+              ]
+          else:
+              lines += ['- status: `FAILED_BEFORE_SUMMARY`']
+              log = out / 'run.log'
+              if log.exists():
+                  lines += ['', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```']
+          (out / 'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+      - name: Upload research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-funding-basis-v2-${{ github.run_id }}
+          path: artifacts/v12-funding-basis-v2
+          if-no-files-found: error
+          retention-days: 14
