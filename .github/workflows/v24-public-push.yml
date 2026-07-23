@@ -1,0 +1,98 @@
+name: V24 Frozen Public Input Push
+
+on:
+  push:
+    branches:
+      - research/v24-public-retry-run-20260723
+    paths:
+      - 'research/v24_public_push_trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-public-2025:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip pandas requests
+      - uses: actions/cache@v4
+        with:
+          path: .cache/v24_public
+          key: v24-binance-spot-futures-minute-2025-2026jan-btc-eth-v2
+      - name: Export corrected official public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/v24-public-2025
+          mkdir -p artifacts/v24-public-2025
+          python - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor,as_completed
+          from pathlib import Path
+          import hashlib,json,re,zipfile
+          import pandas as pd,requests
+          symbols=['BTCUSDT','ETHUSDT'];months=[f'2025-{m:02d}' for m in range(1,13)]+['2026-01']
+          root=Path('.cache/v24_public');out=Path('artifacts/v24-public-2025');session=requests.Session()
+          def sha(p):
+              h=hashlib.sha256()
+              with p.open('rb') as f:
+                  for b in iter(lambda:f.read(1048576),b''):h.update(b)
+              return h.hexdigest()
+          def get(u):
+              for i in range(6):
+                  r=session.get(u,timeout=240)
+                  if r.status_code==200:return r.content
+                  if r.status_code==404:raise FileNotFoundError(u)
+                  if i==5:r.raise_for_status()
+              raise RuntimeError(u)
+          def one(market,kind,symbol,month):
+              name=f'{symbol}-1m-{month}.zip'
+              if market=='spot':folder=root/'spot'/symbol;url=f'https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/{name}'
+              else:folder=root/'futures'/kind/symbol;url=f'https://data.binance.vision/data/futures/um/monthly/{kind}/{symbol}/1m/{name}'
+              folder.mkdir(parents=True,exist_ok=True);p=folder/name;c=folder/f'{name}.CHECKSUM'
+              if not c.exists():c.write_bytes(get(url+'.CHECKSUM'))
+              m=re.search(rb'([0-9a-fA-F]{64})',c.read_bytes());assert m
+              e=m.group(1).decode().lower()
+              if not p.exists() or sha(p)!=e:
+                  t=p.with_suffix('.tmp');t.write_bytes(get(url));assert sha(t)==e;t.replace(p)
+              return {'market':market,'kind':kind,'symbol':symbol,'month':month,'url':url,'sha256':e,'bytes':p.stat().st_size}
+          jobs=[(a,b,s,m) for s in symbols for m in months for a,b in [('spot','klines'),('futures','klines'),('futures','markPriceKlines')]]
+          rows=[]
+          with ThreadPoolExecutor(max_workers=8) as ex:
+              fs=[ex.submit(one,*j) for j in jobs]
+              for f in as_completed(fs):rows.append(f.result())
+          pd.DataFrame(rows).sort_values(['market','symbol','month','kind']).to_csv(out/'input_manifest.csv',index=False)
+          def read(p):
+              with zipfile.ZipFile(p) as z:
+                  n=[x for x in z.namelist() if not x.endswith('/')];assert len(n)==1;raw=pd.read_csv(z.open(n[0]),header=None)
+              x=raw.iloc[:,[0,1,2,3,4,7,8,10]].copy();x.columns=['raw_time','open','high','low','close','quote_volume','trades','taker_buy_quote']
+              ts=pd.to_numeric(x.raw_time,errors='raise').astype('int64');unit='us' if float(ts.median())>1e14 else 'ms';x['open_time']=pd.to_datetime(ts,unit=unit,utc=True)
+              for c in ['open','high','low','close','quote_volume','trades','taker_buy_quote']:x[c]=pd.to_numeric(x[c],errors='raise')
+              return x[['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']]
+          summaries=[]
+          for s in symbols:
+              sp=[];fu=[]
+              for m in months:
+                  sp.append(read(root/'spot'/s/f'{s}-1m-{m}.zip'))
+                  f=read(root/'futures'/'klines'/s/f'{s}-1m-{m}.zip');mk=read(root/'futures'/'markPriceKlines'/s/f'{s}-1m-{m}.zip')[['open_time','close']].rename(columns={'close':'mark_close'})
+                  z=f.merge(mk,on='open_time',how='left',validate='one_to_one');z=z[z.mark_close.notna()];assert len(z);fu.append(z)
+              for kind,frame in [('spot',pd.concat(sp,ignore_index=True)),('fut',pd.concat(fu,ignore_index=True))]:
+                  frame=frame.sort_values('open_time',kind='mergesort').reset_index(drop=True);assert not frame.open_time.duplicated().any()
+                  d=frame.open_time.diff();frame['segment_id']=(d.isna()|d.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
+                  p=out/f'{s}_{kind}_1m.csv.gz';frame.to_csv(p,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+                  summaries.append({'symbol':s,'kind':kind,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(p),'bytes':p.stat().st_size})
+          (out/'summary.json').write_text(json.dumps(summaries,indent=2),encoding='utf-8')
+          print(json.dumps(summaries,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v24-frozen-2025-public-push-${{ github.run_id }}
+          path: artifacts/v24-public-2025
+          if-no-files-found: error
+          retention-days: 30
