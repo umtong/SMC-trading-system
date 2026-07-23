@@ -39,38 +39,75 @@ jobs:
           cache: pip
       - name: Install locked dependencies
         run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'scikit-learn==1.6.1'
-      - name: Reconstruct, record and compile frozen evaluator
+      - name: Reconstruct and diagnose frozen evaluator
+        id: reconstruct
         shell: bash
         run: |
           mkdir -p state-first-runtime
-          python - <<'PY'
-          import base64, pathlib
-          parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
-          if not parts: raise SystemExit('no frozen script chunks')
-          encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
-          pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+          set +e
+          python - <<'PY' > state-first-runtime/reconstruct.log 2>&1
+          import base64, pathlib, traceback
+          try:
+              parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
+              if not parts: raise SystemExit('no frozen script chunks')
+              encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
+              pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+              print('parts', [p.name for p in parts])
+              print('encoded_chars', len(encoded))
+          except BaseException:
+              traceback.print_exc()
+              raise
           PY
-          shasum -a 256 state-first-runtime/state_first_lob_v1.py | tee state-first-runtime/ACTUAL_SHA256.txt
-          python -m py_compile state-first-runtime/state_first_lob_v1.py
+          decode_code=$?
+          compile_code=99
+          if [ -f state-first-runtime/state_first_lob_v1.py ]; then
+            shasum -a 256 state-first-runtime/state_first_lob_v1.py | tee state-first-runtime/ACTUAL_SHA256.txt
+            python -m py_compile state-first-runtime/state_first_lob_v1.py > state-first-runtime/compile.log 2>&1
+            compile_code=$?
+          else
+            printf 'reconstructed evaluator missing\n' > state-first-runtime/compile.log
+          fi
+          printf '%s\n' "$decode_code" > state-first-runtime/decode.exit_code
+          printf '%s\n' "$compile_code" > state-first-runtime/compile.exit_code
+          if [ "$decode_code" -eq 0 ] && [ "$compile_code" -eq 0 ]; then ok=true; else ok=false; fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          cat state-first-runtime/reconstruct.log
+          cat state-first-runtime/compile.log
+          exit 0
+      - name: Upload reconstruction diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-lob-reconstruction-${{ matrix.symbol }}-${{ github.run_id }}
+          path: state-first-runtime
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
       - name: Build checksum-verified causal panel
+        if: steps.reconstruct.outputs.ok == 'true'
         run: |
           python state-first-runtime/state_first_lob_v1.py panel \
             --symbol '${{ matrix.symbol }}' \
             --cache-dir state-first-cache \
             --output-dir 'state-first-panel/${{ matrix.symbol }}'
       - name: Audit panel
+        if: steps.reconstruct.outputs.ok == 'true'
         run: |
           cp state-first-runtime/ACTUAL_SHA256.txt 'state-first-panel/${{ matrix.symbol }}/ACTUAL_EVALUATOR_SHA256.txt'
           python -m json.tool 'state-first-panel/${{ matrix.symbol }}/${{ matrix.symbol }}_manifest.json' | tail -n 220
           shasum -a 256 state-first-panel/${{ matrix.symbol }}/*
           du -h state-first-panel/${{ matrix.symbol }}/*
       - uses: actions/upload-artifact@v4
+        if: steps.reconstruct.outputs.ok == 'true'
         with:
           name: state-first-lob-panel-${{ matrix.symbol }}-${{ github.run_id }}
           path: state-first-panel/${{ matrix.symbol }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
+      - name: Fail after preserving reconstruction diagnostics
+        if: steps.reconstruct.outputs.ok != 'true'
+        run: exit 1
 
   evaluate:
     needs: panel
@@ -89,7 +126,7 @@ jobs:
           pattern: state-first-lob-panel-*-${{ github.run_id }}
           path: state-first-input
           merge-multiple: true
-      - name: Reconstruct, record and compile frozen evaluator
+      - name: Reconstruct and compile evaluator
         shell: bash
         run: |
           mkdir -p state-first-runtime
@@ -106,10 +143,12 @@ jobs:
         shell: bash
         run: |
           expected=$(awk '{print $1}' state-first-runtime/ACTUAL_SHA256.txt)
-          for p in state-first-input/**/ACTUAL_EVALUATOR_SHA256.txt state-first-input/ACTUAL_EVALUATOR_SHA256.txt; do
-            [ -f "$p" ] || continue
+          found=0
+          while IFS= read -r p; do
+            found=$((found+1))
             test "$(awk '{print $1}' "$p")" = "$expected"
-          done
+          done < <(find state-first-input -name ACTUAL_EVALUATOR_SHA256.txt -type f -print)
+          test "$found" -eq 2
       - name: Run train, selection, validation and conditionally open final date once
         run: |
           python state-first-runtime/state_first_lob_v1.py evaluate \
