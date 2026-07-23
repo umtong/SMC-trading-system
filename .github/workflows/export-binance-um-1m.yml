@@ -1,6 +1,11 @@
 name: Export Binance USD-M 1m Research Data
 
 on:
+  push:
+    branches:
+      - agent/binance-data-export-20260724
+    paths:
+      - ".github/workflows/export-binance-um-1m.yml"
   pull_request:
     paths:
       - ".github/workflows/export-binance-um-1m.yml"
