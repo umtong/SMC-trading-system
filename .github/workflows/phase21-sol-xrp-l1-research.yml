@@ -1,0 +1,117 @@
+name: Phase21 SOL XRP causal L1 research data
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/phase21-sol-xrp-l1-research.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    name: ${{ matrix.symbol }}-${{ matrix.day }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [SOLUSDT, XRPUSDT]
+        day: ['2023-02-15', '2023-05-16', '2023-08-15', '2023-11-15', '2024-02-15', '2024-05-15', '2024-08-15', '2024-11-15']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --disable-pip-version-check pandas==2.2.3 numpy==2.1.3
+      - name: Download and verify official Binance archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p raw out
+          for dtype in bookTicker aggTrades; do
+            base="https://data.binance.vision/data/futures/um/daily/${dtype}/${{ matrix.symbol }}/${{ matrix.symbol }}-${dtype}-${{ matrix.day }}.zip"
+            curl -fL --retry 5 --retry-delay 2 "$base" -o "raw/${{ matrix.symbol }}-${dtype}-${{ matrix.day }}.zip"
+            curl -fL --retry 5 --retry-delay 2 "$base.CHECKSUM" -o "raw/${{ matrix.symbol }}-${dtype}-${{ matrix.day }}.zip.CHECKSUM"
+            expected=$(awk '{print $1}' "raw/${{ matrix.symbol }}-${dtype}-${{ matrix.day }}.zip.CHECKSUM")
+            actual=$(sha256sum "raw/${{ matrix.symbol }}-${dtype}-${{ matrix.day }}.zip" | awk '{print $1}')
+            test "$expected" = "$actual"
+          done
+      - name: Build causal 250ms panel
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          DAY: ${{ matrix.day }}
+        shell: bash
+        run: |
+          cat > /tmp/extract.py <<'PY'
+          import io, json, os, zipfile, hashlib
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+
+          symbol=os.environ['SYMBOL']; day=os.environ['DAY']; raw=Path('raw'); out=Path('out'); out.mkdir(exist_ok=True)
+          def read(name):
+              p=raw/name
+              with zipfile.ZipFile(p) as z:
+                  names=[n for n in z.namelist() if n.endswith('.csv')]
+                  if len(names)!=1: raise RuntimeError(names)
+                  return pd.read_csv(io.BytesIO(z.read(names[0])))
+          book_name=f'{symbol}-bookTicker-{day}.zip'; trade_name=f'{symbol}-aggTrades-{day}.zip'
+          b=read(book_name); t=read(trade_name)
+          b=b.rename(columns={'transaction_time':'ts','best_bid_price':'bid','best_bid_qty':'bid_qty','best_ask_price':'ask','best_ask_qty':'ask_qty'})
+          t=t.rename(columns={'transact_time':'ts','quantity':'qty'})
+          for c in ['ts','bid','bid_qty','ask','ask_qty']: b[c]=pd.to_numeric(b[c],errors='coerce')
+          for c in ['ts','price','qty']: t[c]=pd.to_numeric(t[c],errors='coerce')
+          b=b.dropna(subset=['ts','bid','bid_qty','ask','ask_qty']).sort_values('ts').drop_duplicates('ts',keep='last')
+          t=t.dropna(subset=['ts','price','qty']).sort_values('ts')
+          # Normalize timestamp units if Binance archives switch to microseconds.
+          if b.ts.median()>1e14: b.ts=(b.ts//1000).astype('int64')
+          if t.ts.median()>1e14: t.ts=(t.ts//1000).astype('int64')
+          t['bucket']=(t.ts//250*250).astype('int64')
+          t['quote']=t.price*t.qty
+          buyer_maker=t.is_buyer_maker.astype(str).str.lower().isin(['true','1'])
+          t['signed_quote']=np.where(buyer_maker,-t.quote,t.quote)
+          flow=t.groupby('bucket',sort=True).agg(quote=('quote','sum'),signed_quote=('signed_quote','sum'),trade_count=('ts','size'),trade_vwap=('price',lambda x: np.nan)).reset_index()
+          # weighted VWAP without groupby apply
+          pv=t.groupby('bucket',sort=True).apply(lambda g: float((g.price*g.qty).sum()/g.qty.sum()),include_groups=False)
+          flow['trade_vwap']=pv.to_numpy()
+          start=int(pd.Timestamp(day,tz='UTC').value//1_000_000); end=start+86_400_000
+          buckets=np.arange(start,end,250,dtype=np.int64)
+          panel=pd.DataFrame({'bucket':buckets})
+          state=pd.merge_asof(panel,b[['ts','bid','bid_qty','ask','ask_qty']].sort_values('ts'),left_on='bucket',right_on='ts',direction='backward')
+          state=state.merge(flow,on='bucket',how='left')
+          state[['quote','signed_quote','trade_count']]=state[['quote','signed_quote','trade_count']].fillna(0.0)
+          mid=(state.bid+state.ask)/2
+          state['mid']=mid
+          state['spread_bps']=(state.ask/state.bid-1)*10000
+          state['imbalance']=(state.bid_qty-state.ask_qty)/(state.bid_qty+state.ask_qty).replace(0,np.nan)
+          micro=(state.ask*state.bid_qty+state.bid*state.ask_qty)/(state.bid_qty+state.ask_qty).replace(0,np.nan)
+          state['microprice_bps']=(micro/mid-1)*10000
+          state['flow_imbalance']=state.signed_quote/state.quote.replace(0,np.nan)
+          same_bid=state.bid.eq(state.bid.shift(1)); same_ask=state.ask.eq(state.ask.shift(1))
+          state['bid_depletion']=np.where(same_bid,(state.bid_qty.shift(1)-state.bid_qty).clip(lower=0),0)
+          state['ask_depletion']=np.where(same_ask,(state.ask_qty.shift(1)-state.ask_qty).clip(lower=0),0)
+          state['bid_replenishment']=np.where(same_bid,(state.bid_qty-state.bid_qty.shift(1)).clip(lower=0),0)
+          state['ask_replenishment']=np.where(same_ask,(state.ask_qty-state.ask_qty.shift(1)).clip(lower=0),0)
+          # Decision at bucket close; enter at first subsequent 250ms state.
+          entry_ask=state.ask.shift(-1); entry_bid=state.bid.shift(-1)
+          for steps,label in [(1,'250ms'),(2,'500ms'),(4,'1s'),(8,'2s'),(20,'5s'),(40,'10s'),(120,'30s')]:
+              future_bid=state.bid.shift(-(1+steps)); future_ask=state.ask.shift(-(1+steps))
+              state[f'long_gross_{label}_bps']=(future_bid/entry_ask-1)*10000
+              state[f'short_gross_{label}_bps']=(entry_bid/future_ask-1)*10000
+          keep=['bucket','bid','bid_qty','ask','ask_qty','mid','spread_bps','imbalance','microprice_bps','quote','signed_quote','trade_count','trade_vwap','flow_imbalance','bid_depletion','ask_depletion','bid_replenishment','ask_replenishment']+[c for c in state.columns if c.startswith(('long_gross_','short_gross_'))]
+          state=state[keep].replace([np.inf,-np.inf],np.nan)
+          path=out/f'{symbol}_{day}_l1_250ms.csv.gz'; state.to_csv(path,index=False,compression='gzip')
+          manifest={'symbol':symbol,'day':day,'rows':len(state),'start_ms':int(start),'end_ms':int(end),'book_rows':len(b),'trade_rows':len(t),'panel_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'source_sha256':{n:hashlib.sha256((raw/n).read_bytes()).hexdigest() for n in (book_name,trade_name)}}
+          (out/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(manifest))
+          PY
+          python /tmp/extract.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase21-l1-${{ matrix.symbol }}-${{ matrix.day }}
+          path: out/
+          retention-days: 7
+          compression-level: 6
