@@ -28,7 +28,7 @@ jobs:
         shell: bash
         env:
           SYMBOL: ${{ matrix.symbol }}
-          DAY: 2025-01-02
+          DAY: 2023-05-16
         run: |
           set -o pipefail
           python - <<'PY' 2>&1 | tee "v130-${SYMBOL}.log"
