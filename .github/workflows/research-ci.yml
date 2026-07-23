@@ -82,11 +82,19 @@ jobs:
           key: xsmc-v9-binance-usdm-15m-2019-2026-v1
 
       - name: Run fixed-candidate chronological alpha search
+        id: alpha
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          set -o pipefail
           mkdir -p artifacts/v9-alpha-search
           base64 -d research/v9_alpha_search.py.gz.b64 | gzip -d > /tmp/v9_alpha_search.py
+          decode_status=$?
+          if [ "$decode_status" -ne 0 ]; then
+            printf 'decode failed with status %s\n' "$decode_status" | tee artifacts-v9.log
+            echo "exit_code=$decode_status" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           python /tmp/v9_alpha_search.py \
             --start-month 2019-01 \
             --end-month 2026-06 \
@@ -95,23 +103,32 @@ jobs:
             --symbols BTCUSDT ETHUSDT \
             --output-dir artifacts/v9-alpha-search \
             2>&1 | tee artifacts-v9.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Build PR research summary
         if: always()
+        env:
+          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
           import pandas as pd
 
           out = Path('artifacts/v9-alpha-search')
           comment = Path('artifacts/v9-pr-comment.md')
-          lines = ['## V9 chronological alpha search', '']
+          exit_code = os.environ.get('ALPHA_EXIT_CODE', 'unknown')
+          lines = ['## V9 chronological alpha search', '', f"- run_id: `{os.environ.get('RUN_ID')}`"]
           summary_path = out / 'summary.json'
           if summary_path.exists():
               s = json.loads(summary_path.read_text())
               lines += [
+                  f"- process exit code: `{exit_code}`",
                   f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
                   f"- candidates: `{s.get('candidate_count')}`",
                   f"- OOS trades: `{s.get('trades')}`",
@@ -123,7 +140,11 @@ jobs:
                   '',
               ]
           else:
-              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+              lines += [f"- process exit code: `{exit_code}`", '- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+              log_path = Path('artifacts-v9.log')
+              if log_path.exists():
+                  tail = '\n'.join(log_path.read_text(errors='replace').splitlines()[-120:])
+                  lines += ['### Failure log tail', '', '```text', tail, '```', '']
           top_path = out / 'top30_pre2024.csv'
           if top_path.exists():
               top = pd.read_csv(top_path).head(10)
@@ -157,3 +178,12 @@ jobs:
         shell: bash
         run: |
           gh pr comment "$PR_NUMBER" --body-file artifacts/v9-pr-comment.md --edit-last --create-if-none
+
+      - name: Preserve alpha-search failure status
+        if: always() && steps.alpha.outputs.exit_code != '0'
+        env:
+          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+        shell: bash
+        run: |
+          echo "V9 alpha search failed with exit code ${ALPHA_EXIT_CODE}"
+          exit 1
