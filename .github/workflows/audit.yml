@@ -1,0 +1,59 @@
+name: v0.27.1 clean transport audit
+
+on:
+  push:
+    branches:
+      - research/v0271-audit-clean-20260724
+    paths:
+      - '.github/workflows/audit.yml'
+      - 'bundle/**'
+      - 'trigger.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/v0271-audit-clean-20260724
+      - name: Audit and persist
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python - <<'PY'
+          import base64, hashlib, json, lzma, tarfile
+          from io import BytesIO
+          from pathlib import Path
+          root=Path('bundle'); manifest_path=root/'TRANSPORT_MANIFEST.json'; out=Path('results/audit.json')
+          r={'schema_version':1,'candidate_pnl_observed':False,'terminal_holdout_opened':False,'production_enabled':False,'parts':[]}
+          try:
+              raw=manifest_path.read_bytes(); m=json.loads(raw)
+              r.update({'manifest_sha256':hashlib.sha256(raw).hexdigest(),'declared_archive_sha256':m.get('archive_sha256'),'declared_archive_bytes':m.get('archive_bytes'),'declared_part_count':m.get('part_count')})
+              pieces=[]; ok=True
+              for item in m.get('parts',[]):
+                  p=root/item['name']; b=p.read_bytes() if p.exists() else b''; sha=hashlib.sha256(b).hexdigest()
+                  rec={'name':item['name'],'present':p.exists(),'actual_bytes':len(b),'declared_bytes':item.get('bytes'),'actual_sha256':sha,'declared_sha256':item.get('sha256'),'sha_match':sha==item.get('sha256')}
+                  r['parts'].append(rec); ok=ok and rec['present'] and rec['sha_match']; pieces.append(b''.join(b.split()))
+              r['all_parts_match']=ok; encoded=b''.join(pieces); r['encoded_characters']=len(encoded)
+              archive=base64.b64decode(encoded,validate=True); r['base64_decode_ok']=True; r['actual_archive_bytes']=len(archive); r['actual_archive_sha256']=hashlib.sha256(archive).hexdigest(); r['archive_sha_match']=r['actual_archive_sha256']==m.get('archive_sha256'); r['archive_bytes_match']=len(archive)==m.get('archive_bytes')
+              decompressed=lzma.decompress(archive); r['xz_decode_ok']=True
+              with tarfile.open(fileobj=BytesIO(decompressed),mode='r:') as tf: names=tf.getnames()
+              r['tar_read_ok']=True; r['tar_member_count']=len(names); r['tar_first_members']=names[:30]
+          except Exception as exc:
+              r['error']=repr(exc)
+          out.write_text(json.dumps(r,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(r,sort_keys=True,indent=2))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add results/audit.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record clean v0.27.1 transport audit'
+            git push origin HEAD:research/v0271-audit-clean-20260724
+          fi
