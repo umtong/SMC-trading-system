@@ -1,0 +1,43 @@
+name: Diagnose SOL XRP USD-M Archives
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/diagnose-sol-xrp-usdm.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe archive and checksum availability
+        shell: bash
+        run: |
+          mkdir -p archive-diagnostics
+          python - <<'PY' 2>&1 | tee archive-diagnostics/probe.log
+          import requests
+          for symbol in ("SOLUSDT", "XRPUSDT"):
+              for stamp in ("2021-12", "2022-01", "2024-01", "2025-01", "2025-06"):
+                  base = f"https://data.binance.vision/data/futures/um/monthly/klines/{symbol}/1m/{symbol}-1m-{stamp}.zip"
+                  for url in (base + ".CHECKSUM", base):
+                      try:
+                          r = requests.get(url, timeout=(30, 120), stream=True)
+                          print(symbol, stamp, url.rsplit('/',1)[-1], r.status_code, r.headers.get('content-type'), r.headers.get('content-length'), r.text[:160] if url.endswith('.CHECKSUM') and r.ok else '')
+                      except Exception as exc:
+                          print(symbol, stamp, type(exc).__name__, repr(exc))
+          PY
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-archive-diagnostics-${{ github.run_id }}
+          path: archive-diagnostics/**
+          retention-days: 7
+          if-no-files-found: error
