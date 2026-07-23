@@ -1,0 +1,104 @@
+{
+  "registration_id": "wave41-cross-sectional-boundary-flow-v1",
+  "registered_utc": "2026-07-23T14:10:00Z",
+  "independence": "Wave41 uses synchronized four-asset ranking and prior-only residualization. It does not use Wave39/Wave40 candidate ranks, thresholds or outcomes.",
+  "data_separation": {
+    "development_year": 2022,
+    "first_sequential_validation_year": 2023,
+    "locked_next_walkforward_year": 2024,
+    "sealed_terminal_oos": "unchanged project holdout",
+    "rule": "The exact cross-sectional formula, candidate key, costs, latency, stops and gates are frozen from 2022 before any 2023 PnL is opened."
+  },
+  "official_inputs": {
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "source": "checksum-verified Binance USD-M aggTrades, one-minute klines and funding",
+    "decision_clock": "completed first 10 seconds after every 15-minute boundary",
+    "normalization": "trailing 60 calendar days, shifted one boundary, minimum 30 days",
+    "residualization": "trailing prior-only covariance beta to BTC standardized flow/return; BTC residual is its own standardized value",
+    "missing_policy": "no imputation; a candidate or still-open path intersecting an absent official minute is invalid"
+  },
+  "families": [
+    {
+      "family": "IDIOSYNCRATIC_FLOW_FOLLOW",
+      "mechanism": "Select the asset with the largest absolute BTC-residualized flow shock when its first-10-second price accepts that flow; informed asset-specific inventory transfer continues.",
+      "direction": "selected asset residual-flow sign"
+    },
+    {
+      "family": "FLOW_UNDERREACTION_CATCHUP",
+      "mechanism": "Select the asset whose residual flow is large relative to its residual price response; price has not yet incorporated the asset-specific order-flow shock.",
+      "direction": "selected asset residual-flow sign"
+    },
+    {
+      "family": "PRICE_OVERREACTION_FADE",
+      "mechanism": "Select the asset whose residual price response is large relative to residual flow support; the move is faded after the 10-second clock completes.",
+      "direction": "opposite selected asset residual-return sign"
+    },
+    {
+      "family": "BTC_TO_ALT_CATCHUP",
+      "mechanism": "After an extreme BTC boundary-flow shock, select the altcoin with the smallest same-direction residual price response while its own flow does not oppose BTC; trade delayed cross-market transmission.",
+      "direction": "BTC flow sign"
+    },
+    {
+      "family": "UNSUPPORTED_RELATIVE_DISLOCATION",
+      "mechanism": "Select the non-BTC asset with the largest residual price move that is unsupported or opposed by its residual flow; trade convergence to the common crypto factor.",
+      "direction": "opposite selected asset residual-return sign"
+    }
+  ],
+  "candidate_dimensions": {
+    "absolute_score_prior_quantile": [0.95, 0.975, 0.99],
+    "selected_asset_volume_prior_quantile": [0.9, 0.95],
+    "flow_price_weight": [0.5, 1.0, 2.0],
+    "prior_trend_mode": ["none", "aligned_60", "opposed_60"],
+    "clock_mode": ["all", "minute_00"],
+    "holding_minutes": [60, 120, 240, 480],
+    "catastrophe_stop_atr": [3.0, 4.0],
+    "latency_stress_minutes": [2, 5]
+  },
+  "execution": {
+    "entry": "first official one-minute open after the complete 10-second decision clock",
+    "global_pending_plus_open_slots": 1,
+    "one_candidate_per_boundary": true,
+    "same_minute_reentry": false,
+    "same_score_tie_break": "BTC, ETH, SOL, XRP only after exact floating score tie",
+    "intrabar_rule": "stop first; adverse open on a gap through the stop",
+    "funding": "actual historical funding with conservative exact-exit inclusion",
+    "selection_notional": "1x equity; no risk or leverage optimization"
+  },
+  "round_trip_cost_bp": [24, 32, 40],
+  "development_folds_2022": [
+    ["2022-01-01T00:00:00Z", "2022-05-01T00:00:00Z"],
+    ["2022-05-01T00:00:00Z", "2022-09-01T00:00:00Z"],
+    ["2022-09-01T00:00:00Z", "2023-01-01T00:00:00Z"]
+  ],
+  "development_gate": {
+    "minimum_completed_trades": 90,
+    "positive_net_log_growth_24bp": true,
+    "positive_net_log_growth_32bp": true,
+    "positive_fold_count_24bp": 3,
+    "positive_month_count_24bp": 9,
+    "profit_factor_24bp_minimum": 1.15,
+    "top10_winner_share_maximum": 0.4,
+    "net_after_top10_winners_positive": true,
+    "latency2_net_growth_24bp_positive": true,
+    "parameter_neighborhood_positive_fraction_minimum": 0.6,
+    "selection_score": "minimum fold growth, then 32bp total growth, then lower concentration"
+  },
+  "frozen_2023_gate": {
+    "minimum_completed_trades": 80,
+    "positive_net_log_growth_24bp": true,
+    "positive_net_log_growth_32bp": true,
+    "positive_quarters_24bp_minimum": 3,
+    "positive_months_24bp_minimum": 8,
+    "profit_factor_32bp_minimum": 1.1,
+    "net_after_top5_winners_positive": true,
+    "latency2_net_growth_24bp_positive": true,
+    "opposite_direction_control_negative": true
+  },
+  "forbidden": [
+    "target daily return as an optimization objective",
+    "risk fraction or leverage selection",
+    "calendar-date/news-event selection",
+    "future MFE/MAE or final trade outcome as entry input",
+    "2023 or later outcomes before freeze"
+  ]
+}
