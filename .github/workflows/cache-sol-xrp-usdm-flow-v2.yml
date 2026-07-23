@@ -1,0 +1,102 @@
+name: Cache SOL XRP Official USD-M Flow v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-sol-xrp-usdm-flow-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Build official cache
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p sol-xrp-cache-v2
+          python - <<'PY' 2>&1 | tee sol-xrp-cache-v2/build.log
+          from __future__ import annotations
+          import hashlib, io, json, traceback, zipfile
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT=Path('sol-xrp-cache-v2')
+          START=pd.Timestamp('2021-12-01T00:00:00Z')
+          END=pd.Timestamp('2025-07-01T00:00:00Z')
+          SYMBOLS=('SOLUSDT','XRPUSDT')
+          BASE='https://data.binance.vision/data/futures/um/monthly/klines'
+          COLS=['open_time','open','high','low','close','volume','close_time','quote_volume','num_trades','taker_buy_base_volume','taker_buy_quote_volume','ignore']
+          session=requests.Session(); session.headers['User-Agent']='SMC-research-cache-v2'
+          periods=pd.period_range('2021-12','2025-06',freq='M')
+          manifest={'source':'official Binance Vision USD-M','start':START.isoformat(),'end_exclusive':END.isoformat(),'symbols':{}}
+
+          try:
+              for symbol in SYMBOLS:
+                  frames=[]; archives=[]
+                  for period in periods:
+                      stamp=str(period); name=f'{symbol}-1m-{stamp}.zip'; url=f'{BASE}/{symbol}/1m/{name}'
+                      print('FETCH',url,flush=True)
+                      cr=session.get(url+'.CHECKSUM',timeout=(30,120)); cr.raise_for_status()
+                      expected=cr.text.strip().split()[0].lower()
+                      ar=session.get(url,timeout=(30,300)); ar.raise_for_status(); payload=ar.content
+                      actual=hashlib.sha256(payload).hexdigest()
+                      if actual!=expected: raise RuntimeError(f'{name} checksum expected={expected} actual={actual}')
+                      with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                          names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+                          if len(names)!=1: raise RuntimeError(f'{name}: CSV entries={names}')
+                          raw=zf.read(names[0])
+                      first=raw.splitlines()[0].decode('utf-8','replace').split(',')[0].strip().lower()
+                      header=first in {'open_time','open time'}
+                      df=pd.read_csv(io.BytesIO(raw),header=0 if header else None,names=COLS if not header else None)
+                      df.columns=[str(c).strip().lower().replace(' ','_') for c in df.columns]
+                      if len(df.columns)!=12: raise RuntimeError(f'{name}: columns={list(df.columns)}')
+                      if 'open_time' not in df.columns: df.columns=COLS
+                      numeric=pd.to_numeric(df['open_time'],errors='raise')
+                      median=float(numeric.abs().median())
+                      unit='us' if median>1e14 else 'ms' if median>1e11 else 's'
+                      ts=pd.to_datetime(numeric,unit=unit,utc=True,errors='raise')
+                      out=pd.DataFrame({'timestamp':ts})
+                      for source,target in [('open','open'),('high','high'),('low','low'),('close','close'),('volume','volume'),('quote_volume','quote_volume'),('num_trades','num_trades'),('taker_buy_base_volume','taker_buy_base_volume'),('taker_buy_quote_volume','taker_buy_quote_volume')]:
+                          out[target]=pd.to_numeric(df[source],errors='raise').to_numpy()
+                      frames.append(out)
+                      archives.append({'period':stamp,'url':url,'bytes':len(payload),'sha256':actual,'rows':len(out),'timestamp_unit':unit})
+                      print('OK',symbol,stamp,len(out),unit,actual,flush=True)
+                  data=pd.concat(frames,ignore_index=True)
+                  data=data[(data.timestamp>=START)&(data.timestamp<END)].sort_values('timestamp').reset_index(drop=True)
+                  if data.timestamp.duplicated().any(): raise RuntimeError(f'{symbol}: duplicates')
+                  invalid=(data.high<data[['open','close']].max(axis=1))|(data.low>data[['open','close']].min(axis=1))|(data.high<data.low)|(data[['open','high','low','close']]<=0).any(axis=1)
+                  if invalid.any(): raise RuntimeError(f'{symbol}: invalid OHLC={int(invalid.sum())}')
+                  delta=data.timestamp.diff().dropna(); path=OUT/f'{symbol}_official_preholdout.parquet'
+                  data.to_parquet(path,index=False,compression='zstd')
+                  manifest['symbols'][symbol]={'rows':len(data),'start':data.timestamp.iloc[0].isoformat(),'end':data.timestamp.iloc[-1].isoformat(),'gap_count':int((delta>pd.Timedelta(minutes=1)).sum()),'largest_gap_seconds':float(delta.max().total_seconds()),'output':str(path),'output_bytes':path.stat().st_size,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'archives':archives}
+              sol=pd.read_parquet(OUT/'SOLUSDT_official_preholdout.parquet',columns=['timestamp'])
+              xrp=pd.read_parquet(OUT/'XRPUSDT_official_preholdout.parquet',columns=['timestamp'])
+              common=pd.Index(sol.timestamp).intersection(pd.Index(xrp.timestamp))
+              manifest['sol_xrp_exact_common_rows']=len(common); manifest['sol_only_rows']=len(sol)-len(common); manifest['xrp_only_rows']=len(xrp)-len(common)
+              (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+              print('COMPLETE',json.dumps({k:v for k,v in manifest.items() if k!='symbols'},indent=2),flush=True)
+          except Exception:
+              (OUT/'failure.txt').write_text(traceback.format_exc(),encoding='utf-8')
+              traceback.print_exc()
+              raise
+          PY
+      - name: Upload cache or diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-official-usdm-flow-v2-${{ github.run_id }}
+          path: sol-xrp-cache-v2/**
+          retention-days: 7
+          if-no-files-found: error
