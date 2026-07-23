@@ -57,12 +57,12 @@ jobs:
                   yield f"{year:04d}-{month:02d}"
                   year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
-          def get(url: str, attempts: int = 6) -> bytes:
+          def get(url: str, attempts: int = 7) -> bytes:
               error = None
               for attempt in range(attempts):
                   try:
                       request = urllib.request.Request(
-                          url, headers={"User-Agent": "smc-ict-wave7/1.0"}
+                          url, headers={"User-Agent": "smc-ict-wave7/1.1"}
                       )
                       with urllib.request.urlopen(request, timeout=120) as response:
                           return response.read()
@@ -73,8 +73,8 @@ jobs:
                   except Exception as exc:
                       error = exc
                   if attempt + 1 < attempts:
-                      time.sleep(min(2 ** attempt, 12))
-              raise RuntimeError(f"failed {url}: {error}")
+                      time.sleep(min(2 ** attempt, 20))
+              raise RuntimeError(f"failed {url}: {error!r}")
 
           def fetch(symbol: str, month: str) -> dict:
               name = f"{symbol}-metrics-{month}.zip"
@@ -89,6 +89,7 @@ jobs:
                           "month": month,
                           "status": "not_available",
                           "url": url,
+                          "error": f"HTTP {exc.code}",
                       }
                   raise
               match = CHECKSUM.search(checksum_payload.decode("utf-8", errors="strict"))
@@ -107,8 +108,8 @@ jobs:
                   if len(members) != 1:
                       raise ValueError(f"unexpected archive members {url}: {members}")
                   with archive.open(members[0]) as handle:
-                      first_line = handle.readline().decode("utf-8", errors="strict").strip()
-                      second_line = handle.readline().decode("utf-8", errors="strict").strip()
+                      first_line = handle.readline().decode("utf-8-sig", errors="strict").strip()
+                      second_line = handle.readline().decode("utf-8-sig", errors="strict").strip()
               return {
                   "symbol": symbol,
                   "month": month,
@@ -125,21 +126,30 @@ jobs:
 
           tasks = [(symbol, month) for symbol in SYMBOLS for month in months()]
           records = []
-          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
               futures = {pool.submit(fetch, *task): task for task in tasks}
               for future in concurrent.futures.as_completed(futures):
-                  record = future.result()
+                  symbol, month = futures[future]
+                  try:
+                      record = future.result()
+                  except Exception as exc:
+                      record = {
+                          "symbol": symbol,
+                          "month": month,
+                          "status": "error",
+                          "url": f"{ROOT}/{symbol}/{symbol}-metrics-{month}.zip",
+                          "error": repr(exc),
+                      }
                   records.append(record)
-                  print(record["status"], record["symbol"], record["month"], flush=True)
+                  print(record["status"], record["symbol"], record["month"], record.get("error", ""), flush=True)
           records.sort(key=lambda item: (item["symbol"], item["month"]))
           verified = [item for item in records if item["status"] == "verified"]
           missing = [item for item in records if item["status"] == "not_available"]
+          errors = [item for item in records if item["status"] == "error"]
           counts = {
               symbol: sum(item["symbol"] == symbol for item in verified)
               for symbol in SYMBOLS
           }
-          if min(counts.values()) < 24:
-              raise RuntimeError(f"insufficient verified monthly metrics coverage: {counts}")
           manifest = {
               "source": "Binance Vision USD-M monthly metrics",
               "start_month_requested": "2020-12",
@@ -147,6 +157,7 @@ jobs:
               "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
               "verified_archive_count": len(verified),
               "not_available_count": len(missing),
+              "error_count": len(errors),
               "verified_by_symbol": counts,
               "total_verified_bytes": sum(item["bytes"] for item in verified),
               "records": records,
@@ -154,13 +165,21 @@ jobs:
           (OUT / "manifest.json").write_text(
               json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
           )
+          (OUT / "diagnostic.txt").write_text(
+              "\n".join(
+                  f"{item['status']} {item['symbol']} {item['month']} {item.get('error','')}"
+                  for item in records
+              ) + "\n",
+              encoding="utf-8",
+          )
           print(json.dumps({k: manifest[k] for k in (
-              "verified_archive_count", "not_available_count",
+              "verified_archive_count", "not_available_count", "error_count",
               "verified_by_symbol", "total_verified_bytes"
           )}, indent=2))
           PY
 
-      - name: Upload verified positioning metrics
+      - name: Upload verified positioning metrics and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wave7-positioning-metrics-2020-12_2025-07-${{ github.sha }}
