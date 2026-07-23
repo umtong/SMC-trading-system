@@ -1,0 +1,110 @@
+{
+  "registration_id": "wave40-prepost-size-disagreement-v1",
+  "registered_utc": "2026-07-23T13:40:00Z",
+  "relationship_to_wave39": "Independent mechanism registry. Wave39 uses absolute dollar imbalance and price efficiency. Wave40 uses the transition from the completed pre-boundary clock to the first post-boundary clock and disagreement between trade-count and dollar-weighted direction.",
+  "data_separation": {
+    "development_year": 2022,
+    "first_sequential_validation_year": 2023,
+    "locked_next_walkforward_year": 2024,
+    "sealed_terminal_oos": "unchanged existing terminal holdout",
+    "rule": "One Wave40 candidate may be frozen from 2022. No 2023 outcome is opened before that freeze. Wave39 outcomes or candidate rankings are not Wave40 inputs."
+  },
+  "official_inputs": {
+    "source": "checksum-verified Binance USD-M aggTrades and one-minute contract/funding archives",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "decision_clock": "the selected post-boundary 10-second window must be complete",
+    "pre_boundary_clock": "the final completed 60 seconds before the boundary",
+    "post_boundary_clock": "the first completed 10 seconds after the boundary",
+    "missing_policy": "no imputation; any prior feature history or still-open holding path intersecting a missing official minute is invalid"
+  },
+  "families": [
+    {
+      "family": "PRE_POST_PERSISTENCE",
+      "mechanism": "Aggressive flow remains extreme with the same sign across the quarter-hour boundary and price accepts the new-clock flow; scheduled inventory transfer continues.",
+      "direction": "post10 dollar-flow sign"
+    },
+    {
+      "family": "PRE_POST_REVERSAL",
+      "mechanism": "The first post-boundary flow reverses an extreme pre-boundary imbalance and price accepts the new sign; the scheduling clock marks an inventory regime switch.",
+      "direction": "post10 dollar-flow sign"
+    },
+    {
+      "family": "BLOCK_SIZE_CONTINUATION",
+      "mechanism": "Dollar-weighted imbalance is extreme, trade-count imbalance is materially weaker, and top-five trade concentration is high; a small number of large aggressive orders carry information and price follows them.",
+      "direction": "post10 dollar-flow sign"
+    },
+    {
+      "family": "BLOCK_SIZE_ABSORPTION",
+      "mechanism": "Concentrated large-dollar aggression produces weak or opposite first-10-second price response, indicating passive absorption.",
+      "direction": "opposite post10 dollar-flow sign"
+    },
+    {
+      "family": "RETAIL_COUNT_FADE",
+      "mechanism": "Trade-count imbalance is extreme but dollar-weighted imbalance is weak or opposite, indicating many small aggressors without large-dollar confirmation.",
+      "direction": "opposite trade-count imbalance sign"
+    }
+  ],
+  "causal_thresholds": {
+    "estimation": "trailing 60 calendar days of completed prior boundaries, shifted one boundary",
+    "minimum_prior_boundaries": 2880,
+    "post10_abs_dollar_imbalance_quantiles": [0.95, 0.975, 0.99],
+    "post10_dollar_volume_quantiles": [0.9, 0.95],
+    "pre60_abs_imbalance_quantiles": [0.8, 0.9],
+    "top5_share_quantiles": [0.75, 0.9],
+    "abs_count_imbalance_quantiles": [0.9, 0.95],
+    "dollar_count_disagreement_quantiles": [0.9, 0.95],
+    "forbidden": [
+      "calendar-date selection",
+      "news labels",
+      "future returns or MFE/MAE in entry rules",
+      "2023 outcomes",
+      "risk fraction or leverage",
+      "the final daily-return target"
+    ]
+  },
+  "execution": {
+    "entry": "first official one-minute open after the complete 10-second decision clock",
+    "latency_stress_minutes": [2, 5],
+    "holding_minutes": [60, 120, 240, 480],
+    "catastrophe_stop_atr": [3.0, 4.0],
+    "prior_trend_modes": ["none", "aligned_60", "opposed_60"],
+    "boundary_clock_modes": ["all", "minute_00"],
+    "global_pending_plus_open_slots": 1,
+    "same_minute_reentry": false,
+    "intrabar_rule": "stop first; gaps fill at the adverse open",
+    "funding": "actual historical rate with conservative exact-exit ordering",
+    "selection_notional": "1x equity; no risk/leverage optimization"
+  },
+  "round_trip_cost_bp": [24, 32, 40],
+  "development_folds_2022": [
+    ["2022-01-01T00:00:00Z", "2022-05-01T00:00:00Z"],
+    ["2022-05-01T00:00:00Z", "2022-09-01T00:00:00Z"],
+    ["2022-09-01T00:00:00Z", "2023-01-01T00:00:00Z"]
+  ],
+  "development_gate": {
+    "minimum_completed_trades": 70,
+    "positive_net_log_growth_24bp": true,
+    "positive_net_log_growth_32bp": true,
+    "positive_fold_count_24bp": 3,
+    "positive_month_count_24bp": 8,
+    "profit_factor_24bp_minimum": 1.15,
+    "top10_winner_share_maximum": 0.4,
+    "net_after_top10_winners_positive": true,
+    "latency2_net_growth_24bp_positive": true,
+    "parameter_neighborhood_positive_fraction_minimum": 0.6,
+    "selection_score": "minimum fold growth, then 32bp total growth, then lower winner concentration"
+  },
+  "frozen_2023_gate": {
+    "minimum_completed_trades": 60,
+    "positive_net_log_growth_24bp": true,
+    "positive_net_log_growth_32bp": true,
+    "positive_quarters_24bp_minimum": 3,
+    "positive_months_24bp_minimum": 7,
+    "profit_factor_32bp_minimum": 1.1,
+    "net_after_top5_winners_positive": true,
+    "latency2_net_growth_24bp_positive": true,
+    "opposite_direction_control_negative": true
+  },
+  "2024_access_allowed_before_2023_gate": false,
+  "risk_or_leverage_optimization_allowed": false
+}
