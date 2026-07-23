@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "amends": "predeclared_n20_1m_confirmation_v1.json",
+  "frozen_before_reading_one_minute_outcomes": true,
+  "feature_definitions": {
+    "directional_taker_imbalance": "side * (2 * sum(taker_buy_base) / sum(volume) - 1) over completed confirmation bars",
+    "confirmation_relative_volume": "mean confirmation-bar volume divided by median volume of the 60 completed one-minute bars strictly before the H1 decision",
+    "confirmation_clv": "directional location of the final confirmation close within the aggregate confirmation high-low range",
+    "outside": "strictly beyond the frozen N20 external level in trade direction"
+  },
+  "candidate_selection": {
+    "eligible_gate": {
+      "development_trades_min": 100,
+      "development_pf_min": 1.5,
+      "development_top10_removed_r_gt": 0,
+      "validation_trades_min": 35,
+      "validation_pf_min": 1.4,
+      "validation_top5_removed_r_gt": 0
+    },
+    "score": "minimum of development and validation lower-confidence mean net R, where LCB = mean(net_r) - 2 * sample_std(net_r) / sqrt(n)",
+    "tie_breaks": [
+      "higher minimum segment profit factor",
+      "higher combined top-trade-removed R",
+      "fewer confirmation minutes",
+      "lower directional imbalance threshold",
+      "lower relative-volume threshold"
+    ],
+    "baseline": "the frozen N20_QUALITY_TIER_EXIT_V1 five-minute execution ledger is always reported and cannot be displaced unless the one-minute challenger passes every pre-2024 gate"
+  },
+  "portfolio": {
+    "global_pending_plus_open_slots": 1,
+    "same_timestamp_priority": "the frozen causal N20 quality priority used by the current shared runtime",
+    "time_exit_then_new_entry_at_same_timestamp": true
+  },
+  "execution": {
+    "fees_and_slippage": "same base costs as N20_QUALITY_TIER_EXIT_V1",
+    "stop_target_same_minute": "stop first",
+    "funding": "only settlements strictly after entry and strictly before exit",
+    "data_gap": "censor or reject any episode that is not minute-contiguous"
+  },
+  "promotion": "historical success is research-only; the first genuinely unobserved evidence begins after the frozen specification and requires prospective shadow execution"
+}
