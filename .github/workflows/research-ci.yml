@@ -46,8 +46,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  v110-taker-flow:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v110-taker-flow-clean'
+  v120-alt-taker-flow:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v120-sol-xrp-flow-data'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -55,44 +55,44 @@ jobs:
       max-parallel: 5
       matrix:
         include:
-          - shard: BTCUSDT-2022
-            symbol: BTCUSDT
-            start: 2022-01-01
+          - shard: SOLUSDT-2022P
+            symbol: SOLUSDT
+            start: 2022-04-01
             end: 2023-01-01
-          - shard: BTCUSDT-2023
-            symbol: BTCUSDT
+          - shard: SOLUSDT-2023
+            symbol: SOLUSDT
             start: 2023-01-01
             end: 2024-01-01
-          - shard: BTCUSDT-2024
-            symbol: BTCUSDT
+          - shard: SOLUSDT-2024
+            symbol: SOLUSDT
             start: 2024-01-01
             end: 2025-01-01
-          - shard: BTCUSDT-2025
-            symbol: BTCUSDT
+          - shard: SOLUSDT-2025
+            symbol: SOLUSDT
             start: 2025-01-01
             end: 2026-01-01
-          - shard: BTCUSDT-2026H1
-            symbol: BTCUSDT
+          - shard: SOLUSDT-2026H1
+            symbol: SOLUSDT
             start: 2026-01-01
             end: 2026-07-01
-          - shard: ETHUSDT-2022
-            symbol: ETHUSDT
-            start: 2022-01-01
+          - shard: XRPUSDT-2022P
+            symbol: XRPUSDT
+            start: 2022-04-01
             end: 2023-01-01
-          - shard: ETHUSDT-2023
-            symbol: ETHUSDT
+          - shard: XRPUSDT-2023
+            symbol: XRPUSDT
             start: 2023-01-01
             end: 2024-01-01
-          - shard: ETHUSDT-2024
-            symbol: ETHUSDT
+          - shard: XRPUSDT-2024
+            symbol: XRPUSDT
             start: 2024-01-01
             end: 2025-01-01
-          - shard: ETHUSDT-2025
-            symbol: ETHUSDT
+          - shard: XRPUSDT-2025
+            symbol: XRPUSDT
             start: 2025-01-01
             end: 2026-01-01
-          - shard: ETHUSDT-2026H1
-            symbol: ETHUSDT
+          - shard: XRPUSDT-2026H1
+            symbol: XRPUSDT
             start: 2026-01-01
             end: 2026-07-01
     steps:
@@ -116,8 +116,8 @@ jobs:
             --symbol '${{ matrix.symbol }}' \
             --start '${{ matrix.start }}' \
             --end '${{ matrix.end }}' \
-            --output-dir 'data/v110_1m_flow/${{ matrix.shard }}' \
-            2>&1 | tee 'v110-flow-${{ matrix.shard }}.log'
+            --output-dir 'data/v120_1m_flow/${{ matrix.shard }}' \
+            2>&1 | tee 'v120-flow-${{ matrix.shard }}.log'
 
       - name: Validate output hash and row count
         shell: bash
@@ -132,7 +132,7 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          root = Path('data/v110_1m_flow') / os.environ['SHARD']
+          root = Path('data/v120_1m_flow') / os.environ['SHARD']
           manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
           path = root / f"{os.environ['SYMBOL']}_1m_flow.csv.gz"
           expected = int(
@@ -143,7 +143,10 @@ jobs:
               raise SystemExit(f"rows={manifest['output']['rows']} expected={expected}")
           if hashlib.sha256(path.read_bytes()).hexdigest() != manifest['output']['sha256']:
               raise SystemExit('normalized SHA-256 mismatch')
-          required = {'quote_volume','trade_count','taker_buy_quote','taker_sell_quote','signed_quote_volume','imbalance_fraction'}
+          required = {
+              'quote_volume', 'trade_count', 'taker_buy_quote',
+              'taker_sell_quote', 'signed_quote_volume', 'imbalance_fraction'
+          }
           if not required.issubset(set(manifest['output']['columns'])):
               raise SystemExit('missing taker-flow columns')
           print(os.environ['SHARD'], manifest['output'])
@@ -153,9 +156,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v110-1m-flow-${{ matrix.shard }}-${{ github.run_id }}
+          name: v120-1m-flow-${{ matrix.shard }}-${{ github.run_id }}
           path: |
-            data/v110_1m_flow/${{ matrix.shard }}
-            v110-flow-${{ matrix.shard }}.log
+            data/v120_1m_flow/${{ matrix.shard }}
+            v120-flow-${{ matrix.shard }}.log
           if-no-files-found: error
           retention-days: 14
