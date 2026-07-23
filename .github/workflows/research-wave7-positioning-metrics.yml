@@ -1,0 +1,170 @@
+name: Research Wave7 Positioning Metrics
+
+on:
+  push:
+    branches:
+      - agent/research-snapshot-and-oos
+    paths:
+      - .github/workflows/research-wave7-positioning-metrics.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/research-wave7-positioning-metrics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  positioning-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify Binance Vision USD-M metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import hashlib
+          import io
+          import json
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          ROOT = "https://data.binance.vision/data/futures/um/monthly/metrics"
+          OUT = Path("data/wave7_positioning_metrics")
+          RAW = OUT / "raw"
+          CHECKSUM = re.compile(r"\b([0-9a-fA-F]{64})\b")
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = (2020, 12)
+          END = (2025, 7)  # sealed OOS starts 2025-08-01; never download it here
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def months():
+              year, month = START
+              while (year, month) <= END:
+                  yield f"{year:04d}-{month:02d}"
+                  year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+          def get(url: str, attempts: int = 6) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url, headers={"User-Agent": "smc-ict-wave7/1.0"}
+                      )
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          raise
+                      error = exc
+                  except Exception as exc:
+                      error = exc
+                  if attempt + 1 < attempts:
+                      time.sleep(min(2 ** attempt, 12))
+              raise RuntimeError(f"failed {url}: {error}")
+
+          def fetch(symbol: str, month: str) -> dict:
+              name = f"{symbol}-metrics-{month}.zip"
+              url = f"{ROOT}/{symbol}/{name}"
+              try:
+                  checksum_payload = get(url + ".CHECKSUM")
+                  payload = get(url)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return {
+                          "symbol": symbol,
+                          "month": month,
+                          "status": "not_available",
+                          "url": url,
+                      }
+                  raise
+              match = CHECKSUM.search(checksum_payload.decode("utf-8", errors="strict"))
+              if match is None:
+                  raise ValueError(f"no SHA-256 in {url}.CHECKSUM")
+              official = match.group(1).lower()
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != official:
+                  raise ValueError(f"checksum mismatch {url}: {actual} != {official}")
+              path = RAW / symbol / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(payload)
+              path.with_suffix(path.suffix + ".CHECKSUM").write_bytes(checksum_payload)
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [x for x in archive.namelist() if x.lower().endswith(".csv")]
+                  if len(members) != 1:
+                      raise ValueError(f"unexpected archive members {url}: {members}")
+                  with archive.open(members[0]) as handle:
+                      first_line = handle.readline().decode("utf-8", errors="strict").strip()
+                      second_line = handle.readline().decode("utf-8", errors="strict").strip()
+              return {
+                  "symbol": symbol,
+                  "month": month,
+                  "status": "verified",
+                  "url": url,
+                  "official_sha256": official,
+                  "actual_sha256": actual,
+                  "bytes": len(payload),
+                  "relative_path": str(path.relative_to(OUT)),
+                  "csv_member": members[0],
+                  "header": first_line,
+                  "sample_row": second_line,
+              }
+
+          tasks = [(symbol, month) for symbol in SYMBOLS for month in months()]
+          records = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+              futures = {pool.submit(fetch, *task): task for task in tasks}
+              for future in concurrent.futures.as_completed(futures):
+                  record = future.result()
+                  records.append(record)
+                  print(record["status"], record["symbol"], record["month"], flush=True)
+          records.sort(key=lambda item: (item["symbol"], item["month"]))
+          verified = [item for item in records if item["status"] == "verified"]
+          missing = [item for item in records if item["status"] == "not_available"]
+          counts = {
+              symbol: sum(item["symbol"] == symbol for item in verified)
+              for symbol in SYMBOLS
+          }
+          if min(counts.values()) < 24:
+              raise RuntimeError(f"insufficient verified monthly metrics coverage: {counts}")
+          manifest = {
+              "source": "Binance Vision USD-M monthly metrics",
+              "start_month_requested": "2020-12",
+              "end_month_requested": "2025-07",
+              "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
+              "verified_archive_count": len(verified),
+              "not_available_count": len(missing),
+              "verified_by_symbol": counts,
+              "total_verified_bytes": sum(item["bytes"] for item in verified),
+              "records": records,
+          }
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps({k: manifest[k] for k in (
+              "verified_archive_count", "not_available_count",
+              "verified_by_symbol", "total_verified_bytes"
+          )}, indent=2))
+          PY
+
+      - name: Upload verified positioning metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave7-positioning-metrics-2020-12_2025-07-${{ github.sha }}
+          path: data/wave7_positioning_metrics
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
