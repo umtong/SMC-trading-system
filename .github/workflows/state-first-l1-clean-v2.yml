@@ -44,14 +44,28 @@ jobs:
           shasum -a 256 \
             research_tools/state_first_l1_clean_v2/PREREGISTRATION_KO.md \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
+            research_tools/state_first_l1_clean_v2/run_fixed.py \
             | tee state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256.txt
-          python -m py_compile research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py
+          python -m py_compile \
+            research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
+            research_tools/state_first_l1_clean_v2/run_fixed.py
       - name: Build checksum-verified causal panel
         run: |
-          python research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py panel \
+          python research_tools/state_first_l1_clean_v2/run_fixed.py panel \
             --symbol '${{ matrix.symbol }}' \
             --data-dir 'state-first-cache/${{ matrix.symbol }}' \
             --output-dir 'state-first-panel/${{ matrix.symbol }}'
+      - name: Fail closed on unresolved BBO entries
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          p=next(Path('state-first-panel/${{ matrix.symbol }}').glob('*_state_first_l1_v2.csv.gz'))
+          d=pd.read_csv(p,usecols=['entry_time_ms'])
+          assert (d.entry_time_ms >= 0).all()
+          print({'rows':len(d),'invalid_entries':int((d.entry_time_ms<0).sum())})
+          PY
       - name: Audit panel
         shell: bash
         run: |
@@ -90,6 +104,7 @@ jobs:
           shasum -a 256 \
             research_tools/state_first_l1_clean_v2/PREREGISTRATION_KO.md \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
+            research_tools/state_first_l1_clean_v2/run_fixed.py \
             > expected.txt
           found=0
           while IFS= read -r p; do
@@ -99,7 +114,7 @@ jobs:
           test "$found" -eq 2
       - name: Run gated selection, validation, and conditional one-shot test
         run: |
-          python research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py evaluate \
+          python research_tools/state_first_l1_clean_v2/run_fixed.py evaluate \
             --input-dir state-first-input \
             --output-dir state-first-results
       - name: Audit results
