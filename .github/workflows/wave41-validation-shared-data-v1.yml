@@ -1,0 +1,206 @@
+name: Wave41 shared-data frozen validation 2023
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave41-validation-shared-data-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave41-validation-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Await source-audited Wave41 freeze or explicit block
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          freeze="research/wave41/frozen/WAVE41_CANDIDATE_BEFORE_2023.json"
+          blocked="research/wave41/results/development_2022/BLOCKED.json"
+          audit="research/wave41/results/development_2022/audits/source_crosscheck_2022.json"
+          mkdir -p decision
+          for attempt in $(seq 1 340); do
+            git fetch origin "${HEAD_BRANCH}" --quiet
+            if git cat-file -e "origin/${HEAD_BRANCH}:${blocked}" 2>/dev/null; then
+              git show "origin/${HEAD_BRANCH}:${blocked}" > decision/BLOCKED.json
+              echo "candidate_present=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if git cat-file -e "origin/${HEAD_BRANCH}:${freeze}" 2>/dev/null \
+              && git cat-file -e "origin/${HEAD_BRANCH}:${audit}" 2>/dev/null; then
+              git show "origin/${HEAD_BRANCH}:${freeze}" > decision/WAVE41_CANDIDATE_BEFORE_2023.json
+              git show "origin/${HEAD_BRANCH}:${audit}" > decision/source_crosscheck_2022.json
+              python - <<'PY'
+              import json
+              from pathlib import Path
+              audit=json.loads(Path('decision/source_crosscheck_2022.json').read_text(encoding='utf-8'))
+              if audit.get('schema')!='wave39-aggtrades-kline-crosscheck-v1':
+                  raise RuntimeError('Wave41 2022 source audit is invalid')
+              PY
+              echo "candidate_present=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt=${attempt}: awaiting Wave41 development decision"
+            sleep 60
+          done
+          exit 1
+
+      - name: Await common immutable data artifacts
+        if: steps.decision.outputs.candidate_present == 'true'
+        id: data
+        shell: bash
+        run: |
+          set -euo pipefail
+          successful_run() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if r.get("name")==n and r.get("status")=="completed" and r.get("conclusion")=="success"),""))' "$1"
+          }
+          for attempt in $(seq 1 300); do
+            exact22="$(successful_run 'Wave39 exact quarter-hour aggTrades 2022 v3')"
+            support22="$(successful_run 'Wave39 official 1m support 2022 v3')"
+            exact23="$(successful_run 'Shared exact quarter-hour aggTrades 2023')"
+            support23="$(successful_run 'Shared official support 2023')"
+            echo "attempt=${attempt} 2022=${exact22:-none}/${support22:-none} 2023=${exact23:-none}/${support23:-none}"
+            if [[ -n "${exact22}" && -n "${support22}" && -n "${exact23}" && -n "${support23}" ]]; then
+              echo "exact22=${exact22}" >> "$GITHUB_OUTPUT"
+              echo "support22=${support22}" >> "$GITHUB_OUTPUT"
+              echo "exact23=${exact23}" >> "$GITHUB_OUTPUT"
+              echo "support23=${support23}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 60
+          done
+          exit 1
+
+      - name: Reconstruct both immutable years
+        if: steps.decision.outputs.candidate_present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exact22 support22 exact23 support23 data2022/support data2023/support
+          gh run download "${{ steps.data.outputs.exact22 }}" --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v3-${{ steps.data.outputs.exact22 }}" --dir exact22
+          gh run download "${{ steps.data.outputs.support22 }}" --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${{ steps.data.outputs.support22 }}" --dir support22
+          gh run download "${{ steps.data.outputs.exact23 }}" --repo "${REPOSITORY}" \
+            --name "shared-exact-boundary-2023-${{ steps.data.outputs.exact23 }}" --dir exact23
+          gh run download "${{ steps.data.outputs.support23 }}" --repo "${REPOSITORY}" \
+            --name "shared-official-support-2023-${{ steps.data.outputs.support23 }}" --dir support23
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              matches=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: matches.append(path)
+              if len(matches)!=1: raise RuntimeError(f'{root}/{schema}: {matches}')
+              return matches[0]
+          for exact_root,support_root,target in (
+              ('exact22','support22',Path('data2022')),
+              ('exact23','support23',Path('data2023')),
+          ):
+              exact=locate(exact_root,'wave39-quarterhour-exact-aggtrades-year-v1')
+              support=locate(support_root,'wave39-official-support-combined-v3')
+              for path in exact.parent.glob('*'):
+                  if path.is_file(): shutil.copy2(path,target/path.name)
+              for path in support.parent.glob('*'):
+                  if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - uses: actions/setup-python@v5
+        if: steps.decision.outputs.candidate_present == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cross-check 2023 sources and run exactly the frozen Wave41 candidate
+        if: steps.decision.outputs.candidate_present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest \
+            research/wave39/test_wave39_engine_v3.py \
+            research/wave39/test_wave39_engine_v4.py \
+            research/wave41/test_wave41.py -q
+          rm -rf output; mkdir -p output/audits output/data-manifests
+          python -m research.wave39.audit_boundary_vs_kline \
+            --data-root data2023 --year 2023 --output output/audits/source_crosscheck_2023.json
+          python -m research.wave41.run_wave41_validation_2023 \
+            --data-2022 data2022 --data-2023 data2023 \
+            --freeze decision/WAVE41_CANDIDATE_BEFORE_2023.json --output-dir output \
+            2>&1 | tee output/run.log
+          cp data2023/manifest.json output/data-manifests/exact-boundary-2023.json
+          cp data2023/support/manifest.json output/data-manifests/support-2023.json
+
+      - name: Adversarially verify candidate identity, hashes and future locks
+        if: steps.decision.outputs.candidate_present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('output')
+          result=json.loads((root/'wave41_validation_2023.json').read_text(encoding='utf-8'))
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          audit=json.loads((root/'audits/source_crosscheck_2023.json').read_text(encoding='utf-8'))
+          if audit.get('schema')!='wave39-aggtrades-kline-crosscheck-v1': raise RuntimeError('source audit mismatch')
+          if result['candidate_id']!=manifest['candidate_id']: raise RuntimeError('candidate mismatch')
+          if result['2024_opened'] or result['sealed_terminal_oos_opened'] or result['risk_or_leverage_optimized']:
+              raise RuntimeError('split/risk lock violation')
+          if hashlib.sha256((root/'wave41_validation_2023.json').read_bytes()).hexdigest()!=manifest['result_sha256']:
+              raise RuntimeError('result hash mismatch')
+          if hashlib.sha256((root/'wave41_validation_2023_ledger.csv').read_bytes()).hexdigest()!=manifest['ledger_sha256']:
+              raise RuntimeError('ledger hash mismatch')
+          print(json.dumps(manifest,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit immutable Wave41 sequential verdict
+        if: steps.decision.outputs.candidate_present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="research/wave41/results/validation_2023"
+          rm -rf "${destination}"; mkdir -p "${destination}"
+          cp -a output/. "${destination}/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}"
+          git commit -m "Record shared-data Wave41 2023 verdict"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${HEAD_BRANCH}"; then exit 0; fi
+            git fetch origin "${HEAD_BRANCH}"; git rebase "origin/${HEAD_BRANCH}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.decision.outputs.candidate_present == 'true'
+        with:
+          name: wave41-shared-data-validation-2023-${{ github.run_id }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
