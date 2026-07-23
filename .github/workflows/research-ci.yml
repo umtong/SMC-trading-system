@@ -47,7 +47,7 @@ jobs:
           retention-days: 7
 
   v10-taker-flow:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v10-taker-flow-data'
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'agent/v10-taker-flow-data')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
