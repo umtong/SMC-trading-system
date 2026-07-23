@@ -187,3 +187,148 @@ jobs:
         run: |
           echo "V9 alpha search failed with exit code ${ALPHA_EXIT_CODE}"
           exit 1
+
+  v12-liquidity-shock-discovery:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v12-discovery-clean-20260723'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout PR merge
+        uses: actions/checkout@v4
+
+      - name: Restore and verify pinned V12 research source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_url=$(python -c "import json; print(json.load(open('research/v12_liquidity_shock_source.json'))['source_url'])")
+          curl --fail --location --retry 5 --retry-all-errors "$source_url" -o /tmp/v12_liquidity_shock.tgz.b64
+          base64 --decode /tmp/v12_liquidity_shock.tgz.b64 > /tmp/v12_liquidity_shock.tgz
+          echo '746509929aeee1bcf1f2f1881a380895fa670d7eab93146e5e57f105966c1d89  /tmp/v12_liquidity_shock.tgz' | sha256sum --check --strict
+          tar -xzf /tmp/v12_liquidity_shock.tgz
+
+      - name: Mark V12 run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "## V12 real-data liquidity-shock discovery\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- merge_sha: \`${GITHUB_SHA}\`\n- universe: \`BTCUSDT, ETHUSDT\`\n- period: \`2023-01-01 through 2024-01-01 UTC\`\n\n_Research-only. No paper/live/order/sizing changes._" --edit-last --create-if-none
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install V12 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas requests pytest tabulate
+
+      - name: Restore checksum-verified Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/v12_binance
+          key: v12-binance-um-2023-btc-eth-v1
+
+      - name: Run causal core tests
+        working-directory: research/v12_liquidity_shock
+        run: pytest -q
+
+      - name: Run frozen 2023 BTC/ETH discovery screen
+        id: discovery
+        working-directory: research/v12_liquidity_shock
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python run_discovery.py \
+            --start 2023-01-01 \
+            --end 2024-01-01 \
+            --cache ../../.cache/v12_binance \
+            --output ../../artifacts/v12-liquidity-shock-2023 \
+            2>&1 | tee ../../artifacts-v12.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build V12 PR research summary
+        if: always()
+        env:
+          DISCOVERY_EXIT_CODE: ${{ steps.discovery.outputs.exit_code }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          out = Path('artifacts/v12-liquidity-shock-2023')
+          comment = Path('artifacts/v12-pr-comment.md')
+          exit_code = os.environ.get('DISCOVERY_EXIT_CODE', 'unknown')
+          lines = ['## V12 real-data liquidity-shock discovery', '', f"- run_id: `{os.environ.get('RUN_ID')}`", f"- process exit code: `{exit_code}`"]
+          verdict_path = out / 'verdict.json'
+          if verdict_path.exists():
+              verdict = json.loads(verdict_path.read_text())
+              lines += [
+                  f"- status: `{verdict.get('status')}`",
+                  f"- selected families: `{verdict.get('selected_families')}`",
+                  f"- next step: `{verdict.get('next_step')}`",
+                  '',
+              ]
+              metrics_path = out / 'grid_metrics.csv'
+              if metrics_path.exists():
+                  metrics = pd.read_csv(metrics_path)
+                  stress = metrics.loc[metrics['cost_bps'].eq(20.0)].copy()
+                  cols = [c for c in ['cell_id','candidate_count','trades','net_r','expectancy_r','profit_factor','trades_per_calendar_day','positive_month_ratio'] if c in stress.columns]
+                  lines += ['### 20 bp stress grid', '', stress[cols].to_markdown(index=False), '']
+              pooled = verdict.get('pooled_metrics')
+              if pooled:
+                  lines += ['### Selected-family pooled confirmation', '']
+                  for key in ['trades','net_r','expectancy_r','profit_factor','terminal_multiple_1pct_risk','max_drawdown_1pct_risk','trades_per_calendar_day','positive_month_ratio']:
+                      lines.append(f"- {key}: `{pooled.get(key)}`")
+                  lines.append('')
+          else:
+              lines += ['- status: `RUN_FAILED_BEFORE_VERDICT`', '']
+              log_path = Path('artifacts-v12.log')
+              if log_path.exists():
+                  tail = '\n'.join(log_path.read_text(errors='replace').splitlines()[-120:])
+                  lines += ['### Failure log tail', '', '```text', tail, '```', '']
+          lines += ['', '_Screening replay only. Exact aggTrade replay is mandatory before validation._']
+          comment.parent.mkdir(parents=True, exist_ok=True)
+          comment.write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Upload V12 research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12-liquidity-shock-2023-${{ github.run_id }}
+          path: |
+            artifacts/v12-liquidity-shock-2023
+            artifacts-v12.log
+            artifacts/v12-pr-comment.md
+            research/v12_liquidity_shock
+            research/v12_liquidity_shock_source.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish V12 summary to this draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body-file artifacts/v12-pr-comment.md --edit-last --create-if-none
+
+      - name: Preserve discovery failure status
+        if: always() && steps.discovery.outputs.exit_code != '0'
+        env:
+          DISCOVERY_EXIT_CODE: ${{ steps.discovery.outputs.exit_code }}
+        shell: bash
+        run: |
+          echo "V12 discovery failed with exit code ${DISCOVERY_EXIT_CODE}"
+          exit 1
