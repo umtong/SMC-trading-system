@@ -113,6 +113,14 @@ jobs:
             artifacts-v20-spot.log
           if-no-files-found: warn
           retention-days: 30
+      - name: Publish run locator to research PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        shell: bash
+        run: |
+          gh pr comment 48 --repo umtong/SMC-trading-system --body "## V20 spot-minute export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- event: \`${GITHUB_EVENT_NAME}\`\n- head_sha: \`${GITHUB_SHA}\`\n- exit code: \`${EXIT_CODE}\`\n- artifact: \`v20-binance-spot-minute-2023-2024-${GITHUB_RUN_ID}\`\n\n_Checksum-verified data artifact only._"
       - name: Preserve failure
         if: always() && steps.export.outputs.exit_code != '0'
         env:
