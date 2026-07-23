@@ -1,0 +1,100 @@
+{
+  "seed_count": 2000,
+  "seed_ranges": [
+    "8000-8999",
+    "9000-9999"
+  ],
+  "minimum_multiple": 3.109779054187759,
+  "q01_multiple": 4.826579359713805,
+  "q05_multiple": 7.513123713198942,
+  "median_multiple": 20.785968941855337,
+  "fraction_at_least_5x": 0.9875,
+  "fraction_at_least_10x": 0.8765,
+  "median_trades": 1187.5,
+  "median_win_rate": 0.8323563269879568,
+  "median_average_net_r": 0.0894060797196255,
+  "maximum_drawdown_observed": 0.4385050641646212,
+  "median_max_drawdown": 0.2044929568481333,
+  "worst_seeds": [
+    {
+      "seed": 9171,
+      "multiple": 3.109779054187759,
+      "trades": 929,
+      "win_rate": 0.806243272335845,
+      "average_net_r": 0.0448556342242221,
+      "max_drawdown": 0.3834836324400064
+    },
+    {
+      "seed": 8230,
+      "multiple": 3.208727184374394,
+      "trades": 912,
+      "win_rate": 0.8081140350877193,
+      "average_net_r": 0.0467130783851572,
+      "max_drawdown": 0.333748324798683
+    },
+    {
+      "seed": 8138,
+      "multiple": 3.285842340300977,
+      "trades": 1020,
+      "win_rate": 0.8009803921568628,
+      "average_net_r": 0.0431371565222938,
+      "max_drawdown": 0.2493538334120801
+    },
+    {
+      "seed": 9416,
+      "multiple": 3.510738749889818,
+      "trades": 1177,
+      "win_rate": 0.7952421410365336,
+      "average_net_r": 0.0399604474305904,
+      "max_drawdown": 0.3769343472654227
+    },
+    {
+      "seed": 9291,
+      "multiple": 3.8168908198734446,
+      "trades": 928,
+      "win_rate": 0.8071120689655172,
+      "average_net_r": 0.052304670183417,
+      "max_drawdown": 0.2522949042942665
+    },
+    {
+      "seed": 9088,
+      "multiple": 3.91844237778008,
+      "trades": 1059,
+      "win_rate": 0.8045325779036827,
+      "average_net_r": 0.0471898547960711,
+      "max_drawdown": 0.3385119102846277
+    },
+    {
+      "seed": 8158,
+      "multiple": 4.20643352248356,
+      "trades": 983,
+      "win_rate": 0.8138351983723296,
+      "average_net_r": 0.0527217350300042,
+      "max_drawdown": 0.223771125987934
+    },
+    {
+      "seed": 9743,
+      "multiple": 4.294529869771874,
+      "trades": 1247,
+      "win_rate": 0.7931034482758621,
+      "average_net_r": 0.0434267134774004,
+      "max_drawdown": 0.3758647585362381
+    },
+    {
+      "seed": 8905,
+      "multiple": 4.342003555348064,
+      "trades": 1008,
+      "win_rate": 0.808531746031746,
+      "average_net_r": 0.0527141933018592,
+      "max_drawdown": 0.2290086639589465
+    },
+    {
+      "seed": 9555,
+      "multiple": 4.360211746318665,
+      "trades": 946,
+      "win_rate": 0.8160676532769556,
+      "average_net_r": 0.0558695143843527,
+      "max_drawdown": 0.243975027257309
+    }
+  ]
+}
