@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "research/remote/btc_state_wfv_20260724.py.gz.b64"
+      - "research/remote/repair_btc_state_source_revision.py"
       - ".github/workflows/btc-state-wfv-20260724.yml"
 
 permissions:
@@ -24,7 +25,7 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
       WORK_DIR: ${{ github.workspace }}/research_runs/btc_state_wfv_20260724
       SCRIPT_PATH: ${{ github.workspace }}/research/remote/btc_state_wfv_20260724.py
-      EXPECTED_SHA256: 5e953cf51b95eb2e8a5120c418cfb22a013cb43a6767b7d78ddb936c4c869998
+      EXPECTED_SHA256: 267de8407188c1e650f795fba28c90cc2dfbdcfa0f74011b6c4d0e028358ab67
 
     steps:
       - name: Checkout isolated research branch
@@ -51,6 +52,7 @@ jobs:
           target = Path(os.environ["SCRIPT_PATH"])
           target.write_bytes(gzip.decompress(base64.b64decode(source.read_text(encoding="ascii"))))
           PY
+          python research/remote/repair_btc_state_source_revision.py "$SCRIPT_PATH"
           actual_sha=$(shasum -a 256 "$SCRIPT_PATH" | awk '{print $1}')
           printf 'actual_sha256=%s\nexpected_sha256=%s\n' "$actual_sha" "$EXPECTED_SHA256" | tee "$WORK_DIR/payload_identity.txt"
           test "$actual_sha" = "$EXPECTED_SHA256"
