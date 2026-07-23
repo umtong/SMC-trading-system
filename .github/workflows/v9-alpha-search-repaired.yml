@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mark V10 run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 35 --body "## V10 causal SMT relative-value research\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Research-only; official Binance USD-M data; no paper/live/order/risk-setting changes._"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
