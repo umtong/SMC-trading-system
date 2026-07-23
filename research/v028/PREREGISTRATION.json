@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "study_id": "quarter_hour_delayed_public_rotation_v0_28",
+  "registered_before_v0271_candidate_pnl_observation": true,
+  "economic_hypothesis": "Quarter-hour opening imbalance tends to reverse over the first 15-30 minutes but its public-signal component is strongest at the 12-hour horizon. Waiting for the causal 30-minute retracement should improve a single-entry 12-hour continuation trade without paying for a reversal leg.",
+  "source_prior": {
+    "paper": "Kim and Hansen (2026), The Quarter-Hour Effect, arXiv:2607.09426v2",
+    "locked_facts": [
+      "quarter-hour CFE is negative over the first half hour",
+      "public-component interquartile effect rises from 0.9 bp at 4h to 9.8 bp at 8h and 16.9 bp at 12h",
+      "12h public contribution share is the largest component for BTC, ETH, SOL and the cross-asset mean"
+    ]
+  },
+  "data": {
+    "venue": "Binance USD-M perpetual futures",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "sources": ["monthly aggTrades", "1m klines", "1m markPriceKlines", "fundingRate"],
+    "companion_checksums_required": true,
+    "data_start": "2021-01-01T00:00:00Z",
+    "development": ["2022-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "untouched_evaluation": ["2025-01-01T00:00:00Z", "2025-10-01T00:00:00Z"],
+    "terminal_holdout_start": "2025-10-01T00:00:00Z",
+    "terminal_holdout_opened": false
+  },
+  "information_availability": {
+    "opening_imbalance_window": "[T,T+10s)",
+    "base_12h_forecast_available": "T+10s",
+    "retracement_observation": "log(open[T+31m]/open[T+1m]), fully known at T+31m",
+    "trade_decision_available": "T+31m",
+    "entry": "marketable execution at open[T+32m] with adverse slippage",
+    "capacity_reference": "quote volume of minute [T+30m,T+31m), completed before entry",
+    "exit": "the original forecast endpoint open[T+12h+1m], leaving approximately 11h29m after entry",
+    "public_features": "same frozen T-15m information gap as V0.27.1",
+    "monthly_refit": "trailing 180 days strictly before test month; all labels end before month start; 12h purge"
+  },
+  "signal": {
+    "family": "delayed_public_12h_continuation",
+    "direction": "sign(predicted_12h_return), required to equal sign(opening_imbalance)",
+    "public_dominance": "abs(pred_12h_public_bps) / max(abs(pred_12h_lag_bps), abs(pred_12h_residual_bps), 1e-12)",
+    "retracement_condition": "direction * realized_first_30m_return_bps <= -minimum_retracement_bps",
+    "remaining_edge_bps": "direction * (predicted_total_12h_return_bps - realized_first_30m_return_bps)",
+    "funding_boundaries": "opening boundaries at 00:00, 08:00 and 16:00 UTC excluded"
+  },
+  "candidate_grid": {
+    "min_abs_imbalance": [0.35, 0.60],
+    "min_predicted_total_12h_bps": [18.0, 30.0],
+    "min_public_dominance_ratio": [1.5, 3.0],
+    "minimum_retracement_bps": [0.0, 5.0],
+    "min_remaining_edge_bps": [18.0, 30.0],
+    "stop_atr": [1.25, 2.0],
+    "candidate_count": 64
+  },
+  "execution": {
+    "entry_exit": "taker",
+    "base_cost": {"fee_per_side": 0.00055, "slippage_bps_per_side": 1.0},
+    "stress_cost": {"fee_per_side": 0.00070, "slippage_bps_per_side": 3.0},
+    "extreme_cost": {"fee_per_side": 0.00100, "slippage_bps_per_side": 7.0},
+    "cost_robustness": "the exact base-admitted signal set is replayed under stress and extreme costs",
+    "risk_rate": 0.01,
+    "max_notional_leverage": 3.0,
+    "base_participation": 0.0005,
+    "half_participation": 0.00025,
+    "global_pending_plus_open_positions": 1,
+    "same_timestamp_reentry": "prohibited",
+    "stop": "pre-boundary ATR multiple, tick rounded away from entry; liquidation and gap-stop logic identical to V0.27.1",
+    "funding": "official rate and mark while position exists"
+  },
+  "selection": {
+    "development_only": true,
+    "screen_all_64": true,
+    "dense_shortlist": 16,
+    "evaluation_never_used_for_selection": true
+  },
+  "gate": {
+    "base_geometric_daily_net_min": 0.01,
+    "closed_trades_min": 60,
+    "btc_and_eth_each_min_trades": 10,
+    "stress_average_r_min": 0.10,
+    "extreme_average_r_min": 0.0,
+    "half_capacity_average_r_min": 0.0,
+    "two_additional_minute_delay_average_r_min": 0.0,
+    "max_drawdown_max": 0.20,
+    "positive_months_min_of_9": 6,
+    "top5_positive_pnl_concentration_max": 0.40,
+    "moving_block_bootstrap_p05_mean_r_positive": true,
+    "terminal_holdout_must_remain_unopened": true,
+    "production_must_remain_disabled": true
+  },
+  "production_enabled": false
+}
