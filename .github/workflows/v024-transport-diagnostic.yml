@@ -24,11 +24,13 @@ jobs:
       - name: Inspect and reconstruct v4 transport
         shell: bash
         run: |
+          set +e
           set -u
           mkdir -p transport-evidence
           find research/v024_bundle_v4 -maxdepth 1 -name 'part-*.b64' -print0 | sort -z | xargs -0 sha256sum > transport-evidence/part-sha256.txt
           find research/v024_bundle_v4 -maxdepth 1 -name 'part-*.b64' -printf '%f %s\n' | sort > transport-evidence/part-sizes.txt
           cat research/v024_bundle_v4/part-*.b64 | base64 -d > transport-evidence/reconstructed.tar.xz
+          printf '%s\n' "$?" > transport-evidence/base64-status.txt
           sha256sum transport-evidence/reconstructed.tar.xz > transport-evidence/reconstructed.sha256
           wc -c transport-evidence/reconstructed.tar.xz > transport-evidence/reconstructed.size
           xz -t transport-evidence/reconstructed.tar.xz > transport-evidence/xz-test.txt 2>&1
@@ -37,6 +39,7 @@ jobs:
           printf '%s\n' "$?" > transport-evidence/tar-status.txt
           exit 0
       - name: Upload exact reconstructed bytes
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: v0241-transport-${{ github.run_id }}
