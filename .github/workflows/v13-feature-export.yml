@@ -70,8 +70,8 @@ jobs:
           for symbol in symbols:
               raw = build_symbol_frame(cache, symbol, months, start, end)
               featured = add_causal_features(raw, cfg)
-              path = output / f'{symbol}_causal_features.pkl.gz'
-              featured.to_pickle(path, compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0})
+              path = output / f'{symbol}_causal_features.csv.gz'
+              featured.to_csv(path, index=False, compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0})
               summary.append({
                   'symbol': symbol,
                   'rows': len(featured),
@@ -88,7 +88,7 @@ jobs:
       - name: Upload causal frames
         uses: actions/upload-artifact@v4
         with:
-          name: v13-causal-feature-frames-pickle-2023-${{ github.run_id }}
+          name: v13-causal-feature-frames-csv-2023-${{ github.run_id }}
           path: artifacts/v13-feature-frames-2023
           if-no-files-found: error
           retention-days: 30
