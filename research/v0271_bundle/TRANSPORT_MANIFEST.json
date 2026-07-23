@@ -1,0 +1,33 @@
+{
+  "archive_bytes": 25084,
+  "archive_name": "v0271_locked_runner.tar.xz",
+  "archive_sha256": "e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9",
+  "candidate_pnl_observed": false,
+  "concatenation": "strip_ascii_whitespace_then_concatenate_in_manifest_order",
+  "encoding": "base64",
+  "part_count": 3,
+  "parts": [
+    {
+      "bytes": 12001,
+      "characters": 12000,
+      "name": "part-000.b64",
+      "sha256": "670018820e9ad48eacbab30fe0891e0a4ab101ca061999278b10c73ff7a0eb1a"
+    },
+    {
+      "bytes": 12001,
+      "characters": 12000,
+      "name": "part-001.b64",
+      "sha256": "d4a0f53d8ed4fba57e14dbc791497d1cdfec019f8282ce3d2f0a9c6ebf8a91ab"
+    },
+    {
+      "bytes": 9448,
+      "characters": 9448,
+      "name": "part-002.b64",
+      "sha256": "1ee4558abcbf0032aac49cabc74a17232077a947219eae0da849b9c9ce37ebcf"
+    }
+  ],
+  "production_enabled": false,
+  "schema_version": 1,
+  "study_id": "quarter_hour_component_rotation_v0_27_1",
+  "terminal_holdout_opened": false
+}
