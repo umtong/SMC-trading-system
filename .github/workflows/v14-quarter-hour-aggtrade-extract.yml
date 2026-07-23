@@ -5,6 +5,7 @@ on:
     paths:
       - 'research/v14_quarter_hour_aggtrade.py.gz.b64'
       - 'research/v14_extract_trigger.json'
+      - '.github/workflows/v14-quarter-hour-aggtrade-extract.yml'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +26,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode research/v14_quarter_hour_aggtrade.py.gz.b64 | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
+          # The first connector upload changed one base64 character. Repair only
+          # that transport corruption, then require the original decoded SHA.
+          sed 's/ecoMfW56/ecqMfW56/' research/v14_quarter_hour_aggtrade.py.gz.b64 > /tmp/v14.b64
+          base64 --decode /tmp/v14.b64 | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
           echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
           python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
 
