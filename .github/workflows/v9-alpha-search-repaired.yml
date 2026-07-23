@@ -2,8 +2,13 @@ name: V10 Causal SMT Relative Value Research
 
 on:
   push:
-    branches:
-      - "research/v9-alpha-search-20260723"
+    branches: ["research/v9-alpha-search-20260723"]
+    paths:
+      - "research/v10_smt_relative_value.py.gz.b64"
+      - "research/v10_causality_fix.patch.gz.b64"
+      - ".github/workflows/v9-alpha-search-repaired.yml"
+  pull_request:
+    branches: [main]
     paths:
       - "research/v10_smt_relative_value.py.gz.b64"
       - "research/v10_causality_fix.patch.gz.b64"
@@ -23,157 +28,139 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Mark V10 run started
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr comment 35 --body "## V10 causal SMT relative-value research\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Research-only; official Binance USD-M data; no paper/live/order/risk-setting changes._"
+          gh pr comment 35 --body "## V10 causal SMT relative-value research\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Official Binance USD-M data; research-only._"
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
-      - name: Install research dependencies
+      - name: Install dependencies
         run: python -m pip install --upgrade pip numpy pandas tabulate
 
-      - name: Restore, patch, and verify V10 source
+      - name: Restore, patch, and verify source
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import base64, gzip, hashlib
           from pathlib import Path
-
-          def decode(path: str) -> bytes:
-              text = Path(path).read_text(encoding='utf-8')
-              return gzip.decompress(base64.b64decode(''.join(text.split()), validate=True))
-
+          def decode(path):
+              return gzip.decompress(base64.b64decode(''.join(Path(path).read_text().split()), validate=True))
           source = decode('research/v10_smt_relative_value.py.gz.b64')
-          source_hash = hashlib.sha256(source).hexdigest()
-          if source_hash != '17e92545b989cb317b4a02d936eed0d29d26464aee088816909f36d7e08a001e':
-              raise SystemExit(f'base source hash mismatch: {source_hash}')
           patch = decode('research/v10_causality_fix.patch.gz.b64')
-          patch_hash = hashlib.sha256(patch).hexdigest()
-          if patch_hash != 'b864a7125313543c6d61170ce67aa36220333b7d75098d63ba3e8380ef733ee2':
-              raise SystemExit(f'patch hash mismatch: {patch_hash}')
-          Path('/tmp/v10_smt_relative_value.py').write_bytes(source)
-          Path('/tmp/v10_causality_fix.patch').write_bytes(patch)
-          print(f'base_source_bytes={len(source)} base_source_sha256={source_hash}')
-          print(f'patch_bytes={len(patch)} patch_sha256={patch_hash}')
+          expected_source = '17e92545b989cb317b4a02d936eed0d29d26464aee088816909f36d7e08a001e'
+          expected_patch = 'b864a7125313543c6d61170ce67aa36220333b7d75098d63ba3e8380ef733ee2'
+          if hashlib.sha256(source).hexdigest() != expected_source:
+              raise SystemExit('base source hash mismatch')
+          if hashlib.sha256(patch).hexdigest() != expected_patch:
+              raise SystemExit('patch hash mismatch')
+          Path('/tmp/v10.py').write_bytes(source)
+          Path('/tmp/v10.patch').write_bytes(patch)
           PY
-          patch --batch --forward /tmp/v10_smt_relative_value.py /tmp/v10_causality_fix.patch
+          patch --batch --forward /tmp/v10.py /tmp/v10.patch
           python - <<'PY'
           import hashlib
           from pathlib import Path
-          payload = Path('/tmp/v10_smt_relative_value.py').read_bytes()
+          payload = Path('/tmp/v10.py').read_bytes()
           actual = hashlib.sha256(payload).hexdigest()
           expected = 'b6b45a71093d5233d1f67b257bd5d5b24834391b3c927b7a078baf94f7289921'
           if actual != expected:
               raise SystemExit(f'patched source hash mismatch: {actual}')
-          print(f'patched_source_bytes={len(payload)} patched_source_sha256={actual}')
+          print(f'patched_source_sha256={actual} bytes={len(payload)}')
           PY
-          python -m py_compile /tmp/v10_smt_relative_value.py
+          python -m py_compile /tmp/v10.py
 
-      - name: Restore Binance archive cache
+      - name: Restore official-data cache
         uses: actions/cache@v4
         with:
           path: .cache/smc-v10
           key: smc-v10-binance-usdm-5m-2021-2026-v2
 
-      - name: Run official-data causal SMT research
-        id: v10
+      - name: Run official-data research
+        id: research
         shell: bash
         run: |
           set +e
           set -o pipefail
-          mkdir -p artifacts/v10-smt-relative-value
-          python /tmp/v10_smt_relative_value.py \
+          mkdir -p artifacts/v10
+          python /tmp/v10.py \
             --start-month 2021-01 \
             --end-month 2026-06 \
             --cache-dir .cache/smc-v10 \
-            --output-dir artifacts/v10-smt-relative-value \
+            --output-dir artifacts/v10 \
             2>&1 | tee artifacts-v10.log
-          status=${PIPESTATUS[0]}
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          code=${PIPESTATUS[0]}
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Build V10 report
+      - name: Build report
         if: always()
         env:
-          V10_EXIT_CODE: ${{ steps.v10.outputs.exit_code }}
+          EXIT_CODE: ${{ steps.research.outputs.exit_code }}
           RUN_ID: ${{ github.run_id }}
           RUN_SHA: ${{ github.sha }}
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
-          import pandas as pd
-          out = Path('artifacts/v10-smt-relative-value')
+          out = Path('artifacts/v10')
           lines = [
               '## V10 causal SMT relative-value research', '',
               f"- run_id: `{os.environ.get('RUN_ID')}`",
               f"- sha: `{os.environ.get('RUN_SHA')}`",
-              f"- process exit code: `{os.environ.get('V10_EXIT_CODE', 'unknown')}`",
+              f"- process exit code: `{os.environ.get('EXIT_CODE', 'unknown')}`",
           ]
           summary = out / 'summary.json'
           if summary.exists():
               s = json.loads(summary.read_text())
-              best = s.get('best_oos_configuration', {})
+              b = s.get('best_oos_configuration', {})
               lines += [
                   f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
                   f"- candidates: `{s.get('candidate_count')}`",
-                  f"- frozen candidate: `{s.get('frozen_candidate', {}).get('candidate_id')}`",
-                  f"- best OOS risk: `{best.get('risk')}`",
-                  f"- best OOS max leverage: `{best.get('max_leverage')}`",
-                  f"- best OOS cost multiple: `{best.get('cost_multiple')}`",
-                  f"- best OOS trades: `{best.get('oos_trades')}`",
-                  f"- best OOS final multiple: `{best.get('oos_final_multiple')}`",
-                  f"- best OOS geometric daily net: `{best.get('oos_geo_daily')}`",
-                  f"- best OOS max drawdown: `{best.get('oos_max_drawdown')}`",
-                  f"- unresolved position: `{best.get('unresolved')}`",
-                  '',
+                  f"- frozen: `{s.get('frozen_candidate', {}).get('candidate_id')}`",
+                  f"- OOS risk: `{b.get('risk')}`",
+                  f"- OOS leverage cap: `{b.get('max_leverage')}`",
+                  f"- OOS cost multiple: `{b.get('cost_multiple')}`",
+                  f"- OOS trades: `{b.get('oos_trades')}`",
+                  f"- OOS final multiple: `{b.get('oos_final_multiple')}`",
+                  f"- OOS geometric daily net: `{b.get('oos_geo_daily')}`",
+                  f"- OOS max drawdown: `{b.get('oos_max_drawdown')}`",
+                  f"- unresolved: `{b.get('unresolved')}`",
               ]
           else:
-              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`']
               log = Path('artifacts-v10.log')
               if log.exists():
-                  lines += ['### Log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```', '']
-          screen = out / 'screen.csv'
-          if screen.exists():
-              d = pd.read_csv(screen).head(10)
-              cols = [c for c in ['candidate_id','family','score','dev_trades','dev_pf','dev_geo_daily','val_trades','val_pf','val_geo_daily','dev2x_pf','val2x_pf'] if c in d.columns]
-              lines += ['### Development-selected candidates', '', d[cols].to_markdown(index=False), '']
-          stress = out / 'frozen_stress.csv'
-          if stress.exists():
-              d = pd.read_csv(stress)
-              cols = [c for c in ['key','risk','max_leverage','cost_multiple','unresolved','oos_trades','oos_pf','oos_final_multiple','oos_geo_daily','oos_max_drawdown','audit_same_bar_stops'] if c in d.columns]
-              lines += ['### Frozen OOS stress', '', d[cols].to_markdown(index=False), '']
-          lines += ['', '_Research-only. No paper/live/order/risk-setting changes._']
-          Path('artifacts/v10-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+                  lines += ['', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```']
+          lines += ['', '_Research-only; no paper/live/order/sizing changes._']
+          Path('v10-pr-comment.md').write_text('\n'.join(lines))
           PY
 
-      - name: Publish V10 report
+      - name: Publish report
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr comment 35 --body-file artifacts/v10-pr-comment.md
+        run: gh pr comment 35 --body-file v10-pr-comment.md
 
-      - name: Upload V10 outputs
+      - name: Upload outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: v10-smt-relative-value-${{ github.run_id }}
           path: |
-            artifacts/v10-smt-relative-value
+            artifacts/v10
             artifacts-v10.log
-            artifacts/v10-pr-comment.md
+            v10-pr-comment.md
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Preserve V10 failure status
-        if: always() && steps.v10.outputs.exit_code != '0'
+      - name: Preserve research failure
+        if: always() && steps.research.outputs.exit_code != '0'
         env:
-          V10_EXIT_CODE: ${{ steps.v10.outputs.exit_code }}
-        run: |
-          echo "V10 research failed with exit code ${V10_EXIT_CODE}"
-          exit 1
+          EXIT_CODE: ${{ steps.research.outputs.exit_code }}
+        run: exit "${EXIT_CODE}"
