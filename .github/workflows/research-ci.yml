@@ -45,3 +45,100 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  provisional-btc-metrics:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "pyarrow>=16"
+
+      - name: Download fixed provisional BTCUSDT metrics parquet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wave33_provisional_metrics
+          url='https://huggingface.co/datasets/Mindbyte-89/btcusdt_perp_metrics_5m_09_2020_to_04_2026/resolve/main/data/train-00000-of-00001.parquet?download=true'
+          curl --fail --location --retry 8 --retry-all-errors --connect-timeout 30 --max-time 900 \
+            "$url" -o wave33_provisional_metrics/upstream.parquet
+          echo 'db5959a0e38d8155ee5931a5a22fb04b6ed3af853faba01fe498f65d17ea37ce  wave33_provisional_metrics/upstream.parquet' | sha256sum -c -
+
+      - name: Audit and exclude sealed OOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('wave33_provisional_metrics')
+          source = root / 'upstream.parquet'
+          frame = pd.read_parquet(source)
+          expected = [
+              'timestamp',
+              'sum_open_interest',
+              'sum_open_interest_value',
+              'count_toptrader_long_short_ratio',
+              'sum_toptrader_long_short_ratio',
+              'count_long_short_ratio',
+              'sum_taker_long_short_vol_ratio',
+          ]
+          if list(frame.columns) != expected:
+              raise RuntimeError(f'unexpected columns: {list(frame.columns)}')
+          frame['timestamp'] = pd.to_datetime(frame['timestamp'], utc=True)
+          frame = frame.sort_values('timestamp').drop_duplicates('timestamp', keep='last')
+          frame = frame.loc[frame.timestamp < pd.Timestamp('2025-08-01T00:00:00Z')].copy()
+          if frame.empty:
+              raise RuntimeError('empty pre-OOS frame')
+          if bool((frame.timestamp >= pd.Timestamp('2025-08-01T00:00:00Z')).any()):
+              raise RuntimeError('sealed OOS leakage')
+          deltas = frame.timestamp.diff().dropna()
+          irregular = int((deltas != pd.Timedelta(minutes=5)).sum())
+          missing = int(sum(max(int(delta / pd.Timedelta(minutes=5)) - 1, 0) for delta in deltas if delta > pd.Timedelta(minutes=5)))
+          numeric = [column for column in expected if column != 'timestamp']
+          nonfinite = {column: int((~pd.to_numeric(frame[column], errors='coerce').notna()).sum()) for column in numeric}
+          output = root / 'BTCUSDT_metrics_5m_pre_oos.parquet'
+          frame.to_parquet(output, index=False, compression='zstd')
+          manifest = {
+              'status': 'PROVISIONAL_THIRD_PARTY_REQUIRES_OFFICIAL_RECONCILIATION',
+              'upstream_dataset': 'Mindbyte-89/btcusdt_perp_metrics_5m_09_2020_to_04_2026',
+              'claimed_source': 'Binance Vision USD-M daily metrics',
+              'upstream_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+              'rows': len(frame),
+              'first_timestamp': frame.timestamp.iloc[0].isoformat(),
+              'last_timestamp': frame.timestamp.iloc[-1].isoformat(),
+              'duplicate_rows_removed': 0,
+              'irregular_gap_count': irregular,
+              'estimated_missing_bars': missing,
+              'nonfinite_counts': nonfinite,
+              'sealed_oos_excluded_from': '2025-08-01T00:00:00+00:00',
+              'output_file': output.name,
+              'output_bytes': output.stat().st_size,
+              'output_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
+          }
+          (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload provisional pre-OOS metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave33-provisional-btc-metrics-${{ github.sha }}
+          path: |
+            wave33_provisional_metrics/BTCUSDT_metrics_5m_pre_oos.parquet
+            wave33_provisional_metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
