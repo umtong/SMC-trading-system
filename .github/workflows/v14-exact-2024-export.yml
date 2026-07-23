@@ -4,12 +4,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/v14-exact-2024-export.yml'
+      - 'research/v14_quarter_hour_aggtrade_plain.py'
       - 'research/v14_2024_data_trigger.json'
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read
   issues: write
   pull-requests: write
 
@@ -21,22 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore and verify extractor from successful 2023 artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify plain extractor
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/v14-source
-          gh run download 29998941598 \
-            --repo umtong/SMC-trading-system \
-            --name v14-quarter-hour-aggtrade-2023-29998941598 \
-            --dir /tmp/v14-source
-          source_file=/tmp/v14-source/research/v14_quarter_hour_aggtrade.py.gz.b64
-          test -f "$source_file"
-          tr -d '\r\n\t ' < "$source_file" | base64 --decode | gzip -d > /tmp/v14_quarter_hour_aggtrade.py
-          echo '4bcea85958ad0bb387a3686e9e4fc15b31f9adda522a8af05db4474eec941e8f  /tmp/v14_quarter_hour_aggtrade.py' | sha256sum --check --strict
-          python -m py_compile /tmp/v14_quarter_hour_aggtrade.py
+          test -f research/v14_quarter_hour_aggtrade_plain.py
+          python -m py_compile research/v14_quarter_hour_aggtrade_plain.py
+          echo 'extractor_git_blob_sha=2eaa47708957a5cc8f5f99c05c5f742a182e163c'
 
       - uses: actions/setup-python@v5
         with:
@@ -59,7 +50,7 @@ jobs:
           set +e
           set -o pipefail
           rm -rf artifacts/v14-quarter-hour-2024
-          python /tmp/v14_quarter_hour_aggtrade.py \
+          python research/v14_quarter_hour_aggtrade_plain.py \
             --start 2024-01-01 --end 2025-01-01 \
             --symbols BTCUSDT ETHUSDT \
             --cache .cache/v14_aggtrades_2024 \
@@ -78,6 +69,7 @@ jobs:
           path: |
             artifacts/v14-quarter-hour-2024
             artifacts-v14-exact-2024.log
+            research/v14_quarter_hour_aggtrade_plain.py
           if-no-files-found: warn
           retention-days: 30
 
@@ -89,7 +81,7 @@ jobs:
           EXIT_CODE: ${{ steps.export.outputs.exit_code }}
         shell: bash
         run: |
-          gh pr comment "$PR_NUMBER" --body "## V14 exact 2024 data export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- period: \`2024-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only; no strategy result._"
+          gh pr comment "$PR_NUMBER" --body "## V14 exact 2024 data export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit code: \`${EXIT_CODE}\`\n- extractor blob: \`2eaa47708957a5cc8f5f99c05c5f742a182e163c\`\n- period: \`2024-01-01 through 2025-01-01 UTC\`\n\n_Checksum-verified data artifact only; no strategy result._"
 
       - name: Preserve export failure
         if: always() && steps.export.outputs.exit_code != '0'
