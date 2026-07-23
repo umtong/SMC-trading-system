@@ -106,3 +106,177 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  wave6-derivative-raw:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download checksum-verified funding and premium-index archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import hashlib
+          import json
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          ROOT = "https://data.binance.vision/data/futures/um/monthly"
+          OUT = Path("data/wave6_derivative_raw")
+          CHECKSUM = re.compile(r"\b([0-9a-fA-F]{64})\b")
+          START = (2020, 12)
+          END = (2025, 7)
+
+          def months():
+              year, month = START
+              while (year, month) <= END:
+                  yield f"{year:04d}-{month:02d}"
+                  year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+          def get(url: str, attempts: int = 6) -> bytes:
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "smc-ict-wave6/1.0"},
+              )
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:  # explicit retries are logged below
+                      error = exc
+                      if attempt + 1 == attempts:
+                          break
+                      time.sleep(min(2 ** attempt, 12))
+              raise RuntimeError(f"failed {url}: {error}")
+
+          specs = []
+          for symbol in ("BTCUSDT", "ETHUSDT"):
+              for month in months():
+                  funding_name = f"{symbol}-fundingRate-{month}.zip"
+                  specs.append((
+                      "fundingRate",
+                      symbol,
+                      month,
+                      f"{ROOT}/fundingRate/{symbol}/{funding_name}",
+                      OUT / "fundingRate" / symbol / funding_name,
+                  ))
+                  premium_name = f"{symbol}-5m-{month}.zip"
+                  specs.append((
+                      "premiumIndexKlines",
+                      symbol,
+                      month,
+                      f"{ROOT}/premiumIndexKlines/{symbol}/5m/{premium_name}",
+                      OUT / "premiumIndexKlines" / symbol / "5m" / premium_name,
+                  ))
+
+          def fetch(spec):
+              data_type, symbol, month, url, path = spec
+              checksum_url = url + ".CHECKSUM"
+              checksum_payload = get(checksum_url)
+              match = CHECKSUM.search(checksum_payload.decode("utf-8", errors="strict"))
+              if match is None:
+                  raise ValueError(f"no SHA-256 in {checksum_url}")
+              expected = match.group(1).lower()
+              payload = get(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise ValueError(f"checksum mismatch {url}: {actual} != {expected}")
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(payload)
+              path.with_suffix(path.suffix + ".CHECKSUM").write_bytes(checksum_payload)
+              return {
+                  "data_type": data_type,
+                  "symbol": symbol,
+                  "month": month,
+                  "url": url,
+                  "sha256": actual,
+                  "bytes": len(payload),
+                  "relative_path": str(path.relative_to(OUT)),
+              }
+
+          records = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+              futures = {pool.submit(fetch, spec): spec for spec in specs}
+              for future in concurrent.futures.as_completed(futures):
+                  record = future.result()
+                  records.append(record)
+                  print(record["data_type"], record["symbol"], record["month"], record["bytes"], flush=True)
+
+          records.sort(key=lambda item: (item["data_type"], item["symbol"], item["month"]))
+          manifest = {
+              "source": "Binance Vision USD-M monthly archives",
+              "start_month": "2020-12",
+              "end_month": "2025-07",
+              "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
+              "archive_count": len(records),
+              "total_bytes": sum(item["bytes"] for item in records),
+              "records": records,
+          }
+          (OUT / "raw_manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Probe richer public derivative archive families
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          urls = {
+              "um_monthly_metrics": "https://data.binance.vision/data/futures/um/monthly/metrics/BTCUSDT/BTCUSDT-metrics-2024-01.zip",
+              "um_daily_metrics": "https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2024-01-01.zip",
+              "cm_daily_metrics": "https://data.binance.vision/data/futures/cm/daily/metrics/BTCUSD_PERP/BTCUSD_PERP-metrics-2024-01-01.zip",
+              "cm_daily_liquidations": "https://data.binance.vision/data/futures/cm/daily/liquidationSnapshot/BTCUSD_PERP/BTCUSD_PERP-liquidationSnapshot-2024-01-01.zip",
+              "um_daily_liquidations": "https://data.binance.vision/data/futures/um/daily/liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2024-01-01.zip",
+              "um_daily_book_ticker": "https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-01-01.zip",
+          }
+          result = {}
+          for name, url in urls.items():
+              request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "smc-ict-wave6/1.0"})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      result[name] = {
+                          "url": url,
+                          "status": response.status,
+                          "content_length": response.headers.get("Content-Length"),
+                      }
+              except urllib.error.HTTPError as exc:
+                  result[name] = {"url": url, "status": exc.code}
+              except Exception as exc:
+                  result[name] = {"url": url, "error": repr(exc)}
+          path = Path("data/wave6_derivative_raw/archive_probe.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Upload Wave 6 derivative archive snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave6-binance-derivative-raw-2020-12_2025-07-${{ github.sha }}
+          path: data/wave6_derivative_raw
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
