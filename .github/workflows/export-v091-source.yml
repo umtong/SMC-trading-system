@@ -1,0 +1,37 @@
+name: Export V0.9.1 Source Bundle
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build deterministic source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          cp -a src scripts tests pyproject.toml README.md export/
+          find export -type f -print0 | sort -z | xargs -0 sha256sum > export/SHA256SUMS
+          tar --sort=name --mtime='UTC 2026-07-23' --owner=0 --group=0 --numeric-owner \
+            -czf v091-source-bundle.tar.gz export
+          sha256sum v091-source-bundle.tar.gz | tee v091-source-bundle.tar.gz.sha256
+
+      - name: Upload source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: v091-source-bundle-${{ github.run_id }}
+          path: |
+            v091-source-bundle.tar.gz
+            v091-source-bundle.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
