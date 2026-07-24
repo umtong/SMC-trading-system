@@ -1,0 +1,43 @@
+name: Research Phase26 Liquidation Depth macOS Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-phase26-macos-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout frozen research branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/phase26-liquidation-depth
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install fixed research dependencies
+        run: python -m pip install numpy==2.2.6 pandas==2.2.3 pyarrow==19.0.0 huggingface_hub==0.30.2
+      - name: Run unchanged causal liquidation-depth screen
+        env:
+          HF_HOME: ${{ runner.temp }}/hf
+        run: |
+          rm -rf research/phase26_microbar/results
+          python research/phase26_microbar/liquidation_depth_research.py \
+            --out research/phase26_microbar/results \
+            | tee research/phase26_microbar/run-macos-bridge.log
+      - name: Upload frozen research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase26-liquidation-depth-macos-${{ github.run_id }}
+          path: |
+            research/phase26_microbar/results
+            research/phase26_microbar/run-macos-bridge.log
+          if-no-files-found: warn
+          retention-days: 14
