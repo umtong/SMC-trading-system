@@ -1,0 +1,177 @@
+name: ETH quarter-hour state meta external selection V2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/eth_qh_meta_external_20260724/bundle.tar.gz.b64.part*"
+      - "research/eth_qh_meta_external_20260724/repair_schema.py"
+      - ".github/workflows/eth-qh-meta-external-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eth-qh-meta-external-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUNDLE_GZ_SHA256: 3328d55269db48d402bc2e510b0851b02e8f1f8e6420f6e4027526807ee39ad8
+  ORIGINAL_SCRIPT_SHA256: b80c68f264d01920b160bda3c5891a2354380943be5d576281e356693d3e13c9
+  ORIGINAL_TEST_SHA256: 8e579b10a534df6a5e08d45b785ae3cc636ba82ab5329bb3ba2ab34a3a809291
+  FROZEN_SHA256: 95858a3249af6f87092fe998777da2460218252918da5e7fa8b33261bdb5a83d
+  REPAIR_SHA256: 688af52a156521c3f908088de21306cb6c0a7bc404214b478986f4aa47af960a
+  PATCHED_SCRIPT_SHA256: 7ac4a5848d6a50bfa5773f6d47c46ce4cb451b965371b7e519cf863dbe29b93f
+  PATCHED_TEST_SHA256: b3418ff71ff02acd72e3573e6909f4b168fffa0d449220caafd9fef006b871d7
+
+jobs:
+  select-events:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/eth-qh-meta-external-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct, repair, and verify immutable selection source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          mkdir -p "$root/source" "$root/select"
+          cat research/eth_qh_meta_external_20260724/bundle.tar.gz.b64.part{00..01} > /tmp/bundle.b64
+          base64 --decode /tmp/bundle.b64 > /tmp/bundle.tar.gz
+          printf '%s  %s\n' "$BUNDLE_GZ_SHA256" /tmp/bundle.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/bundle.tar.gz -C "$root/source"
+          printf '%s  %s\n' "$ORIGINAL_SCRIPT_SHA256" "$root/source/eth_qh_external.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$ORIGINAL_TEST_SHA256" "$root/source/test_eth_qh_external.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$FROZEN_SHA256" "$root/source/external_selection_primary_frozen.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$REPAIR_SHA256" research/eth_qh_meta_external_20260724/repair_schema.py | sha256sum --check --strict
+          python research/eth_qh_meta_external_20260724/repair_schema.py "$root/source"
+          printf '%s  %s\n' "$PATCHED_SCRIPT_SHA256" "$root/source/eth_qh_external.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$PATCHED_TEST_SHA256" "$root/source/test_eth_qh_external.py" | sha256sum --check --strict
+          python -m py_compile "$root/source/eth_qh_external.py" "$root/source/test_eth_qh_external.py"
+          sha256sum research/eth_qh_meta_external_20260724/bundle.tar.gz.b64.part{00..01} research/eth_qh_meta_external_20260724/repair_schema.py > "$root/input_sha256.txt"
+
+      - name: Install fixed environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "requests==2.32.4" "pytest==8.3.4"
+
+      - name: Test and select outcome-free event IDs
+        shell: bash
+        run: |
+          set +e
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          pytest -q "$root/source/test_eth_qh_external.py" > "$root/select_unit_tests.log" 2>&1
+          test_rc=$?
+          python "$root/source/eth_qh_external.py" --stage select --frozen "$root/source/external_selection_primary_frozen.json" --work-dir "$root/select" > "$root/select.log" 2>&1
+          select_rc=$?
+          python - "$root/select_status.json" "$test_rc" "$select_rc" <<'PY'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1]);payload={'test_rc':int(sys.argv[2]),'select_rc':int(sys.argv[3]),'outcomes_opened':False,'2026_opened':False,'orders_submitted':False,'paper_or_live_started':False};p.write_text(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+          if [[ $test_rc -eq 0 && $select_rc -eq 0 ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('research_runs/eth_qh_meta_external_v2_20260724')
+          obj=json.loads((root/'select/selection_identity.json').read_text())
+          assert obj['outcomes_opened'] is False and obj['2026_opened'] is False and obj['orders_submitted'] is False
+          header=(root/'select/selected_events.csv').read_text().splitlines()[0].lower()
+          assert not any(x in header for x in ('gross','return','pnl','mfe','mae','exit_price'))
+          PY
+          fi
+          exit $(( test_rc != 0 || select_rc != 0 ))
+
+      - name: Record selection checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          find "$root" -type f ! -name SELECT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/SELECT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eth-qh-meta-v2-locked-selection-${{ github.sha }}
+          path: research_runs/eth_qh_meta_external_v2_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+  evaluate-locked-events:
+    needs: select-events
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/eth-qh-meta-external-20260724
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: eth-qh-meta-v2-locked-selection-${{ github.sha }}
+          path: research_runs/eth_qh_meta_external_v2_20260724
+
+      - name: Reconstruct identical patched evaluator
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          rm -rf "$root/source"; mkdir -p "$root/source" "$root/evaluate"
+          cat research/eth_qh_meta_external_20260724/bundle.tar.gz.b64.part{00..01} > /tmp/bundle.b64
+          base64 --decode /tmp/bundle.b64 > /tmp/bundle.tar.gz
+          printf '%s  %s\n' "$BUNDLE_GZ_SHA256" /tmp/bundle.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/bundle.tar.gz -C "$root/source"
+          printf '%s  %s\n' "$REPAIR_SHA256" research/eth_qh_meta_external_20260724/repair_schema.py | sha256sum --check --strict
+          python research/eth_qh_meta_external_20260724/repair_schema.py "$root/source"
+          printf '%s  %s\n' "$PATCHED_SCRIPT_SHA256" "$root/source/eth_qh_external.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$PATCHED_TEST_SHA256" "$root/source/test_eth_qh_external.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$FROZEN_SHA256" "$root/source/external_selection_primary_frozen.json" | sha256sum --check --strict
+          test -f "$root/select/selection_identity.json"
+
+      - name: Install fixed environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "requests==2.32.4" "pytest==8.3.4"
+
+      - name: Reverify event identity and evaluate once
+        shell: bash
+        run: |
+          set +e
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          pytest -q "$root/source/test_eth_qh_external.py" > "$root/evaluate_unit_tests.log" 2>&1
+          test_rc=$?
+          python "$root/source/eth_qh_external.py" --stage evaluate --frozen "$root/source/external_selection_primary_frozen.json" --selection-file "$root/select/selection_identity.json" --work-dir "$root/evaluate" > "$root/evaluate.log" 2>&1
+          evaluate_rc=$?
+          python - "$root/evaluate_status.json" "$test_rc" "$evaluate_rc" <<'PY'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1]);payload={'test_rc':int(sys.argv[2]),'evaluate_rc':int(sys.argv[3]),'2026_opened':False,'orders_submitted':False,'paper_or_live_started':False,'deployment_bundle_allowed':False};p.write_text(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+          exit $(( test_rc != 0 || evaluate_rc != 0 ))
+
+      - name: Record evaluation checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/eth_qh_meta_external_v2_20260724"
+          find "$root" -type f ! -name EVALUATION_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/EVALUATION_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eth-qh-meta-v2-external-evidence-${{ github.sha }}
+          path: research_runs/eth_qh_meta_external_v2_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
