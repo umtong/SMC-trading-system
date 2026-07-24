@@ -1,0 +1,60 @@
+name: Binance USD-M AggTrades Flow Sample
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/aggtrades-flow-research
+    paths:
+      - scripts/build_binance_usdm_aggtrades_flow_sample.py
+      - configs/research/aggtrades_quarter_sample_v1/predeclared.json
+      - .github/workflows/binance-usdm-aggtrades-flow-sample.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install "numpy>=2.0" "pandas>=2.2" "requests>=2.32"
+      - name: Compile builder
+        run: python -m py_compile scripts/build_binance_usdm_aggtrades_flow_sample.py
+      - name: Build checksum-verified five-second flow sample
+        run: |
+          python scripts/build_binance_usdm_aggtrades_flow_sample.py \
+            --config configs/research/aggtrades_quarter_sample_v1/predeclared.json \
+            --bucket-seconds 5 \
+            --output artifacts/binance_usdm_aggtrades_flow_sample_v1
+      - name: Validate immutable sample
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/binance_usdm_aggtrades_flow_sample_v1')
+          manifest=json.loads((root/'manifest.json').read_text())
+          expected=len(manifest['symbols'])*len(manifest['dates'])
+          if manifest['errors'] or manifest['missing_archives']:
+              raise SystemExit(f"incomplete: errors={manifest['errors']} missing={manifest['missing_archives'][:3]}")
+          if len(manifest['datasets']) != expected:
+              raise SystemExit(f"expected {expected}, found {len(manifest['datasets'])}")
+          rows=sum(int(info['rows']) for info in manifest['datasets'].values())
+          if rows <= 0:
+              raise SystemExit('no aggregated rows')
+          print(json.dumps({'datasets':expected,'rows':rows,'archives':len(manifest['archives'])},indent=2))
+          PY
+      - name: Upload immutable flow sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-aggtrades-flow-sample-${{ github.sha }}
+          path: artifacts/binance_usdm_aggtrades_flow_sample_v1
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
