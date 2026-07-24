@@ -1,0 +1,45 @@
+name: Phase33 spot-perpetual discovery research
+
+on:
+  push:
+    branches:
+      - research/phase33-spot-perp-discovery
+    paths:
+      - '.github/workflows/phase33_spot_perp_discovery.yml'
+      - 'research/phase33_spot_perp_discovery/**'
+  pull_request:
+    paths:
+      - '.github/workflows/phase33_spot_perp_discovery.yml'
+      - 'research/phase33_spot_perp_discovery/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas requests numba
+      - name: Run causal spot-perpetual study
+        run: |
+          set -o pipefail
+          python research/phase33_spot_perp_discovery/spot_perp_discovery.py | tee research/phase33_spot_perp_discovery/run.log
+      - name: Upload compact results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase33-spot-perp-${{ github.run_id }}
+          path: |
+            research/phase33_spot_perp_discovery/results
+            research/phase33_spot_perp_discovery/run.log
+          if-no-files-found: error
+          retention-days: 7
