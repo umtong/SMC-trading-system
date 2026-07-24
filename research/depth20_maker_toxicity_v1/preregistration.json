@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "research_id": "DEPTH20_MAKER_TOXICITY_V1_20260724",
+  "status": "PREREGISTERED_BEFORE_PANEL_BUILD",
+  "created_at_utc": "2026-07-24T14:00:00Z",
+  "economic_hypothesis": "Passive spread capture is viable only when queue-adjusted fill probability is high and L2 refill, microprice, depth imbalance and recent aggressive flow imply low post-fill adverse selection. Fill probability and conditional markout are modeled separately; a maker order is never considered filled merely because its price was touched.",
+  "symbols": {
+    "core": ["BTCUSDT"],
+    "extension_only_after_pass": ["ETHUSDT"],
+    "optional_not_opened": ["SOLUSDT", "XRPUSDT"]
+  },
+  "data": {
+    "depth20_repo": "predict-quant/binance-future-orderbook",
+    "depth_fields": ["snapshot_or_update", "exchange_event_time", "sequence_ids", "top20_bids", "top20_asks"],
+    "trade_source": "official Binance Vision USD-M daily aggTrades",
+    "official_aggTrades_checksum_required": true,
+    "terminal_depth_dates_not_downloaded": ["2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06", "2026-04-07"]
+  },
+  "time_splits": {
+    "development_train": ["2026-03-05", "2026-03-06", "2026-03-09", "2026-03-11"],
+    "development_calibration": ["2026-03-13", "2026-03-14"],
+    "selection": ["2026-03-15", "2026-03-16", "2026-03-18", "2026-03-19", "2026-03-23"],
+    "validation": ["2026-03-25", "2026-03-26", "2026-03-27", "2026-03-28", "2026-03-29", "2026-03-30", "2026-03-31"],
+    "terminal_sealed": ["2026-04-03", "2026-04-04", "2026-04-05", "2026-04-06", "2026-04-07"]
+  },
+  "decision_and_execution": {
+    "decision_clock_seconds": 2,
+    "information": "last complete one-second depth state and aggressive-flow aggregates only",
+    "order_latency_ms": 100,
+    "post_only_price": "best same-side quote known at decision; order rejected unless that best price is unchanged at arrival",
+    "queue_ahead": "2x displayed queue plus own order for base; 3x displayed queue plus own order for stress",
+    "cancellation_credit": false,
+    "fill": "cumulative actual opposing aggressor quantity at or through the order price within 3 seconds must consume queue ahead plus own order",
+    "own_order": "min(1000 USDT notional, 1% of displayed queue)",
+    "exit": "first actual depth quote at or after fill plus 3, 10 or 30 seconds and 100ms latency, maximum emergency quote delay 2 seconds",
+    "same_signal_schedule_for_queue_stress": true,
+    "one_pending_or_open_position": true
+  },
+  "features": {
+    "book": ["spread", "microprice", "depth imbalance 1/5/10/20", "depth slope", "queue and depth refill/depletion", "update intensity"],
+    "trade": ["aggressive flow 1/3/10 seconds", "activity", "trade count", "price response efficiency"],
+    "side_transforms": ["signed microprice", "signed imbalance", "opposing flow", "same-side refill", "absorption"]
+  },
+  "models": {
+    "fill": ["logistic regression", "histogram gradient boosting classifier"],
+    "conditional_markout": ["ridge", "histogram gradient boosting regressor"],
+    "horizons_seconds": [3, 10, 30],
+    "score": "predicted fill probability multiplied by predicted gross conditional markout",
+    "score_quantiles": [0.9, 0.95, 0.975, 0.99],
+    "routes": ["unrestricted", "aligned", "absorption", "low_toxicity"]
+  },
+  "costs": {
+    "all_in_explicit_bps": [9, 13, 17],
+    "spread": "embedded in maker entry and taker BBO exit",
+    "queue_multipliers": [2, 3]
+  },
+  "selection_gate": {
+    "all_queue_and_cost_multiples": ">1",
+    "minimum_fills_at_13bp_q2": 100,
+    "profit_factor_at_13bp_q2": ">=1.10",
+    "max_drawdown_at_13bp_q2": ">=-0.05",
+    "top10_positive_share_at_13bp_q2": "<=0.35",
+    "positive_active_day_fraction_at_13bp_q2": ">=0.55",
+    "maximum_candidates_forwarded": 5
+  },
+  "validation_gate": "same as selection gate with candidate hyperparameters frozen before validation",
+  "terminal_rule": "terminal dates may be downloaded and opened in a separate one-shot study only if at least one candidate passes validation",
+  "target_gate": "net geometric daily return >=0.01 after all validation and terminal gates",
+  "safety": {
+    "terminal_opened": false,
+    "orders_submitted": false,
+    "paper_or_live_started": false,
+    "risk_or_leverage_optimization": false,
+    "deployment_bundle_allowed": false
+  }
+}
