@@ -1,0 +1,17 @@
+name: Cross-asset asymmetric routing ARM archived
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archived:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive notice
+        run: |
+          echo "The ARM research definition is archived to avoid queued duplicate runs."
+          echo "The same immutable asymmetric-routing study is executed by the x86 workflow."
+          echo "No paper, testnet, or live orders are submitted."

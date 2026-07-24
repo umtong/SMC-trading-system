@@ -1,0 +1,17 @@
+name: Cross-asset WFV ARM independent archived
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archived:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive notice
+        run: |
+          echo "The original causally gated ARM experiment completed successfully in run 30041918857."
+          echo "Automatic PR execution is disabled to avoid duplicate research jobs."
+          echo "No paper, testnet, or live orders are submitted."

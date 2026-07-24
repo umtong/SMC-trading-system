@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "research_id": "BINANCE_USDM_CROSS_ASSET_ASYMMETRY_20260724",
+  "status": "PREREGISTERED_BEFORE_RUN",
+  "created_at_utc": "2026-07-24T00:00:00Z",
+  "motivation": {
+    "prior_result": "The causally gated 2022-2023 experiment produced 62 screen passes, but all 12 representatives belonged to price_flow_catchup and all failed 2024 realistic selection.",
+    "observed_asymmetry": "In the broad 2024 candidate, ETH-follower trades were approximately flat-to-positive while BTC-follower longs produced most losses. This is hypothesis-generation information, so 2024 is included in the new development set and is not treated as validation.",
+    "economic_hypothesis": "BTC is the dominant price-discovery anchor. A BTC price-plus-aggressive-flow shock may propagate to ETH, especially downside. An ETH-first shock is more likely idiosyncratic and may predict BTC mean reversion rather than BTC catch-up."
+  },
+  "development": [
+    "2022-01-01T00:00:00Z",
+    "2025-01-01T00:00:00Z"
+  ],
+  "holdout": [
+    "2025-01-01T00:00:00Z",
+    "2026-01-01T00:00:00Z"
+  ],
+  "2026_opened": false,
+  "orders_submitted": false,
+  "paper_or_live_started": false,
+  "families": [
+    "BTC to ETH directional propagation",
+    "BTC to ETH downside-only propagation",
+    "ETH to BTC mean-reversion routing",
+    "ETH to BTC short-only mean-reversion routing",
+    "combined asymmetric route switch",
+    "short-biased asymmetric route switch",
+    "independent relative-overreaction fade"
+  ],
+  "causality": {
+    "signal_data": "completed 5-minute klines and delayed published metrics only",
+    "oi_delay": "one additional completed 5-minute bar after the aligned metric observation",
+    "feature_calibration": "rolling means and standard deviations exclude the current observation",
+    "entry": "next 5-minute open after signal availability",
+    "missing_data": "features and holding paths crossing a missing bar are invalid",
+    "global_slot": "one pending or open BTC/ETH exposure",
+    "same_bar": "protective stop has adverse priority",
+    "funding": "actual settlement events use the last bar completed by settlement time"
+  },
+  "parameter_grid": {
+    "leader_abs_return_z": [1.5, 2.0, 2.5],
+    "leader_abs_flow_z": [0.5, 1.0],
+    "leader_oi_z_min": [-99.0, 0.5],
+    "directional_gap_z_min": [1.5, 2.0],
+    "follower_abs_return_z_max": [1.0, 2.0],
+    "follower_flow_bound": [-0.5, 0.0],
+    "regime": ["all", "btc_down", "btc_up", "high_vol"],
+    "holding_5m_bars": [24, 48]
+  },
+  "screen_costs_round_trip_bps": [12.0, 18.0, 24.0],
+  "realistic_costs_per_side_bps": [6.0, 9.0, 12.0],
+  "risk": {
+    "initial_equity": 10000.0,
+    "risk_fraction": 0.005,
+    "max_leverage": 3.0,
+    "capacity_fraction_of_prior_quote_volume": 0.001,
+    "protective_stop_atr": 2.5
+  },
+  "development_screen_gate": {
+    "minimum_total_trades": 90,
+    "minimum_trades_per_year": 20,
+    "each_2022_2023_2024_return_at_12bps": ">0",
+    "total_return_at_24bps": ">0",
+    "profit_factor_at_12bps": ">=1.10",
+    "max_drawdown_at_12bps": "<=0.25",
+    "top5_positive_share_at_12bps": "<=0.35"
+  },
+  "development_realistic_gate": {
+    "minimum_total_trades": 40,
+    "minimum_trades_per_year": 10,
+    "each_2022_2023_2024_return": ">0",
+    "stress_1p5_and_2p0_return": ">0",
+    "profit_factor": ">=1.05",
+    "max_drawdown": "<=0.25",
+    "top5_positive_share": "<=0.50"
+  },
+  "primary_selection": "Highest preregistered development score after mandatory family-regime diversity; no 2025 information is used.",
+  "holdout_gate": {
+    "minimum_trades": 20,
+    "base_and_stress_returns": ">0",
+    "profit_factor": ">=1.05",
+    "max_drawdown": "<=0.25",
+    "top5_positive_share": "<=0.60"
+  },
+  "target_gate": "base geometric mean daily return >= 0.01 after all stated costs",
+  "prohibitions": [
+    "No 2025 opening unless a primary passes all development gates",
+    "No 2026 access",
+    "No target-return fitting",
+    "No leverage or risk fitting to the target",
+    "No paper, testnet, or live order"
+  ]
+}
