@@ -1,6 +1,10 @@
 name: V2.71 Premium Dislocation Data
 
 on:
+  push:
+    branches: [research/v271-premium-dislocation]
+    paths:
+      - .github/workflows/v271-premium-dislocation-data.yml
   pull_request:
     branches: [main]
     paths:
