@@ -1,0 +1,107 @@
+name: State-First L1 Streaming V4 Available Dates macOS
+
+on:
+  push:
+    branches: [research/state-first-l1-streaming-v3b-20260724]
+    paths:
+      - '.github/workflows/state-first-l1-streaming-v3-macos.yml'
+      - 'research_tools/state_first_l1_clean_v2/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/state-first-l1-streaming-v3-macos.yml'
+      - 'research_tools/state_first_l1_clean_v2/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-l1-streaming-v4-available-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install fixed environment and verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'scikit-learn==1.6.1'
+          python -m py_compile research_tools/state_first_l1_clean_v2/*.py
+          python research_tools/state_first_l1_clean_v2/state_first_l1_streaming_v3.py selftest
+          mkdir -p panels results
+          sha256sum \
+            research_tools/state_first_l1_clean_v2/PREREGISTRATION_KO.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_001_TRAIN_ONLY_THRESHOLD.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_002_ARCHIVE_AVAILABILITY_DATES.md \
+            research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
+            research_tools/state_first_l1_clean_v2/run_fixed.py \
+            research_tools/state_first_l1_clean_v2/state_first_l1_streaming_v3.py \
+            research_tools/state_first_l1_clean_v2/run_archive_available_v4.py \
+            > panels/SOURCE_SHA256.txt
+      - name: Build BTC then ETH with bounded memory on locked available dates
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          status=0
+          for symbol in BTCUSDT ETHUSDT; do
+            echo "streaming panel ${symbol}" | tee -a panels/build.log
+            python research_tools/state_first_l1_clean_v2/run_archive_available_v4.py panel \
+              --symbol "$symbol" \
+              --data-dir "cache/$symbol" \
+              --output-dir panels \
+              2>&1 | tee -a panels/build.log
+            code=${PIPESTATUS[0]}
+            if [ "$code" -ne 0 ]; then
+              status=$code
+              break
+            fi
+            rm -rf "cache/$symbol"
+            df -h . | tee -a panels/build.log
+          done
+          if [ "$status" -eq 0 ]; then
+            python - <<'PY' 2>&1 | tee -a panels/build.log
+          import pandas as pd
+          from pathlib import Path
+          files=sorted(Path('panels').glob('*_state_first_l1_v2.csv.gz'))
+          assert len(files)==2, files
+          for p in files:
+              d=pd.read_csv(p,usecols=['entry_time_ms','entry_bid','entry_ask','day'])
+              assert len(d)>0 and (d.entry_time_ms>=0).all() and (d.entry_ask>d.entry_bid).all()
+              assert set(d.day.astype(str))=={'2023-06-27','2023-08-30','2023-11-09','2023-12-28'}
+              print(p.name,len(d))
+          PY
+            status=${PIPESTATUS[0]}
+          fi
+          exit "$status"
+      - name: Evaluate strict train-threshold contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research_tools/state_first_l1_clean_v2/run_archive_available_v4.py evaluate \
+            --input-dir panels \
+            --output-dir results
+          cp panels/SOURCE_SHA256.txt results/SOURCE_SHA256.txt
+          python -m json.tool results/summary.json
+          sha256sum panels/* results/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-l1-streaming-v4-available-${{ github.run_id }}
+          path: |
+            panels/*_manifest.json
+            panels/SOURCE_SHA256.txt
+            panels/build.log
+            results
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
