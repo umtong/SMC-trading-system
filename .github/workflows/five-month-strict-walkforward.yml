@@ -1,0 +1,223 @@
+name: Five-Month Strict Walk-Forward
+
+on:
+  pull_request:
+    paths:
+      - "research/five_month/**"
+      - ".github/workflows/five-month-strict-walkforward.yml"
+  push:
+    branches:
+      - agent/five-month-strict-walkforward-v1
+      - agent/five-month-strict-walkforward-v2
+    paths:
+      - "research/five_month/**"
+      - ".github/workflows/five-month-strict-walkforward.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: five-month-strict-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore checksum-verified Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/five_month
+          key: binance-usdm-official-m1-2021-01-2026-06-v1
+
+      - name: Assemble and verify research engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/five_month/parts/part_*.b64 \
+            | tr -d '[:space:]' \
+            | base64 --decode > research/five_month/research_five_month.py
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import json
+
+          target = Path('research/five_month/research_five_month.py')
+          for patch_path in (
+              Path('research/five_month/assembly_patch.json'),
+              Path('research/five_month/post_assembly_hotfix.json'),
+              Path('research/five_month/execution_hotfix.json'),
+              Path('research/five_month/checkpoint_hotfix.json'),
+          ):
+              patch = json.loads(patch_path.read_text(encoding='utf-8'))
+              source = target.read_bytes()
+              digest = hashlib.sha256(source).hexdigest()
+              if digest != patch['source_sha256'] or len(source) != patch['source_size']:
+                  raise SystemExit(
+                      f"unexpected source before {patch_path.name}: sha={digest} size={len(source)}"
+                  )
+              data = bytearray(source)
+              for op in reversed(patch['operations']):
+                  data[op['i1']:op['i2']] = base64.b64decode(op['data'])
+              target.write_bytes(data)
+              final_digest = hashlib.sha256(data).hexdigest()
+              if final_digest != patch['target_sha256'] or len(data) != patch['target_size']:
+                  raise SystemExit(
+                      f"patched source mismatch after {patch_path.name}: sha={final_digest} size={len(data)}"
+                  )
+          PY
+          echo "cd20c78504203bab86961f9a914ec8460d393749c2f9ad389be64f3da92c977a  research/five_month/research_five_month.py" \
+            | sha256sum -c -
+          python -m py_compile \
+            research/five_month/research_five_month.py \
+            research/five_month/build_execution_ledger.py \
+            research/five_month/run_selector_baseline.py
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas numba lightgbm scikit-learn pyarrow
+
+      - name: Run causality, cold-start, and execution-order self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          NUMBA_DISABLE_JIT=1 python - <<'PY'
+          import importlib.util
+          import math
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+
+          path = Path('research/five_month/research_five_month.py')
+          spec = importlib.util.spec_from_file_location('five_month_strict', path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+
+          data = {'known': [10], 'order_end': [20], 'fill': [15]}
+          for plan in module.PLAN_NAMES:
+              data[f'exit_{plan}'] = [30]
+          events = pd.DataFrame(data)
+          clean = module.leakage_audit(events, ['hour_sin', 'hour_cos', 'body_atr'])
+          assert clean['passed'], clean
+          blocked = module.leakage_audit(
+              events,
+              ['hour_sin', 'future_return', 'r_r025_h15', 'exit_r025_h15'],
+          )
+          assert not blocked['passed'], blocked
+          assert set(blocked['feature_forbidden_names']) == {
+              'future_return', 'r_r025_h15', 'exit_r025_h15'
+          }
+          assert math.isnan(module.finite_mean((math.nan, math.nan)))
+          assert module.finite_mean((1.0, math.nan)) == 1.0
+
+          count = 80
+          ts = np.arange(count, dtype=np.int64) * module.NS_MIN
+          o = np.full(count, 100.0)
+          h = np.full(count, 100.05)
+          l = np.full(count, 99.95)
+          c = np.full(count, 100.0)
+          h[15] = 110.0
+          resolved = module.resolve_events(
+              np.array([0], np.int64), np.array([1], np.int8),
+              np.array([100.0]), np.array([99.0]), ts, o, h, l, c,
+          )
+          assert resolved[7][0, 0] == 1
+          assert resolved[6][0, 0] == ts[15]
+          assert resolved[5][0, 0] < module.PLAN_TARGETS[0]
+
+          o[1], h[1], l[1], c[1] = 98.0, 98.1, 97.9, 98.0
+          resolved = module.resolve_events(
+              np.array([0], np.int64), np.array([1], np.int8),
+              np.array([100.0]), np.array([99.0]), ts, o, h, l, c,
+          )
+          expected = module.stop_gap_r(1, resolved[2][0], 98.0, resolved[3][0])
+          assert resolved[7][0, 0] == 0
+          assert abs(float(resolved[5][0, 0]) - expected) < 1e-6
+          print({'clean': clean, 'blocked': blocked, 'execution_ordering': 'passed'})
+          PY
+          rm -rf research/five_month/__pycache__
+
+      - name: Build checksum-verified one-minute execution ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/five_month_execution
+          python research/five_month/build_execution_ledger.py \
+            --engine research/five_month/research_five_month.py \
+            --start 2021-01 \
+            --end 2026-07 \
+            --cache .cache/five_month \
+            --output results/five_month_execution \
+            2>&1 | tee results/five_month_execution/run.log
+          rm -rf research/five_month/__pycache__
+
+      - name: Upload causal execution ledger immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: five-month-execution-${{ github.run_id }}
+          path: |
+            results/five_month_execution
+            research/five_month/research_five_month.py
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Run monthly past-only selector baseline
+        id: selector
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/five_month_strict
+          python research/five_month/run_selector_baseline.py \
+            --engine research/five_month/research_five_month.py \
+            --ledger results/five_month_execution/execution_ledger.pkl.gz \
+            --output results/five_month_strict \
+            --policy-trials 0 \
+            --seed 20260722 \
+            2>&1 | tee results/five_month_strict/run.log
+
+      - name: Require leakage audit and summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f results/five_month_strict/summary.json; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('results/five_month_strict')
+          summary = json.loads((root / 'summary.json').read_text(encoding='utf-8'))
+          audit = json.loads((root / 'leakage_audit.json').read_text(encoding='utf-8'))
+          if not audit.get('passed'):
+              raise SystemExit(f"leakage audit failed: {audit}")
+          print(json.dumps({
+              'gate': summary.get('five_month_gate'),
+              'holdout': summary.get('holdout'),
+              'leakage_audit': audit,
+          }, indent=2, ensure_ascii=False))
+          PY
+          fi
+
+      - name: Upload strict selector artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: five-month-selector-${{ github.run_id }}
+          path: |
+            results/five_month_strict
+            research/five_month/research_five_month.py
+          if-no-files-found: warn
+          retention-days: 30
