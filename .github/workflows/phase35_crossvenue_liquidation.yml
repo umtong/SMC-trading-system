@@ -30,15 +30,12 @@ jobs:
           HF_HOME: ${{ runner.temp }}/hf
         shell: bash
         run: |
-          set -o pipefail
-          python research/phase35_crossvenue_liquidation/run_optimized_loader.py 2>&1 | tee research/phase35_crossvenue_liquidation/run.log || {
-            test -s research/phase35_crossvenue_liquidation/results/PANEL_1S.parquet
-            test -s research/phase35_crossvenue_liquidation/results/CANDIDATES.csv
-          }
+          set -euo pipefail
+          python research/phase35_crossvenue_liquidation/generate.py 2>&1 | tee research/phase35_crossvenue_liquidation/run.log
       - name: Postprocess causal policies
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           python research/phase35_crossvenue_liquidation/postprocess.py 2>&1 | tee -a research/phase35_crossvenue_liquidation/run.log
       - name: Commit compact research results
         if: success() && github.event_name == 'push'
