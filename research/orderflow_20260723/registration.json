@@ -1,0 +1,57 @@
+{
+  "research_id": "BINANCE_USDM_BTCETH_CAUSAL_ORDERFLOW_V1",
+  "created_at_utc": "2026-07-23T00:00:00Z",
+  "stage": "development_and_2024_selection",
+  "data_source": "Binance public data.binance.vision USD-M monthly archives",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "bar_interval": "5m",
+  "download_start_month": "2021-01",
+  "download_end_month_inclusive": "2024-12",
+  "development_start": "2021-01-01T00:00:00Z",
+  "development_end_exclusive": "2024-01-01T00:00:00Z",
+  "selection_start": "2024-01-01T00:00:00Z",
+  "selection_end_exclusive": "2025-01-01T00:00:00Z",
+  "final_2025_status": "SEALED_NOT_DOWNLOADED_OR_READ",
+  "final_2026_status": "SEALED_NOT_DOWNLOADED_OR_READ",
+  "daily_boundary": "UTC",
+  "risk": {
+    "initial_equity": 10000.0,
+    "risk_fraction": 0.005,
+    "max_leverage": 3.0,
+    "max_quote_volume_participation": 0.001,
+    "daily_loss_limit": 0.04,
+    "max_drawdown_halt": 0.20,
+    "max_consecutive_losses": 8
+  },
+  "base_costs": {
+    "taker_fee_bps": 5.0,
+    "half_spread_bps": 0.5,
+    "base_slippage_bps": 1.0,
+    "volatility_slippage_factor": 0.04,
+    "impact_coefficient_bps": 8.0,
+    "liquidation_mark_bps": 1.5
+  },
+  "stress_costs": {
+    "taker_fee_bps": 6.0,
+    "half_spread_bps": 1.0,
+    "base_slippage_bps": 2.0,
+    "volatility_slippage_factor": 0.08,
+    "impact_coefficient_bps": 16.0,
+    "liquidation_mark_bps": 3.0
+  },
+  "selection_principle": "Maximize causal out-of-sample log growth and stability, not distance to the 1 percent daily target.",
+  "candidate_families": [
+    "flow_continuation",
+    "flow_absorption_reversal",
+    "sweep_flow_reversal",
+    "funding_flow_crowding",
+    "flow_price_divergence"
+  ],
+  "execution": {
+    "decision_after_completed_15m_bar": true,
+    "entry_at_next_5m_open": true,
+    "same_bar_stop_first": true,
+    "global_pending_or_open_exposure_limit": 1,
+    "market_orders_only_in_v1": true
+  }
+}
