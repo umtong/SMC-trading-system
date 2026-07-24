@@ -1,0 +1,103 @@
+name: V2.51 BTC Depth Direct Cache
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/v251-btc-depth-direct-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v251-btc-depth-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {segment: '2023', start: '2023-01-01', end: '2024-01-01'}
+          - {segment: '2024', start: '2024-01-01', end: '2025-01-01'}
+          - {segment: '2025', start: '2025-01-01', end: '2026-01-01'}
+          - {segment: '2026H1', start: '2026-01-01', end: '2026-06-01'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated dependencies
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Download deterministic daily feature files
+        shell: bash
+        env:
+          SEGMENT: ${{ matrix.segment }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+          import hashlib, io, json, os, time
+          import pandas as pd
+          import pyarrow as pa
+          import pyarrow.parquet as pq
+          import requests
+
+          segment=os.environ['SEGMENT']; start=pd.Timestamp(os.environ['START'],tz='UTC'); end=pd.Timestamp(os.environ['END'],tz='UTC')
+          days=pd.date_range(start,end-pd.Timedelta(days=1),freq='D')
+          root='https://huggingface.co/datasets/ibrahimdaud/binance-btcusdt/resolve/main/features/BTCUSDT'
+          out=Path('v251-output')/segment; raw=out/'raw'; raw.mkdir(parents=True,exist_ok=True)
+          session=requests.Session(); session.headers.update({'User-Agent':'smc-v251-depth-research/1.0'})
+
+          def fetch(day):
+              name=f'{day.date()}.parquet'; url=f'{root}/{name}?download=true'; error=None
+              for attempt in range(6):
+                  try:
+                      r=session.get(url,timeout=90); r.raise_for_status(); payload=r.content
+                      table=pq.read_table(io.BytesIO(payload))
+                      if table.num_rows!=288: raise ValueError(f'rows={table.num_rows}')
+                      path=raw/name; path.write_bytes(payload)
+                      return {'day':str(day.date()),'url':url,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'rows':table.num_rows,'path':str(path)}
+                  except Exception as exc:
+                      error=repr(exc); time.sleep(min(2**attempt,20))
+              raise RuntimeError(f'{name}: {error}')
+
+          records=[]
+          with ThreadPoolExecutor(max_workers=16) as pool:
+              fut={pool.submit(fetch,d):d for d in days}
+              for i,f in enumerate(as_completed(fut),1):
+                  records.append(f.result())
+                  if i%50==0: print(json.dumps({'segment':segment,'done':i,'total':len(days)}),flush=True)
+          records.sort(key=lambda x:x['day'])
+          tables=[pq.read_table(x['path']) for x in records]
+          table=pa.concat_tables(tables,promote_options='default')
+          df=table.to_pandas().sort_values('bar_time_ms').reset_index(drop=True)
+          ts=pd.to_datetime(df.bar_time_ms,unit='ms',utc=True)
+          expected=pd.date_range(start,end,freq='5min',inclusive='left')
+          if len(df)!=len(expected): raise ValueError(f'rows {len(df)} != {len(expected)}')
+          if ts.duplicated().any() or not ts.reset_index(drop=True).equals(pd.Series(expected)):
+              raise ValueError('timestamp grid mismatch')
+          required=['depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance','hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio']
+          missing=[c for c in required if c not in df.columns]
+          if missing: raise ValueError(f'missing {missing}')
+          path=out/f'BTCUSDT_depth_state_{segment}.parquet'; df.to_parquet(path,index=False,compression='zstd')
+          manifest={'segment':segment,'start':str(start),'end_exclusive':str(end),'rows':len(df),'columns':list(df.columns),'source_repo':'ibrahimdaud/binance-btcusdt','source_files':records,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'forward_columns_are_labels_only':['fwd_ret_5m','fwd_ret_15m','fwd_ret_60m','fwd_direction_5m'],'production_evidence':False}
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in manifest.items() if k!='source_files'},indent=2))
+          PY
+      - name: Upload immutable segment
+        uses: actions/upload-artifact@v4
+        with:
+          name: v251-btc-depth-${{ matrix.segment }}-${{ github.run_id }}
+          path: v251-output/${{ matrix.segment }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
