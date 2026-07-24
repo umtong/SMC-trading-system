@@ -1,0 +1,125 @@
+name: V1.96 Cross-Venue Lead-Lag Research
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - research/v196_crossvenue.py
+      - .github/workflows/research-v196-crossvenue.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: v196-crossvenue-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  day:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {symbol: BTCUSDT, day: '2022-01-15'}
+          - {symbol: ETHUSDT, day: '2022-01-15'}
+          - {symbol: BTCUSDT, day: '2022-03-15'}
+          - {symbol: ETHUSDT, day: '2022-03-15'}
+          - {symbol: BTCUSDT, day: '2022-05-15'}
+          - {symbol: ETHUSDT, day: '2022-05-15'}
+          - {symbol: BTCUSDT, day: '2022-07-15'}
+          - {symbol: ETHUSDT, day: '2022-07-15'}
+          - {symbol: BTCUSDT, day: '2022-09-15'}
+          - {symbol: ETHUSDT, day: '2022-09-15'}
+          - {symbol: BTCUSDT, day: '2022-11-15'}
+          - {symbol: ETHUSDT, day: '2022-11-15'}
+          - {symbol: BTCUSDT, day: '2023-02-15'}
+          - {symbol: ETHUSDT, day: '2023-02-15'}
+          - {symbol: BTCUSDT, day: '2023-04-15'}
+          - {symbol: ETHUSDT, day: '2023-04-15'}
+          - {symbol: BTCUSDT, day: '2023-06-15'}
+          - {symbol: ETHUSDT, day: '2023-06-15'}
+          - {symbol: BTCUSDT, day: '2023-08-15'}
+          - {symbol: ETHUSDT, day: '2023-08-15'}
+          - {symbol: BTCUSDT, day: '2023-10-15'}
+          - {symbol: ETHUSDT, day: '2023-10-15'}
+          - {symbol: BTCUSDT, day: '2023-12-15'}
+          - {symbol: ETHUSDT, day: '2023-12-15'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install isolated dependencies
+        run: python -m pip install --upgrade numpy pandas
+      - name: Build one causal one-second venue panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/v196_crossvenue.py day \
+            --symbol '${{ matrix.symbol }}' \
+            --day '${{ matrix.day }}' \
+            --out 'v196-days/${{ matrix.symbol }}-${{ matrix.day }}'
+      - name: Upload compact day features
+        uses: actions/upload-artifact@v4
+        with:
+          name: v196-day-${{ matrix.symbol }}-${{ matrix.day }}-${{ github.run_id }}
+          path: v196-days/${{ matrix.symbol }}-${{ matrix.day }}
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    needs: day
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install isolated dependencies
+        run: python -m pip install --upgrade numpy pandas
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v196-day-*-${{ github.run_id }}
+          path: v196-input
+          merge-multiple: true
+      - name: Run 2022-development and frozen-2023 validation screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/v196_crossvenue.py aggregate --input v196-input --out v196-results
+      - name: Upload complete result ledger
+        uses: actions/upload-artifact@v4
+        with:
+          name: v196-crossvenue-results-${{ github.run_id }}
+          path: v196-results
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish result summary
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          if test -f v196-results/summary.json; then
+            body="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('v196-results/summary.json').read_text())
+          print('## V1.96 cross-venue lead-lag result\n')
+          print(f"- processed files: `{x['files']}`")
+          print(f"- aligned one-second rows: `{x['rows']}`")
+          print(f"- eligible 2022/2023 rules: `{x['eligible']}`")
+          print('\n_Research-only. No paper/live orders._')
+          PY
+          )"
+            gh pr comment "$PR_NUMBER" --body "$body"
+          fi
