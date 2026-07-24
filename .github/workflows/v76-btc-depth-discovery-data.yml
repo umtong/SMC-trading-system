@@ -1,0 +1,110 @@
+name: V76 BTC depth-state discovery data
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/v76-btc-depth-discovery-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v76-btc-depth-discovery-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 180
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "300"
+      HF_HUB_ETAG_TIMEOUT: "120"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install fixed data environment
+        run: python -m pip install --disable-pip-version-check "huggingface_hub==0.28.1" "pandas==2.2.3" "pyarrow==18.1.0"
+      - name: Resolve immutable revision and build future-free discovery panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json
+          from pathlib import Path
+          import pandas as pd
+          import pyarrow as pa
+          import pyarrow.parquet as pq
+          from huggingface_hub import HfApi, snapshot_download
+
+          repo='ibrahimdaud/binance-btcusdt'
+          api=HfApi()
+          revision=api.dataset_info(repo_id=repo).sha
+          root=Path(snapshot_download(
+              repo_id=repo, repo_type='dataset', revision=revision,
+              allow_patterns=['features/BTCUSDT/*.parquet','README.md'],
+              max_workers=16,
+          ))
+          files=sorted((root/'features'/'BTCUSDT').glob('*.parquet'))
+          selected=[]
+          for path in files:
+              try: day=pd.Timestamp(path.stem,tz='UTC')
+              except Exception: continue
+              if pd.Timestamp('2023-01-01',tz='UTC') <= day < pd.Timestamp('2025-01-01',tz='UTC'):
+                  selected.append((day,path))
+          if len(selected)<700:
+              raise RuntimeError(f'insufficient selected daily files: {len(selected)}')
+          forbidden_tokens=('fwd','future','forward','label','target','outcome','pnl','mfe','mae')
+          tables=[]; records=[]; dropped=set()
+          for n,(day,path) in enumerate(selected,1):
+              raw=path.read_bytes(); digest=hashlib.sha256(raw).hexdigest()
+              table=pq.read_table(path)
+              if table.num_rows!=288: raise ValueError(f'{path}: rows={table.num_rows}')
+              drop=[c for c in table.column_names if any(t in c.lower() for t in forbidden_tokens)]
+              dropped.update(drop)
+              keep=[c for c in table.column_names if c not in drop]
+              tables.append(table.select(keep))
+              records.append({'day':str(day.date()),'path':str(path.relative_to(root)),'bytes':len(raw),'sha256':digest})
+              if n%100==0: print('loaded',n,'of',len(selected),flush=True)
+          table=pa.concat_tables(tables,promote_options='default')
+          df=table.to_pandas().sort_values('bar_time_ms',kind='mergesort').drop_duplicates('bar_time_ms').reset_index(drop=True)
+          ts=pd.to_datetime(df.bar_time_ms,unit='ms',utc=True)
+          if ts.iloc[0]!=pd.Timestamp('2023-01-01',tz='UTC') or ts.iloc[-1]!=pd.Timestamp('2024-12-31T23:55:00Z'):
+              raise AssertionError((ts.iloc[0],ts.iloc[-1]))
+          if not (ts.diff().dropna()==pd.Timedelta(minutes=5)).all(): raise AssertionError('non-contiguous 5m clock')
+          if any(any(t in c.lower() for t in forbidden_tokens) for c in df.columns): raise AssertionError('forbidden column survived')
+          required=['bar_time_ms','close','log_ret_5m','log_ret_60m','realized_vol_30m','taker_buy_ratio_5m','trade_count_5m','depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance','hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio']
+          missing=[c for c in required if c not in df.columns]
+          if missing: raise AssertionError(f'missing columns {missing}')
+          out=Path('artifact');out.mkdir(exist_ok=True)
+          panel=out/'BTCUSDT_depth_state_future_free_2023_2024.parquet'
+          df.to_parquet(panel,index=False,compression='zstd')
+          manifest={
+            'source_repo':repo,'resolved_revision':revision,'source_files':len(records),
+            'rows':len(df),'start':str(ts.iloc[0]),'end':str(ts.iloc[-1]),
+            'columns':list(df.columns),'physically_dropped_columns':sorted(dropped),
+            'output_sha256':hashlib.sha256(panel.read_bytes()).hexdigest(),
+            'source_records':records,
+            'causality_contract':{
+              'decision_known_at':'bar_time_ms + 5 minutes',
+              'positioning_features':'must be shifted one additional completed 5-minute bar by strategy runtime',
+              'future_columns':'physically absent',
+              'research_use':'mechanism discovery only; official reconstruction required before promotion',
+              '2025_or_later_opened':False
+            }
+          }
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps({k:v for k,v in manifest.items() if k not in ('source_records','columns')},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v76-btc-depth-discovery-${{ github.run_id }}
+          path: artifact
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
