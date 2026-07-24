@@ -1,0 +1,65 @@
+name: V19 LOB schema inspection
+
+on:
+  pull_request:
+    paths:
+      - "research/v19_lob_inspect.py"
+      - ".github/workflows/v19-lob-inspect.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: .cache/v19-lob
+          key: v19-lob-schema-v1
+      - name: Install
+        run: python -m pip install --upgrade pip pandas pyarrow huggingface_hub hf_xet
+      - name: Inspect public depth20 files
+        id: inspect
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts/v19-lob-inspect
+          python research/v19_lob_inspect.py --cache .cache/v19-lob --output artifacts/v19-lob-inspect 2>&1 | tee artifacts/v19-lob-inspect/run.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Publish report
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          if [[ -f artifacts/v19-lob-inspect/summary.md ]]; then
+            gh pr comment "$PR_NUMBER" --body-file artifacts/v19-lob-inspect/summary.md --edit-last --create-if-none
+          else
+            { echo '## V19 LOB inspection failed'; echo; tail -120 artifacts/v19-lob-inspect/run.log; } > artifacts/v19-lob-inspect/comment.md
+            gh pr comment "$PR_NUMBER" --body-file artifacts/v19-lob-inspect/comment.md --edit-last --create-if-none
+          fi
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v19-lob-inspect-${{ github.run_id }}
+          path: artifacts/v19-lob-inspect
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve failure
+        if: always() && steps.inspect.outputs.exit_code != '0'
+        run: exit 1
