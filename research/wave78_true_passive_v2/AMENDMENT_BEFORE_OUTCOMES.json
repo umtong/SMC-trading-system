@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "study_id": "wave78_universal_queue_market_making_v1",
+  "amendment_id": "W78-A002_TRUE_PASSIVE_ROUNDTRIP_AND_CHRONOLOGICAL_SELECTION",
+  "status": "PRE_OUTCOME_LOCK_RESEARCH_ONLY_NO_ORDER_AUTHORITY",
+  "registered_before_any_wave78_v2_candidate_pnl": true,
+  "reason": [
+    "The first core used a passive entry followed by a scheduled taker exit and therefore measured toxicity rather than the intended repeatable spread-capture mechanism.",
+    "Selection must not use validation outcomes. The development calendar is split into model training and a separate development calibration day; selection then freezes one primary before one-shot validation."
+  ],
+  "fixed_profit_mechanism": {
+    "entry": "one post-only order at the actual best bid for long inventory or best ask for short inventory after 100ms canonical latency",
+    "entry_fill": "opposing aggregate trades at or through the order price must consume two times displayed queue ahead; cancellations never reduce queue",
+    "partial_entry": "on first own partial fill, cancel the remaining entry quantity and treat the partial quantity as the complete inventory",
+    "exit": "after 100ms latency place one post-only inventory-reducing order at the opposite BBO; actual opposing aggregate trades must consume the same frozen queue rule",
+    "partial_exit": "partial passive exit is retained; any remainder is liquidated at the first actual executable BBO after the 30-second hard timeout plus latency",
+    "emergency_exit_delay": "fail closed if no executable BBO arrives within 2000ms",
+    "gross_pnl": "quantity-weighted log return of passive and emergency exit pieces; observed spread is therefore earned only if actual entry and exit fills support it",
+    "explicit_cost_profiles_roundtrip_bps": [9.0, 13.0, 17.0]
+  },
+  "fixed_information_contract": {
+    "decision_cadence_seconds": 10,
+    "features": "completed one-second state strictly before second end",
+    "canonical_latency_ms": 100,
+    "stress_latency_ms": 250,
+    "canonical_queue_multiplier": 2.0,
+    "stress_queue_multiplier": 3.0,
+    "entry_ttl_seconds": 5,
+    "inventory_hard_timeout_seconds": 30,
+    "own_notional_usdt": 1000.0,
+    "own_quantity_cap_fraction_of_displayed": 0.01,
+    "emergency_exit_capacity_fraction": 0.10,
+    "global_pending_plus_open_positions_max": 1,
+    "same_timestamp_rule": "choose the unique largest model edge across both symbols and both sides; an exact tie produces no order"
+  },
+  "fixed_chronology": {
+    "model_training": ["2023-06-27", "2023-07-15"],
+    "development_calibration": ["2023-08-30"],
+    "selection": ["2023-09-15", "2023-10-25"],
+    "one_shot_validation": ["2023-11-15", "2023-12-28"],
+    "conditional_test": ["2024-02-15", "2024-05-15", "2024-08-15"],
+    "conditional_test_rule": "the 2024 files may be downloaded only by a new immutable workflow after the frozen primary passes every validation gate"
+  },
+  "fixed_models": {
+    "families": ["regularized_logistic", "hist_gradient_boosting"],
+    "fill_label": "actual canonical entry fill under the queue model",
+    "safe_label": "filled round trip has positive net log return after 9bp",
+    "model_features": [
+      "is_eth", "spread_bps", "log_depth_notional", "quote_age_ms", "trade_notional_z",
+      "trade_count_z", "rv_30s_ticks", "flow_price_efficiency",
+      "side_adjusted_l1_imbalance", "side_adjusted_microprice_ticks",
+      "side_adjusted_flow_imbalance_1s", "side_adjusted_flow_imbalance_5s",
+      "side_adjusted_flow_imbalance_30s", "side_adjusted_flow_acceleration",
+      "side_adjusted_return_1s_ticks", "side_adjusted_return_5s_ticks"
+    ],
+    "fill_probability_thresholds": [0.05, 0.10, 0.20],
+    "safe_probability_thresholds": [0.55, 0.60, 0.65, 0.70],
+    "edge_score": "fill_probability times (safe_probability minus 0.5) times observed spread_bps"
+  },
+  "development_calibration_gate": {
+    "minimum_fills": 300,
+    "positive_13bp_and_17bp": true,
+    "profit_factor_13bp_min": 1.10,
+    "top20_positive_share_13bp_max": 0.35,
+    "growth_after_top20_positive_removed_13bp": "positive",
+    "queue3x_13bp": "positive",
+    "latency250ms_13bp": "positive",
+    "maximum_drawdown": 0.10,
+    "buy_and_sell_fill_share_each_min": 0.20,
+    "maximum_single_symbol_fill_share": 0.70,
+    "maximum_representatives": 12
+  },
+  "selection_and_validation_gate_each": {
+    "minimum_fills": 1000,
+    "minimum_fills_each_day": 100,
+    "positive_9bp_13bp_17bp": true,
+    "profit_factor_13bp_min": 1.15,
+    "positive_day_fraction_min": 0.60,
+    "top20_positive_share_13bp_max": 0.25,
+    "growth_after_top20_positive_removed_13bp": "positive",
+    "queue3x_13bp": "positive",
+    "latency250ms_13bp": "positive",
+    "maximum_drawdown": 0.10,
+    "maximum_single_symbol_fill_share": 0.60,
+    "buy_and_sell_fill_share_each_min": 0.25,
+    "maximum_single_date_positive_profit_share": 0.35
+  },
+  "unchanged_prohibitions": [
+    "no cost-dependent signal deletion",
+    "no risk or leverage optimization",
+    "no 2025 or 2026 outcomes",
+    "no credentials or private endpoints",
+    "no paper, testnet or live orders",
+    "no conditional test opening before all pretest gates pass"
+  ],
+  "production_enabled": false,
+  "paper_enabled": false,
+  "live_enabled": false,
+  "orders_submitted": false
+}
