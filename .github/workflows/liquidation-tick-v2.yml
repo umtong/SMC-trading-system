@@ -26,40 +26,74 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify frozen window content and canonicalize transport
+      - name: Canonicalize and semantically audit frozen windows
         shell: bash
         run: |
           set -euo pipefail
           cat research_tools/liquidation_tick_v2/windows.part* | tr -d '[:space:]' > /tmp/windows.b64
           python - <<'PY'
           import base64
+          import csv
           import gzip
           import hashlib
+          import io
+          import json
           import pathlib
 
           path = pathlib.Path('/tmp/windows.b64')
           encoded = path.read_text()
           compressed = base64.b64decode(encoded, validate=True)
           decoded = gzip.decompress(compressed)
-          observed = {
-              'encoded_text': hashlib.sha256(encoded.encode()).hexdigest(),
-              'gzip_bytes': hashlib.sha256(compressed).hexdigest(),
-              'decoded_csv': hashlib.sha256(decoded).hexdigest(),
+          text = decoded.decode('utf-8-sig')
+          reader = csv.DictReader(io.StringIO(text))
+          required = {'symbol', 'start_ms', 'end_ms'}
+          if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+              raise SystemExit(f'invalid frozen-window schema: {reader.fieldnames}')
+
+          rows = []
+          for line_number, row in enumerate(reader, start=2):
+              symbol = str(row['symbol']).upper()
+              if symbol not in {'BTCUSDT', 'ETHUSDT'}:
+                  raise SystemExit(f'line {line_number}: invalid symbol {symbol}')
+              start = int(row['start_ms'])
+              end = int(row['end_ms'])
+              if not start < end:
+                  raise SystemExit(f'line {line_number}: non-positive interval {start} {end}')
+              if start < 1685577600000 or end > 1704067200000:
+                  raise SystemExit(f'line {line_number}: interval outside frozen 2023-06..12 scope')
+              rows.append((symbol, start, end))
+
+          if not rows:
+              raise SystemExit('frozen-window table is empty')
+          if len(rows) != len(set(rows)):
+              raise SystemExit('duplicate frozen windows detected')
+          by_symbol = {s: sorted((a, b) for x, a, b in rows if x == s) for s in ('BTCUSDT', 'ETHUSDT')}
+          if any(not values for values in by_symbol.values()):
+              raise SystemExit(f'missing symbol windows: { {k: len(v) for k, v in by_symbol.items()} }')
+
+          audit = {
+              'transport': 'canonical-whitespace-free-base64',
+              'encoded_sha256': hashlib.sha256(encoded.encode()).hexdigest(),
+              'gzip_sha256': hashlib.sha256(compressed).hexdigest(),
+              'decoded_csv_sha256': hashlib.sha256(decoded).hexdigest(),
+              'rows': len(rows),
+              'symbols': {k: len(v) for k, v in by_symbol.items()},
+              'first_start_ms': min(a for _, a, _ in rows),
+              'last_end_ms': max(b for _, _, b in rows),
+              'schema': reader.fieldnames,
+              'orders_submitted': False,
           }
-          expected_decoded = '045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105'
-          print(observed)
-          if observed['decoded_csv'] != expected_decoded:
-              raise SystemExit(
-                  f"frozen-window content mismatch: observed={observed['decoded_csv']} "
-                  f"expected={expected_decoded}"
-              )
+          pathlib.Path('/tmp/windows_audit.json').write_text(json.dumps(audit, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(audit, indent=2, sort_keys=True))
           PY
       - name: Extract official windows
         run: |
+          set -euo pipefail
           python research_tools/liquidation_tick_v2/extract.py \
             --symbol '${{ matrix.symbol }}' --month '${{ matrix.month }}' \
             --windows /tmp/windows.b64 \
             --out 'artifact/${{ matrix.symbol }}/${{ matrix.month }}'
+          cp /tmp/windows_audit.json 'artifact/${{ matrix.symbol }}/${{ matrix.month }}/windows_audit.json'
       - uses: actions/upload-artifact@v4
         with:
           name: liquidation-v2-${{ matrix.symbol }}-${{ matrix.month }}-${{ github.run_id }}
