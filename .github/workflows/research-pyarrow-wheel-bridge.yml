@@ -30,12 +30,12 @@ jobs:
             --abi cp313 \
             --no-deps \
             --dest wheelhouse \
-            pyarrow==19.0.0
+            pyarrow==25.0.0
           shasum -a 256 wheelhouse/* | tee wheelhouse/SHA256SUMS
       - name: Upload immutable research dependency
         uses: actions/upload-artifact@v4
         with:
-          name: pyarrow-19-linux-cp313-${{ github.run_id }}
+          name: pyarrow-25-linux-cp313-${{ github.run_id }}
           path: wheelhouse
           if-no-files-found: error
           retention-days: 7
