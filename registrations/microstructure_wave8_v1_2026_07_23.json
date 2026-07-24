@@ -1,0 +1,94 @@
+{
+  "registration_id": "microstructure_wave8_v1_2026_07_23",
+  "created_at_utc": "2026-07-23T12:04:23.133446+00:00",
+  "status": "FROZEN_BEFORE_SCHEMA_PILOT_AND_ANY_PNL",
+  "purpose": "Test whether actual top-of-book state and aggressive trade flow contain executable short-horizon alpha after actual spread, conservative latency, taker fees, impact, funding, and a global single-position constraint.",
+  "source": {
+    "provider": "Binance Vision official public data",
+    "market": "USD-M perpetual futures",
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "datasets": ["bookTicker", "aggTrades"],
+    "daily_path_templates": {
+      "bookTicker": "data/futures/um/daily/bookTicker/{symbol}/{symbol}-bookTicker-{date}.zip",
+      "aggTrades": "data/futures/um/daily/aggTrades/{symbol}/{symbol}-aggTrades-{date}.zip"
+    },
+    "integrity": "Every ZIP must match the adjacent official .CHECKSUM SHA-256. Any missing, conflicting, nonmonotone, or malformed interval is unavailable and never imputed."
+  },
+  "schema_pilot": {
+    "date": "2023-06-01",
+    "allowed_outputs": ["headers", "column counts", "row counts", "timestamp ranges", "zip sizes", "checksum digests", "processing throughput"],
+    "forbidden_outputs": ["future returns", "PnL", "feature efficacy", "parameter ranking", "strategy selection"]
+  },
+  "calendar_sampling": {
+    "seed": "smc-ict-microstructure-wave8-v1",
+    "rule": "For each UTC calendar month, select day = 1 + uint64_be(SHA256(seed + colon + YYYY-MM)[0:8]) mod days_in_month. Crypto trades seven days a week, so no weekday adjustment.",
+    "development_train_dates": ["2022-01-23", "2022-02-27", "2022-03-08", "2022-04-24", "2022-05-13", "2022-06-21", "2022-07-20", "2022-08-06", "2022-09-30", "2022-10-17", "2022-11-24", "2022-12-21"],
+    "development_calibration_dates": ["2023-01-17", "2023-02-11", "2023-03-19", "2023-04-05", "2023-05-19", "2023-06-29"],
+    "development_internal_test_dates": ["2023-07-18", "2023-08-18", "2023-09-15", "2023-10-23", "2023-11-25", "2023-12-12"],
+    "future_walkforward_validation_dates_locked_but_not_downloaded_until_freeze": ["2024-01-17", "2024-02-07", "2024-03-26", "2024-04-03", "2024-05-02", "2024-06-18", "2024-07-01", "2024-08-28", "2024-09-15", "2024-10-06", "2024-11-21", "2024-12-01", "2025-01-21", "2025-02-10", "2025-03-05", "2025-04-08", "2025-05-29", "2025-06-12", "2025-07-16"],
+    "sealed_final_oos": ["2025-08-01T00:00:00Z", "2026-01-23T00:00:00Z"],
+    "sealed_oos_access": "PROHIBITED_UNTIL_STRATEGY_AND_EXECUTION_CONFIG_FROZEN"
+  },
+  "causal_data_contract": {
+    "signal_clock": "UTC 1-second buckets. A feature for second t uses only exchange events with event timestamp <= the end of t.",
+    "decision_time": "end of completed second t",
+    "base_entry_latency_ms": 250,
+    "stress_entry_latency_ms": 1000,
+    "entry_quote": "First valid bookTicker observation at or after decision_time + latency; LONG crosses ask and SHORT crosses bid.",
+    "exit_quote": "First valid bookTicker observation at or after the exit decision; LONG exits at bid and SHORT exits at ask.",
+    "same_timestamp_rule": "bookTicker and aggTrades do not receive a favorable within-timestamp ordering. Signals use the previous completed second; execution starts after latency.",
+    "missing_rule": "No forward/back fill across missing seconds for signal generation. A signal requires a fresh quote and trade-flow observation under the family-specific staleness cap.",
+    "global_slot": "Across BTCUSDT and ETHUSDT, pending entry plus open position count is at most one."
+  },
+  "features": {
+    "book": ["mid", "spread_bps", "bid_qty", "ask_qty", "queue_imbalance", "top_of_book_ofi", "bid_depletion", "ask_depletion", "quote_update_count", "mid_change_count"],
+    "trades": ["aggressive_buy_qty", "aggressive_sell_qty", "signed_qty", "signed_notional", "trade_count", "trade_vwap", "large_trade_share"],
+    "state": ["past_only_rolling_median_mad_zscores_30s_60s_300s", "realized_vol_10s_60s", "price_response_per_signed_notional", "spread_regime"],
+    "cross_asset": ["lagged_BTC_pressure_for_ETH", "lagged_ETH_pressure_for_BTC"],
+    "normalization": "All rolling statistics exclude the current second and require a fixed minimum history. No full-sample scaling."
+  },
+  "strategy_families": {
+    "OFI_TRADE_CONTINUATION": "Same-sign extreme top-of-book OFI and aggressive-trade imbalance predict continuation.",
+    "QUEUE_DEPLETION_CONTINUATION": "One-side quote depletion plus same-direction aggressive flow predicts the next price change.",
+    "ABSORPTION_REVERSAL": "Extreme aggressive flow with weak same-direction mid response signals passive absorption and a fade.",
+    "IMBALANCE_FLIP_AFTER_SWEEP": "An extreme queue imbalance reverses after a one-sided mid move and spread normalization.",
+    "SPREAD_SHOCK_REVERSION": "Transient spread expansion with exhausted signed flow reverts after spread compression.",
+    "CROSS_ASSET_PRESSURE_TRANSFER": "Lagged BTC/ETH order-flow pressure predicts the other asset only when its own book has not yet repriced."
+  },
+  "registered_search_grid": {
+    "lookbacks_seconds": [10, 30, 60, 300],
+    "z_thresholds": [1.5, 2.0, 2.5, 3.0],
+    "queue_imbalance_thresholds": [0.3, 0.5, 0.7],
+    "flow_alignment_thresholds": [0.0, 0.2, 0.4],
+    "holding_seconds": [2, 5, 10, 30],
+    "stop_vol_multiples": [0.75, 1.0, 1.5],
+    "target_vol_multiples": [1.0, 1.5, 2.0],
+    "signal_cooldown_seconds": [5, 30],
+    "selection_rule": "Economic-family grids are evaluated completely. Parameter neighborhoods, not isolated maxima, must support a candidate."
+  },
+  "execution_cost_contract": {
+    "base_taker_fee_bps_each_side": 5.0,
+    "stress_taker_fee_bps_each_side": 6.0,
+    "spread": "Actual observed bid/ask at entry and exit, never a fixed synthetic spread.",
+    "impact_base": "Additional adverse impact based on order notional / observed top-quote notional, floored at 0.25 bp.",
+    "impact_stress": "Double base impact and cap position to the stricter top-quote participation constraint.",
+    "funding": "Official realized funding charged/credited only if a position crosses a funding timestamp.",
+    "position_sizing": "Research alpha is first evaluated at low risk. Cash risk 0.10% per trade, gross notional cap 2x equity, and order quantity cap 5% of displayed top-quote quantity; no leverage tuning to rescue negative expectancy.",
+    "maker_orders": "Not part of Wave8 v1. Maker logic may be opened only after a taker-executable family is positive or a separately registered queue model exists."
+  },
+  "gates": {
+    "calibration_min_closed_trades": 200,
+    "calibration_positive_days_min_of_6": 4,
+    "calibration_base_and_stress_net_positive": true,
+    "calibration_worst_day_net_r_min": -0.5,
+    "top_5pct_trade_contribution_max": 0.5,
+    "neighbor_support_min_configs": 2,
+    "internal_test_min_closed_trades": 200,
+    "internal_test_positive_days_min_of_6": 4,
+    "internal_test_base_and_stress_net_positive": true,
+    "walkforward_rule": "Only a frozen candidate that passes the complete calibration and internal-test gates may cause the locked 2024-01 through 2025-07 validation dates to be downloaded.",
+    "no_gate_relaxation_after_results": true
+  },
+  "promotion": "A passing Wave8 candidate remains research-only. It must still pass full multi-period walk-forward, actual funding, latency/fee/impact stresses, capacity, concentration, liquidation risk, independent audit, code reproduction, and finally one sealed OOS evaluation.",
+  "registration_sha256": "945300dd572a73e7a1f0691be4689e16268e5682c76a5c826677c14bacd3cab5"
+}
