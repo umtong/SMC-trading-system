@@ -1,0 +1,31 @@
+name: Project control-plane validation
+
+on:
+  pull_request:
+    paths:
+      - "project/**"
+      - ".github/workflows/project-control-plane.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "project/**"
+      - ".github/workflows/project-control-plane.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate project control plane
+        run: python project/scripts/validate_control_plane.py
