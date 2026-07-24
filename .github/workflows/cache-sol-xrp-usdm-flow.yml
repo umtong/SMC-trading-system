@@ -1,0 +1,177 @@
+name: Cache SOL XRP Official USD-M Flow
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-sol-xrp-usdm-flow.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+
+      - name: Download checksum-verified Binance Vision archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sol-xrp-cache
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import json
+          import zipfile
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+          import requests
+
+          OUTPUT = Path("sol-xrp-cache")
+          START = pd.Timestamp("2021-12-01T00:00:00Z")
+          END = pd.Timestamp("2025-07-01T00:00:00Z")
+          SYMBOLS = ("SOLUSDT", "XRPUSDT")
+          BASE = "https://data.binance.vision/data/futures/um/monthly/klines"
+          COLUMNS = [
+              "open_time", "open", "high", "low", "close", "volume",
+              "close_time", "quote_volume", "num_trades",
+              "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
+          ]
+
+          session = requests.Session()
+          session.headers["User-Agent"] = "SMC-trading-system-official-data-cache/1.0"
+
+          def sha256(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
+
+          def infer_unit(values: pd.Series) -> str:
+              median = float(pd.to_numeric(values, errors="raise").abs().median())
+              if median > 1e17:
+                  return "ns"
+              if median > 1e14:
+                  return "us"
+              if median > 1e11:
+                  return "ms"
+              return "s"
+
+          periods = pd.period_range(START.to_period("M"), (END - pd.Timedelta(days=1)).to_period("M"), freq="M")
+          manifest = {
+              "source": "official Binance Vision USD-M monthly klines",
+              "start_inclusive": START.isoformat(),
+              "end_exclusive": END.isoformat(),
+              "interval": "1m",
+              "symbols": {},
+          }
+
+          for symbol in SYMBOLS:
+              frames = []
+              records = []
+              for period in periods:
+                  stamp = str(period)
+                  name = f"{symbol}-1m-{stamp}.zip"
+                  url = f"{BASE}/{symbol}/1m/{name}"
+                  checksum_url = url + ".CHECKSUM"
+                  checksum_response = session.get(checksum_url, timeout=(30, 120))
+                  checksum_response.raise_for_status()
+                  expected = checksum_response.text.strip().split()[0].lower()
+                  archive_response = session.get(url, timeout=(30, 300))
+                  archive_response.raise_for_status()
+                  payload = archive_response.content
+                  actual = sha256(payload)
+                  if actual != expected:
+                      raise RuntimeError(f"{name}: checksum mismatch expected={expected} actual={actual}")
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                      csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+                      if len(csv_names) != 1:
+                          raise RuntimeError(f"{name}: expected one CSV, got {csv_names}")
+                      raw = zf.read(csv_names[0])
+                  probe = pd.read_csv(io.BytesIO(raw), nrows=1, header=None)
+                  header_present = str(probe.iloc[0, 0]).strip().lower() in {"open_time", "open time"}
+                  df = pd.read_csv(
+                      io.BytesIO(raw),
+                      header=0 if header_present else None,
+                      names=None if header_present else COLUMNS,
+                  )
+                  df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+                  if "open_time" not in df.columns:
+                      df.columns = COLUMNS[: len(df.columns)]
+                  unit = infer_unit(df["open_time"])
+                  df["timestamp"] = pd.to_datetime(df["open_time"], unit=unit, utc=True, errors="raise")
+                  keep = ["timestamp", "open", "high", "low", "close", "volume", "quote_volume", "num_trades", "taker_buy_base_volume", "taker_buy_quote_volume"]
+                  df = df[keep]
+                  for col in keep[1:]:
+                      df[col] = pd.to_numeric(df[col], errors="raise")
+                  frames.append(df)
+                  records.append({
+                      "period": stamp,
+                      "url": url,
+                      "checksum_url": checksum_url,
+                      "bytes": len(payload),
+                      "sha256": actual,
+                      "rows": len(df),
+                      "timestamp_unit": unit,
+                  })
+                  print(symbol, stamp, len(df), actual, flush=True)
+
+              data = pd.concat(frames, ignore_index=True)
+              data = data[(data.timestamp >= START) & (data.timestamp < END)].copy()
+              data = data.sort_values("timestamp").reset_index(drop=True)
+              if data.timestamp.duplicated().any():
+                  dup = data.loc[data.timestamp.duplicated(keep=False), "timestamp"].head().tolist()
+                  raise RuntimeError(f"{symbol}: duplicate timestamps {dup}")
+              invalid = (
+                  (data.high < data[["open", "close"]].max(axis=1))
+                  | (data.low > data[["open", "close"]].min(axis=1))
+                  | (data.high < data.low)
+                  | (data[["open", "high", "low", "close"]] <= 0).any(axis=1)
+              )
+              if invalid.any():
+                  raise RuntimeError(f"{symbol}: invalid OHLC rows={int(invalid.sum())}")
+              delta = data.timestamp.diff().dropna()
+              gaps = data.loc[delta > pd.Timedelta(minutes=1), "timestamp"]
+              output = OUTPUT / f"{symbol}_official_preholdout.parquet"
+              data.to_parquet(output, index=False, compression="zstd")
+              digest = hashlib.sha256(output.read_bytes()).hexdigest()
+              manifest["symbols"][symbol] = {
+                  "rows": len(data),
+                  "start": data.timestamp.iloc[0].isoformat(),
+                  "end": data.timestamp.iloc[-1].isoformat(),
+                  "gap_count": int((delta > pd.Timedelta(minutes=1)).sum()),
+                  "largest_gap_seconds": float(delta.max().total_seconds()),
+                  "output": str(output),
+                  "output_bytes": output.stat().st_size,
+                  "output_sha256": digest,
+                  "archives": records,
+              }
+
+          sol = pd.read_parquet(OUTPUT / "SOLUSDT_official_preholdout.parquet", columns=["timestamp"])
+          xrp = pd.read_parquet(OUTPUT / "XRPUSDT_official_preholdout.parquet", columns=["timestamp"])
+          common = pd.Index(sol.timestamp).intersection(pd.Index(xrp.timestamp))
+          manifest["sol_xrp_exact_common_rows"] = len(common)
+          manifest["sol_only_rows"] = len(sol) - len(common)
+          manifest["xrp_only_rows"] = len(xrp) - len(common)
+          (OUTPUT / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({k: v for k, v in manifest.items() if k != "symbols"}, indent=2))
+          PY
+
+      - name: Upload official pre-holdout cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-official-usdm-flow-${{ github.run_id }}
+          path: sol-xrp-cache/**
+          retention-days: 7
+          if-no-files-found: error
