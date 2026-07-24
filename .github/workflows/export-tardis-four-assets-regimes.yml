@@ -1,0 +1,93 @@
+name: Export Tardis Four-Asset Multi-Regime BBO and Trades
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/export-tardis-four-assets-regimes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Aggregate public first-of-month samples to one second
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import csv, gzip, hashlib, json, math, subprocess
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          EXCHANGE="binance-futures"
+          SYMBOLS=("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
+          DATES=("2025/02/01","2025/05/01","2025/08/01","2025/11/01")
+          BUCKET=1_000_000
+          OUT=Path("research_data/tardis_four_assets_1s");RAW=OUT/"raw";AGG=OUT/"aggregated"
+          RAW.mkdir(parents=True,exist_ok=True);AGG.mkdir(parents=True,exist_ok=True)
+          manifest={"generated_at_utc":datetime.now(timezone.utc).isoformat(),"exchange":EXCHANGE,"symbols":SYMBOLS,"dates":DATES,"bucket_us":BUCKET,"files":[]}
+
+          def sha(p:Path)->str:
+              h=hashlib.sha256()
+              with p.open("rb") as f:
+                  for b in iter(lambda:f.read(1<<20),b""):h.update(b)
+              return h.hexdigest()
+          def get(kind,date,symbol):
+              y,m,d=date.split("/");p=RAW/f"{symbol}_{kind}_{y}{m}{d}.csv.gz"
+              url=f"https://datasets.tardis.dev/v1/{EXCHANGE}/{kind}/{date}/{symbol}.csv.gz"
+              subprocess.run(["curl","-fL","--retry","5","--retry-delay","3","--connect-timeout","30","--max-time","2400","-A","smc-research-multiregime/1.0","-o",str(p),url],check=True)
+              if p.stat().st_size<40:raise RuntimeError(f"invalid {url}")
+              return p,url
+
+          for symbol in SYMBOLS:
+              for date in DATES:
+                  y,m,d=date.split("/");qp,qu=get("book_ticker",date,symbol);tp,tu=get("trades",date,symbol)
+                  quotes={}
+                  with gzip.open(qp,"rt",newline="",encoding="utf-8") as f:
+                      r=csv.DictReader(f);req={"local_timestamp","bid_price","ask_price","bid_amount","ask_amount"}
+                      if not req.issubset(r.fieldnames or []):raise RuntimeError(("quote schema",r.fieldnames))
+                      for row in r:
+                          b=int(row["local_timestamp"])//BUCKET
+                          quotes[b]=[int(row["local_timestamp"]),float(row["bid_price"]),float(row["ask_price"]),float(row["bid_amount"]),float(row["ask_amount"]),quotes.get(b,[0,0,0,0,0,0])[5]+1]
+                  trades=defaultdict(lambda:[0.,0.,0.,0.,0,0,math.nan])
+                  with gzip.open(tp,"rt",newline="",encoding="utf-8") as f:
+                      r=csv.DictReader(f);req={"local_timestamp","side","price","amount"}
+                      if not req.issubset(r.fieldnames or []):raise RuntimeError(("trade schema",r.fieldnames))
+                      for row in r:
+                          b=int(row["local_timestamp"])//BUCKET;px=float(row["price"]);qty=float(row["amount"]);x=trades[b]
+                          if row["side"]=="buy":x[0]+=qty;x[2]+=px*qty;x[4]+=1
+                          elif row["side"]=="sell":x[1]+=qty;x[3]+=px*qty;x[5]+=1
+                          x[6]=px
+                  path=AGG/f"{symbol}_{y}{m}{d}_1s.csv.gz";last=None;rows=0
+                  with gzip.open(path,"wt",newline="",encoding="utf-8") as f:
+                      w=csv.writer(f);w.writerow(("bucket_us","quote_ts","bid","ask","bid_qty","ask_qty","quote_updates","mid","spread_bps","top_imbalance","microprice","buy_qty","sell_qty","buy_notional","sell_notional","buy_count","sell_count","last_trade"))
+                      for b in sorted(set(quotes)|set(trades)):
+                          if b in quotes:last=quotes[b]
+                          if last is None:continue
+                          ts,bid,ask,bq,aq,updates=last
+                          if not(bid>0 and ask>bid and bq>=0 and aq>=0):continue
+                          den=bq+aq;mid=(bid+ask)/2;imb=(bq-aq)/den if den>0 else 0.;micro=(ask*bq+bid*aq)/den if den>0 else mid
+                          w.writerow((b*BUCKET,ts,bid,ask,bq,aq,updates,mid,(ask-bid)/mid*1e4,imb,micro,*trades[b]));rows+=1
+                  manifest["files"].append({"symbol":symbol,"date":date,"kind":"book_ticker","url":qu,"bytes":qp.stat().st_size,"sha256":sha(qp)})
+                  manifest["files"].append({"symbol":symbol,"date":date,"kind":"trades","url":tu,"bytes":tp.stat().st_size,"sha256":sha(tp)})
+                  manifest["files"].append({"symbol":symbol,"date":date,"kind":"aggregated_1s","path":path.as_posix(),"rows":rows,"bytes":path.stat().st_size,"sha256":sha(path)})
+                  print(symbol,date,rows,path.stat().st_size,flush=True);qp.unlink();tp.unlink()
+          (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tardis-binance-futures-four-assets-1s-2025q
+          path: research_data/tardis_four_assets_1s
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
