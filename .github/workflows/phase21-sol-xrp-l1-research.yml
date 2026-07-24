@@ -3,6 +3,8 @@ name: Phase21 SOL XRP causal L1 research data
 on:
   workflow_dispatch:
   push:
+    branches:
+      - research/phase21-sol-xrp-l1-20260724
     paths:
       - '.github/workflows/phase21-sol-xrp-l1-research.yml'
 
@@ -66,17 +68,15 @@ jobs:
           for c in ['ts','price','qty']: t[c]=pd.to_numeric(t[c],errors='coerce')
           b=b.dropna(subset=['ts','bid','bid_qty','ask','ask_qty']).sort_values('ts').drop_duplicates('ts',keep='last')
           t=t.dropna(subset=['ts','price','qty']).sort_values('ts')
-          # Normalize timestamp units if Binance archives switch to microseconds.
           if b.ts.median()>1e14: b.ts=(b.ts//1000).astype('int64')
           if t.ts.median()>1e14: t.ts=(t.ts//1000).astype('int64')
           t['bucket']=(t.ts//250*250).astype('int64')
           t['quote']=t.price*t.qty
           buyer_maker=t.is_buyer_maker.astype(str).str.lower().isin(['true','1'])
           t['signed_quote']=np.where(buyer_maker,-t.quote,t.quote)
-          flow=t.groupby('bucket',sort=True).agg(quote=('quote','sum'),signed_quote=('signed_quote','sum'),trade_count=('ts','size'),trade_vwap=('price',lambda x: np.nan)).reset_index()
-          # weighted VWAP without groupby apply
-          pv=t.groupby('bucket',sort=True).apply(lambda g: float((g.price*g.qty).sum()/g.qty.sum()),include_groups=False)
-          flow['trade_vwap']=pv.to_numpy()
+          flow=t.groupby('bucket',sort=True).agg(quote=('quote','sum'),signed_quote=('signed_quote','sum'),trade_count=('ts','size')).reset_index()
+          pv=(t.price*t.qty).groupby(t.bucket).sum()/t.qty.groupby(t.bucket).sum()
+          flow['trade_vwap']=pv.reindex(flow.bucket).to_numpy()
           start=int(pd.Timestamp(day,tz='UTC').value//1_000_000); end=start+86_400_000
           buckets=np.arange(start,end,250,dtype=np.int64)
           panel=pd.DataFrame({'bucket':buckets})
@@ -86,6 +86,7 @@ jobs:
           mid=(state.bid+state.ask)/2
           state['mid']=mid
           state['spread_bps']=(state.ask/state.bid-1)*10000
+          state['relative_tick_bps']=state.spread_bps
           state['imbalance']=(state.bid_qty-state.ask_qty)/(state.bid_qty+state.ask_qty).replace(0,np.nan)
           micro=(state.ask*state.bid_qty+state.bid*state.ask_qty)/(state.bid_qty+state.ask_qty).replace(0,np.nan)
           state['microprice_bps']=(micro/mid-1)*10000
@@ -95,16 +96,15 @@ jobs:
           state['ask_depletion']=np.where(same_ask,(state.ask_qty.shift(1)-state.ask_qty).clip(lower=0),0)
           state['bid_replenishment']=np.where(same_bid,(state.bid_qty-state.bid_qty.shift(1)).clip(lower=0),0)
           state['ask_replenishment']=np.where(same_ask,(state.ask_qty-state.ask_qty.shift(1)).clip(lower=0),0)
-          # Decision at bucket close; enter at first subsequent 250ms state.
           entry_ask=state.ask.shift(-1); entry_bid=state.bid.shift(-1)
           for steps,label in [(1,'250ms'),(2,'500ms'),(4,'1s'),(8,'2s'),(20,'5s'),(40,'10s'),(120,'30s')]:
               future_bid=state.bid.shift(-(1+steps)); future_ask=state.ask.shift(-(1+steps))
               state[f'long_gross_{label}_bps']=(future_bid/entry_ask-1)*10000
               state[f'short_gross_{label}_bps']=(entry_bid/future_ask-1)*10000
-          keep=['bucket','bid','bid_qty','ask','ask_qty','mid','spread_bps','imbalance','microprice_bps','quote','signed_quote','trade_count','trade_vwap','flow_imbalance','bid_depletion','ask_depletion','bid_replenishment','ask_replenishment']+[c for c in state.columns if c.startswith(('long_gross_','short_gross_'))]
+          keep=['bucket','bid','bid_qty','ask','ask_qty','mid','spread_bps','relative_tick_bps','imbalance','microprice_bps','quote','signed_quote','trade_count','trade_vwap','flow_imbalance','bid_depletion','ask_depletion','bid_replenishment','ask_replenishment']+[c for c in state.columns if c.startswith(('long_gross_','short_gross_'))]
           state=state[keep].replace([np.inf,-np.inf],np.nan)
           path=out/f'{symbol}_{day}_l1_250ms.csv.gz'; state.to_csv(path,index=False,compression='gzip')
-          manifest={'symbol':symbol,'day':day,'rows':len(state),'start_ms':int(start),'end_ms':int(end),'book_rows':len(b),'trade_rows':len(t),'panel_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'source_sha256':{n:hashlib.sha256((raw/n).read_bytes()).hexdigest() for n in (book_name,trade_name)}}
+          manifest={'symbol':symbol,'day':day,'rows':len(state),'start_ms':int(start),'end_ms':int(end),'book_rows':len(b),'trade_rows':len(t),'panel_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'source_sha256':{n:hashlib.sha256((raw/n).read_bytes()).hexdigest() for n in (book_name,trade_name)},'availability_rule':'decision at completed 250ms bucket; entry at first subsequent state'}
           (out/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
           print(json.dumps(manifest))
           PY
