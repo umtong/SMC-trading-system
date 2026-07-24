@@ -1,0 +1,112 @@
+name: State-first L2 static causal audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/remote/state_first_l2.py.gz.b64"
+      - "research/remote/test_state_first_l2.py.gz.b64"
+      - "research/state_first_l2_20260724/preregistration.json"
+      - ".github/workflows/state-first-l2-static-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-l2-static-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-l2-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct immutable source without executing research
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/state-first-l2-audit
+          base64 --decode research/remote/state_first_l2.py.gz.b64 > /tmp/state_first-l2.py.gz
+          base64 --decode research/remote/test_state_first_l2.py.gz.b64 > /tmp/test-state-first-l2.py.gz
+          echo 'b69952025cff08ad26abb96ea5d7b43a1568e0e63f1588dfc68460c79c9bb617  /tmp/state-first-l2.py.gz' | sha256sum -c --strict
+          echo 'cefb9e4700149a2dfb39c5345e3ef2a11a317085c0785e5fc1a241eb78bf0c30  /tmp/test-state-first-l2.py.gz' | sha256sum -c --strict
+          gzip -dc /tmp/state-first-l2.py.gz > /tmp/state-first-l2-audit/state_first_l2.py
+          gzip -dc /tmp/test-state-first-l2.py.gz > /tmp/state-first-l2-audit/test_state_first_l2.py
+          echo '795e98af3c1709960c7893facfc4cc27f523eb0e3758379902bea40162b30a3c  /tmp/state-first-l2-audit/state_first_l2.py' | sha256sum -c --strict
+          echo '31a798dbbf3541c5466031add3326a90d6405701d12d9a1e0a9a9608b500dd1e  /tmp/state-first-l2-audit/test_state_first_l2.py' | sha256sum -c --strict
+          cp research/state_first_l2_20260724/preregistration.json /tmp/state-first-l2-audit/
+          python -m py_compile /tmp/state-first-l2-audit/state_first_l2.py /tmp/state-first-l2-audit/test_state_first_l2.py
+
+      - name: Produce static causal and gating inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast, hashlib, json, re
+          from pathlib import Path
+
+          root=Path('/tmp/state-first-l2-audit')
+          source=(root/'state_first_l2.py').read_text(encoding='utf-8')
+          tree=ast.parse(source)
+          functions=[]
+          imports=[]
+          string_literals=[]
+          for node in ast.walk(tree):
+              if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                  functions.append({'name':node.name,'line':node.lineno,'args':[a.arg for a in node.args.args]})
+              elif isinstance(node,(ast.Import,ast.ImportFrom)):
+                  imports.append(ast.get_source_segment(source,node) or '')
+              elif isinstance(node,ast.Constant) and isinstance(node.value,str):
+                  string_literals.append(node.value)
+          patterns={
+              'forward_column_mentions': r'(?i)fwd_|forward_',
+              'feature_selection_mentions': r'(?i)feature_cols|features|predictors|drop\(',
+              'time_split_mentions': r'(?i)2023-07|2024-01|2025-01|2026-01|confirmation|selection|development',
+              'purge_mentions': r'(?i)purge|horizon|label_end|exit_time|available',
+              'funding_mentions': r'(?i)funding',
+              'cost_mentions': r'(?i)cost|fee|slippage',
+              'position_mentions': r'(?i)one_global|position|free_at|reentry|overlap',
+              'target_mentions': r'(?i)geo.*daily|target_gate|0\.01',
+              'data_load_mentions': r'(?i)hf_hub|snapshot_download|parquet|download|2025|2026',
+          }
+          matches={}
+          lines=source.splitlines()
+          for key,pattern in patterns.items():
+              rx=re.compile(pattern)
+              matches[key]=[
+                  {'line':i,'text':line[:500]}
+                  for i,line in enumerate(lines,1) if rx.search(line)
+              ]
+          report={
+              'schema_version':1,
+              'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+              'source_lines':len(lines),
+              'functions':functions,
+              'imports':imports,
+              'matches':matches,
+              'research_executed':False,
+              'candidate_pnl_observed':False,
+              '2025_opened':False,
+              '2026_opened':False,
+              'orders_submitted':False,
+              'paper_or_live_started':False,
+          }
+          (root/'static_audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps({k:report[k] for k in ('source_sha256','source_lines','research_executed','candidate_pnl_observed')},indent=2))
+          PY
+          sha256sum /tmp/state-first-l2-audit/* > /tmp/state-first-l2-audit/SHA256SUMS.txt
+
+      - name: Upload decoded source and static audit only
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-l2-static-audit-${{ github.run_id }}
+          path: /tmp/state-first-l2-audit
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
