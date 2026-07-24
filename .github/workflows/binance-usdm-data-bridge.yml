@@ -1,0 +1,189 @@
+name: Binance USD-M research data bridge
+
+on:
+  push:
+    branches:
+      - research/binance-usdm-data-bridge-20260723
+    paths:
+      - .github/workflows/binance-usdm-data-bridge.yml
+      - research/data_bridge_trigger.txt
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/binance-usdm-data-bridge.yml
+      - research/data_bridge_trigger.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download checksum-verified Binance USD-M archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures as cf
+          import datetime as dt
+          import hashlib
+          import json
+          import pathlib
+          import time
+          import urllib.error
+          import urllib.request
+
+          ROOT = pathlib.Path('research_artifact')
+          RAW = ROOT / 'raw'
+          RAW.mkdir(parents=True, exist_ok=True)
+          BASE = 'https://data.binance.vision/data/futures/um/monthly'
+          SYMBOLS = ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+          START = dt.date(2020, 1, 1)
+          END = dt.date(2026, 6, 1)
+          RECENT_1M_START = dt.date(2024, 1, 1)
+
+          def months(start: dt.date, end: dt.date):
+              cur = dt.date(start.year, start.month, 1)
+              endm = dt.date(end.year, end.month, 1)
+              while cur <= endm:
+                  yield cur
+                  if cur.month == 12:
+                      cur = dt.date(cur.year + 1, 1, 1)
+                  else:
+                      cur = dt.date(cur.year, cur.month + 1, 1)
+
+          def spec(dtype: str, symbol: str, interval: str | None, month: dt.date):
+              ym = month.strftime('%Y-%m')
+              if interval:
+                  filename = f'{symbol}-{interval}-{ym}.zip'
+                  rel = f'{dtype}/{symbol}/{interval}/{filename}'
+              else:
+                  filename = f'{symbol}-{dtype}-{ym}.zip'
+                  rel = f'{dtype}/{symbol}/{filename}'
+              return rel, filename
+
+          tasks: list[tuple[str, str, str | None, dt.date]] = []
+          for month in months(START, END):
+              for symbol in SYMBOLS:
+                  tasks.extend([
+                      ('klines', symbol, '5m', month),
+                      ('markPriceKlines', symbol, '5m', month),
+                      ('premiumIndexKlines', symbol, '5m', month),
+                      ('fundingRate', symbol, None, month),
+                  ])
+                  if symbol in ('BTCUSDT', 'ETHUSDT') and month >= RECENT_1M_START:
+                      tasks.append(('klines', symbol, '1m', month))
+
+          def get_bytes(url: str, retries: int = 4) -> bytes:
+              headers = {'User-Agent': 'SMC-ICT-research-data-bridge/1.0'}
+              last = None
+              for attempt in range(retries):
+                  try:
+                      req = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(req, timeout=90) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          raise FileNotFoundError(url) from exc
+                      last = exc
+                  except Exception as exc:  # noqa: BLE001
+                      last = exc
+                  time.sleep(2 ** attempt)
+              raise RuntimeError(f'download failed: {url}: {last}')
+
+          def one(task):
+              dtype, symbol, interval, month = task
+              rel, filename = spec(dtype, symbol, interval, month)
+              url = f'{BASE}/{rel}'
+              checksum_url = url + '.CHECKSUM'
+              try:
+                  checksum_text = get_bytes(checksum_url).decode('utf-8').strip()
+                  expected = checksum_text.split()[0].lower()
+                  payload = get_bytes(url)
+              except FileNotFoundError:
+                  return {'status': 'missing', 'dtype': dtype, 'symbol': symbol,
+                          'interval': interval, 'month': month.strftime('%Y-%m'),
+                          'url': url}
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f'checksum mismatch {url}: {actual} != {expected}')
+              target = RAW / dtype / symbol / (interval or 'none') / filename
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(payload)
+              return {'status': 'downloaded', 'dtype': dtype, 'symbol': symbol,
+                      'interval': interval, 'month': month.strftime('%Y-%m'),
+                      'url': url, 'path': target.as_posix(), 'bytes': len(payload),
+                      'sha256': actual, 'checksum_text': checksum_text}
+
+          records = []
+          errors = []
+          with cf.ThreadPoolExecutor(max_workers=12) as pool:
+              future_map = {pool.submit(one, task): task for task in tasks}
+              for idx, fut in enumerate(cf.as_completed(future_map), 1):
+                  task = future_map[fut]
+                  try:
+                      records.append(fut.result())
+                  except Exception as exc:  # noqa: BLE001
+                      errors.append({'task': [task[0], task[1], task[2], task[3].isoformat()],
+                                     'error': repr(exc)})
+                  if idx % 100 == 0:
+                      print(f'completed {idx}/{len(tasks)} records={len(records)} errors={len(errors)}', flush=True)
+
+          records.sort(key=lambda r: (r['dtype'], r['symbol'], str(r['interval']), r['month']))
+          manifest = {
+              'schema_version': 1,
+              'generated_at_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
+              'source': 'https://data.binance.vision/data/futures/um/monthly',
+              'symbols': list(SYMBOLS),
+              'start_month': START.strftime('%Y-%m'),
+              'end_month': END.strftime('%Y-%m'),
+              'recent_1m_start_month': RECENT_1M_START.strftime('%Y-%m'),
+              'requested_count': len(tasks),
+              'downloaded_count': sum(r['status'] == 'downloaded' for r in records),
+              'missing_count': sum(r['status'] == 'missing' for r in records),
+              'error_count': len(errors),
+              'downloaded_bytes': sum(r.get('bytes', 0) for r in records),
+              'records': records,
+              'errors': errors,
+          }
+          (ROOT / 'MANIFEST.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          (ROOT / 'README.txt').write_text(
+              'Checksum-verified official Binance USD-M monthly archives for research.\n'
+              'Klines include true taker-buy base/quote volume fields.\n'
+              'Every available ZIP was verified against its adjacent .CHECKSUM file.\n'
+          )
+          if errors:
+              raise SystemExit(f'{len(errors)} non-404 download/checksum errors; see MANIFEST.json')
+          if manifest['downloaded_count'] < 200:
+              raise SystemExit(f'insufficient downloaded archives: {manifest["downloaded_count"]}')
+          print(json.dumps({k: manifest[k] for k in ('requested_count','downloaded_count','missing_count','error_count','downloaded_bytes')}, indent=2))
+          PY
+
+      - name: Create deterministic archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          find research_artifact -type f -print0 | sort -z | xargs -0 sha256sum > research_artifact/FILE_MANIFEST.sha256
+          tar --sort=name --mtime='UTC 2026-07-23' --owner=0 --group=0 --numeric-owner -cf binance_usdm_research_data.tar research_artifact
+          sha256sum binance_usdm_research_data.tar > binance_usdm_research_data.tar.sha256
+          ls -lh binance_usdm_research_data.tar
+
+      - name: Upload research artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-data-20260723
+          path: |
+            binance_usdm_research_data.tar
+            binance_usdm_research_data.tar.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
