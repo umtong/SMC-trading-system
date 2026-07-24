@@ -1,0 +1,51 @@
+name: Cross-Venue Tick Lead-Lag V2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/crossvenue-tick-v2.yml'
+      - 'research/crossvenue_tick_v2.py'
+  push:
+    branches: [research/v196-crossvenue-leadlag]
+    paths:
+      - '.github/workflows/crossvenue-tick-v2.yml'
+      - 'research/crossvenue_tick_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crossvenue-tick-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    runs-on: macos-14
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install fixed environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - name: Compile
+        run: python -m py_compile research/crossvenue_tick_v2.py
+      - name: Run gated public-data research
+        run: python research/crossvenue_tick_v2.py --symbols BTCUSDT ETHUSDT --output-dir crossvenue-v2-results
+      - name: Inspect evidence
+        if: always()
+        run: |
+          test -f crossvenue-v2-results/summary.json && python -m json.tool crossvenue-v2-results/summary.json || true
+          find crossvenue-v2-results -type f -maxdepth 1 -print0 | sort -z | xargs -0 shasum -a 256 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossvenue-tick-v2-${{ github.run_id }}
+          path: crossvenue-v2-results
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6

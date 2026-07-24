@@ -1,0 +1,118 @@
+name: Cross-Venue Tick Lead-Lag V3 Streaming
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/crossvenue-tick-v3.yml'
+      - 'research/crossvenue_tick_v3_stream.py'
+      - 'research/CROSSVENUE_TICK_V3_AMENDMENT.md'
+  push:
+    branches: [research/v196-crossvenue-leadlag]
+    paths:
+      - '.github/workflows/crossvenue-tick-v3.yml'
+      - 'research/crossvenue_tick_v3_stream.py'
+      - 'research/CROSSVENUE_TICK_V3_AMENDMENT.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crossvenue-tick-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {phase: dev, day: '2022-01-15'}
+          - {phase: dev, day: '2022-03-15'}
+          - {phase: dev, day: '2022-05-15'}
+          - {phase: dev, day: '2022-07-15'}
+          - {phase: dev, day: '2022-09-15'}
+          - {phase: dev, day: '2022-11-15'}
+          - {phase: val, day: '2023-01-15'}
+          - {phase: val, day: '2023-03-15'}
+          - {phase: val, day: '2023-05-15'}
+          - {phase: val, day: '2023-07-15'}
+          - {phase: val, day: '2023-09-15'}
+          - {phase: val, day: '2023-11-15'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install fixed environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - name: Verify frozen source
+        run: |
+          python -m py_compile research/crossvenue_tick_v3_stream.py
+          shasum -a 256 research/crossvenue_tick_v3_stream.py research/CROSSVENUE_TICK_V3_AMENDMENT.md
+      - name: Build one checksum-verified causal day
+        run: |
+          python research/crossvenue_tick_v3_stream.py build-day \
+            --phase '${{ matrix.phase }}' \
+            --day '${{ matrix.day }}' \
+            --cache-dir 'crossvenue-cache/${{ matrix.phase }}-${{ matrix.day }}' \
+            --output-dir 'crossvenue-build/${{ matrix.phase }}-${{ matrix.day }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossvenue-v3-${{ matrix.phase }}-${{ matrix.day }}-${{ github.run_id }}
+          path: crossvenue-build/${{ matrix.phase }}-${{ matrix.day }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  evaluate:
+    needs: build
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install fixed environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: crossvenue-v3-*-${{ github.run_id }}
+          path: crossvenue-input
+          merge-multiple: true
+      - name: Evaluate frozen development and validation only
+        run: |
+          python -m py_compile research/crossvenue_tick_v3_stream.py
+          python research/crossvenue_tick_v3_stream.py evaluate \
+            --input-dir crossvenue-input \
+            --output-dir crossvenue-v3-results
+      - name: Audit evidence
+        if: always()
+        run: |
+          test -s crossvenue-v3-results/summary.json
+          python -m json.tool crossvenue-v3-results/summary.json
+          find crossvenue-v3-results -maxdepth 1 -type f -print -exec shasum -a 256 {} \;
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crossvenue-v3-results-${{ github.run_id }}
+          path: crossvenue-v3-results
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
