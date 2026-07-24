@@ -1,0 +1,45 @@
+name: V0.9 Real Archive Sample
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Validate one real checksum-verified BTCUSDT day
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.validate_binance_um_microstructure_sample \
+            --symbol BTCUSDT \
+            --date 2024-03-03 \
+            --output results/v09_real_sample/BTCUSDT_2024-03-03.json \
+            2>&1 | tee v09-real-sample.log
+
+      - name: Upload real sample evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v09-real-sample-${{ github.run_id }}
+          path: |
+            v09-real-sample.log
+            results/v09_real_sample
+          if-no-files-found: warn
+          retention-days: 14
