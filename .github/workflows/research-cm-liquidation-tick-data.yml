@@ -1,0 +1,79 @@
+name: Research COIN-M liquidation to USD-M tick windows
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/research-cm-liquidation-tick-data.yml"
+      - "research_tools/cm_liquidation_tick/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-cm-liquidation-tick-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        month: [2023-06, 2023-07, 2023-08, 2023-09, 2023-10, 2023-11, 2023-12]
+    runs-on: macos-14
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify canonical frozen event windows
+        shell: bash
+        run: |
+          cp research_tools/cm_liquidation_tick/windows_v2.csv.gz.b64 /tmp/merged_windows_2023.csv.gz.b64
+          shasum -a 256 /tmp/merged_windows_2023.csv.gz.b64 | tee /tmp/windows_payload_sha256.txt
+          python - <<'PY'
+          import base64,csv,gzip,hashlib,io,json
+          from pathlib import Path
+          path=Path('/tmp/merged_windows_2023.csv.gz.b64')
+          encoded=''.join(path.read_text().split())
+          packed=base64.b64decode(encoded,validate=True)
+          raw=gzip.decompress(packed)
+          rows=list(csv.DictReader(io.StringIO(raw.decode('utf-8'))))
+          assert len(rows)==2964, len(rows)
+          assert {'symbol','start_ms','end_ms'} <= set(rows[0])
+          for row in rows:
+              assert row['symbol'] in {'BTCUSDT','ETHUSDT'}
+              assert int(row['start_ms']) < int(row['end_ms'])
+          evidence={
+              'rows':len(rows),
+              'payload_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+              'gzip_sha256':hashlib.sha256(packed).hexdigest(),
+              'raw_csv_sha256':hashlib.sha256(raw).hexdigest(),
+          }
+          Path('/tmp/windows_evidence.json').write_text(json.dumps(evidence,indent=2))
+          print(json.dumps(evidence,indent=2))
+          PY
+      - name: Extract checksum-verified event windows
+        run: |
+          python research_tools/cm_liquidation_tick/extract_monthly_aggtrades.py \
+            --symbol "${{ matrix.symbol }}" \
+            --month "${{ matrix.month }}" \
+            --windows-b64 /tmp/merged_windows_2023.csv.gz.b64 \
+            --output-dir "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"
+          cp /tmp/windows_payload_sha256.txt /tmp/windows_evidence.json "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/"
+      - name: Inspect extraction
+        run: |
+          python -m json.tool "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/manifest_${{ matrix.symbol }}_${{ matrix.month }}.json"
+          shasum -a 256 "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
+          du -h "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cm-liquidation-tick-${{ matrix.symbol }}-${{ matrix.month }}
+          path: research_artifact/${{ matrix.symbol }}/${{ matrix.month }}
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
