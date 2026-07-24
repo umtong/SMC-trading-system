@@ -46,17 +46,26 @@ jobs:
       - name: Build BTC then ETH with bounded memory
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          set -o pipefail
+          status=0
           for symbol in BTCUSDT ETHUSDT; do
-            echo "streaming panel ${symbol}"
+            echo "streaming panel ${symbol}" | tee -a panels/build.log
             python research_tools/state_first_l1_clean_v2/state_first_l1_streaming_v3.py panel \
               --symbol "$symbol" \
               --data-dir "cache/$symbol" \
-              --output-dir panels
+              --output-dir panels \
+              2>&1 | tee -a panels/build.log
+            code=${PIPESTATUS[0]}
+            if [ "$code" -ne 0 ]; then
+              status=$code
+              break
+            fi
             rm -rf "cache/$symbol"
-            df -h .
+            df -h . | tee -a panels/build.log
           done
-          python - <<'PY'
+          if [ "$status" -eq 0 ]; then
+            python - <<'PY' 2>&1 | tee -a panels/build.log
           import pandas as pd
           from pathlib import Path
           for p in sorted(Path('panels').glob('*_state_first_l1_v2.csv.gz')):
@@ -64,6 +73,9 @@ jobs:
               assert len(d)>0 and (d.entry_time_ms>=0).all() and (d.entry_ask>d.entry_bid).all()
               print(p.name,len(d))
           PY
+            status=${PIPESTATUS[0]}
+          fi
+          exit "$status"
       - name: Evaluate frozen train-threshold contract
         shell: bash
         run: |
@@ -81,6 +93,7 @@ jobs:
           path: |
             panels/*_manifest.json
             panels/SOURCE_SHA256.txt
+            panels/build.log
             results
           if-no-files-found: warn
           retention-days: 30
