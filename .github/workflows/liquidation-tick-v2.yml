@@ -29,14 +29,35 @@ jobs:
       - name: Verify frozen windows
         shell: bash
         run: |
+          set -euo pipefail
           cat research_tools/liquidation_tick_v2/windows.part* > /tmp/windows.b64
-          test "$(shasum -a 256 /tmp/windows.b64 | awk '{print $1}')" = "37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea"
           python - <<'PY'
-          import base64,gzip,hashlib,pathlib
-          p=pathlib.Path('/tmp/windows.b64');e=''.join(p.read_text().split());g=base64.b64decode(e,validate=True);r=gzip.decompress(g)
-          assert hashlib.sha256(e.encode()).hexdigest()=='37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea'
-          assert hashlib.sha256(g).hexdigest()=='f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4'
-          assert hashlib.sha256(r).hexdigest()=='045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105'
+          import base64
+          import gzip
+          import hashlib
+          import pathlib
+
+          p = pathlib.Path('/tmp/windows.b64')
+          encoded = ''.join(p.read_text().split())
+          compressed = base64.b64decode(encoded, validate=True)
+          decoded = gzip.decompress(compressed)
+
+          # The repository transport may contain a terminal newline.  The
+          # preregistered identity is the canonical whitespace-free Base64,
+          # followed by the exact gzip bytes and decoded CSV bytes.
+          observed = {
+              'canonical_base64': hashlib.sha256(encoded.encode()).hexdigest(),
+              'gzip_bytes': hashlib.sha256(compressed).hexdigest(),
+              'decoded_csv': hashlib.sha256(decoded).hexdigest(),
+          }
+          expected = {
+              'canonical_base64': '37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea',
+              'gzip_bytes': 'f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4',
+              'decoded_csv': '045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105',
+          }
+          if observed != expected:
+              raise SystemExit(f'frozen-window digest mismatch: observed={observed} expected={expected}')
+          print(observed)
           PY
       - name: Extract official windows
         run: |
