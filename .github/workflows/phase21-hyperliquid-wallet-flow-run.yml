@@ -1,0 +1,58 @@
+name: Phase21 Hyperliquid wallet-flow run
+
+on:
+  push:
+    branches: [research/hyperliquid-wallet-flow-run-20260724]
+    paths:
+      - '.github/workflows/phase21-hyperliquid-wallet-flow-run.yml'
+      - 'research/phase21_hl_wallet_extract.py'
+      - 'research/phase21_hl_wallet_preregistration.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase21-hyperliquid-wallet-flow-run.yml'
+      - 'research/phase21_hl_wallet_extract.py'
+      - 'research/phase21_hl_wallet_preregistration.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase21-hl-wallet-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        day: ['2025-07-28', '2025-08-01', '2025-08-08', '2025-08-15', '2025-08-22', '2025-09-01', '2025-09-15', '2025-10-01']
+        hour: [0, 6, 12, 18]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install frozen extraction environment
+        run: pip install --disable-pip-version-check duckdb==1.3.2 pandas==2.2.3 pyarrow==19.0.1 requests==2.32.4 numpy==2.1.3
+      - name: Compile source and lock provenance
+        run: |
+          python -m py_compile research/phase21_hl_wallet_extract.py
+          sha256sum research/phase21_hl_wallet_extract.py research/phase21_hl_wallet_preregistration.md
+      - name: Extract one causal wallet-flow window
+        run: |
+          python research/phase21_hl_wallet_extract.py \
+            --day '${{ matrix.day }}' \
+            --hour '${{ matrix.hour }}' \
+            --output 'wallet-flow/${{ matrix.day }}-${{ matrix.hour }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase21-hl-wallet-${{ matrix.day }}-${{ matrix.hour }}-${{ github.run_id }}
+          path: wallet-flow/${{ matrix.day }}-${{ matrix.hour }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
