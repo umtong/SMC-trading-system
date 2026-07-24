@@ -1,0 +1,115 @@
+name: State-first official raw feature builder V3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64"
+      - "research/state_first_raw_provenance_20260724/patch_official_builder_v3.py"
+      - ".github/workflows/state-first-official-state-builder-v3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-official-builder-v3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-audit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      ROOT: ${{ github.workspace }}/research_runs/state_first_official_builder_v3_20260724
+      BUNDLE_B64: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64
+      PATCH: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/patch_official_builder_v3.py
+      EXPECTED_BUNDLE_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
+      EXPECTED_V2_SCRIPT_SHA256: 0f8c3f1c463dec2f3dcd16117b4992405ff2332cf6a2860df40cb5be03ff3a9d
+      EXPECTED_V2_TEST_SHA256: 44f095585bfbdead4aa3690084dce4f428c6417bf6aff507cc2dc4bf95695004
+      EXPECTED_V2_PREREG_SHA256: 463b569f29169040efcc7137cea9bd5ad2a9325831f30e277194986f73a10ec3
+      EXPECTED_PATCH_SHA256: 80d0d00e6944856e6a1509794691c15537997da528cce3f558ca5a4b058ff4a2
+      EXPECTED_V3_SCRIPT_SHA256: ae17d07b55026d2d961dc8d59317a36a4ed1bbd49b68b681aab66db94f4d9afd
+      EXPECTED_V3_TEST_SHA256: 01bfd8eb07ff432dbb726b2c385c0945c82b0e3bb9a5aad03392dce3c80d15b9
+      EXPECTED_V3_PREREG_SHA256: 0dfcab15a0f29d24fa7835f5f69b74a9d5594d09fd6b05cbc7f57f2b28f47986
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-raw-provenance-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct immutable V2, apply deterministic V3 patch, and freeze identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/source"
+          base64 --decode "$BUNDLE_B64" > /tmp/official_builder_v2_bundle.tar.gz
+          printf '%s  %s\n' "$EXPECTED_BUNDLE_GZ_SHA256" /tmp/official_builder_v2_bundle.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/official_builder_v2_bundle.tar.gz -C "$ROOT/source"
+          printf '%s  %s\n' "$EXPECTED_V2_SCRIPT_SHA256" "$ROOT/source/build_official_state_v2.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_V2_TEST_SHA256" "$ROOT/source/test_official_state_v2.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_V2_PREREG_SHA256" "$ROOT/source/builder_v2_preregistration.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PATCH_SHA256" "$PATCH" | sha256sum --check --strict
+          python "$PATCH" "$ROOT/source"
+          printf '%s  %s\n' "$EXPECTED_V3_SCRIPT_SHA256" "$ROOT/source/build_official_state_v3.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_V3_TEST_SHA256" "$ROOT/source/test_official_state_v3.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_V3_PREREG_SHA256" "$ROOT/source/builder_v3_preregistration.json" | sha256sum --check --strict
+          python -m py_compile "$ROOT/source/build_official_state_v3.py" "$ROOT/source/test_official_state_v3.py"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          files=[p for p in (root/'source').iterdir() if p.is_file()]
+          payload={
+            'git_commit':os.environ.get('GITHUB_SHA'),
+            'files':{p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files},
+            'strategy_executed':False,'candidate_pnl_observed':False,
+            '2024_opened':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          (root/'input_identity.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Install fixed builder environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
+          python - <<'PY'
+          import json,platform,sys,numpy,pandas,pyarrow,requests,pytest
+          from pathlib import Path
+          root=Path('research_runs/state_first_official_builder_v3_20260724')
+          payload={'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),'numpy':numpy.__version__,'pandas':pandas.__version__,'pyarrow':pyarrow.__version__,'requests':requests.__version__,'pytest':pytest.__version__,'strategy_executed':False,'candidate_pnl_observed':False,'2024_opened':False,'2025_opened':False,'2026_opened':False,'orders_submitted':False,'paper_or_live_started':False}
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Run boundary-transfer, prefix-causality, overlap, and gap tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q "$ROOT/source/test_official_state_v3.py" 2>&1 | tee "$ROOT/unit_tests.log"
+
+      - name: Reconstruct one official day and require distinct-ID union reconciliation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$ROOT/source/build_official_state_v3.py" --output "$ROOT" 2>&1 | tee "$ROOT/builder.log"
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload compact derived features and audits only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-official-builder-v3-${{ github.sha }}
+          path: research_runs/state_first_official_builder_v3_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
