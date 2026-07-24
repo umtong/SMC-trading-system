@@ -1,0 +1,188 @@
+name: Export Tardis Binance Futures BBO and Trades Samples
+
+on:
+  push:
+    branches:
+      - agent/tardis-microstructure-samples-20260724
+    paths:
+      - ".github/workflows/export-tardis-bbo-trades.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aggregate-microstructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download public first-of-month samples and aggregate to 250ms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import csv, gzip, hashlib, json, math, os, subprocess
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          EXCHANGE = "binance-futures"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          DATES = ("2025/02/01", "2025/05/01", "2025/08/01", "2025/11/01")
+          BUCKET_US = 250_000
+          ROOT = Path("research_data/tardis_bbo_trades_250ms")
+          RAW = ROOT / "raw"
+          OUT = ROOT / "aggregated"
+          RAW.mkdir(parents=True, exist_ok=True)
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for block in iter(lambda: f.read(1 << 20), b""):
+                      h.update(block)
+              return h.hexdigest()
+
+          def download(kind: str, date: str, symbol: str) -> Path:
+              y, m, d = date.split("/")
+              path = RAW / f"{symbol}_{kind}_{y}{m}{d}.csv.gz"
+              url = f"https://datasets.tardis.dev/v1/{EXCHANGE}/{kind}/{date}/{symbol}.csv.gz"
+              subprocess.run([
+                  "curl", "-fL", "--retry", "4", "--retry-delay", "3",
+                  "--connect-timeout", "30", "--max-time", "1800",
+                  "-A", "smc-research-microstructure/1.0", "-o", str(path), url
+              ], check=True)
+              if path.stat().st_size < 40:
+                  raise RuntimeError(f"empty or invalid download: {url}")
+              return path
+
+          def parse_float(x: str) -> float:
+              try:
+                  return float(x)
+              except Exception:
+                  return math.nan
+
+          manifest = {
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "source": "Tardis public first-day-of-month Binance Futures normalized CSV",
+              "exchange": EXCHANGE,
+              "symbols": SYMBOLS,
+              "dates": DATES,
+              "bucket_us": BUCKET_US,
+              "files": [],
+          }
+
+          for symbol in SYMBOLS:
+              for date in DATES:
+                  y, m, d = date.split("/")
+                  trade_path = download("trades", date, symbol)
+                  quote_path = download("book_ticker", date, symbol)
+                  liq_path = download("liquidations", date, symbol)
+
+                  qmap: dict[int, list[float]] = {}
+                  with gzip.open(quote_path, "rt", newline="", encoding="utf-8") as f:
+                      reader = csv.DictReader(f)
+                      required = {"local_timestamp", "ask_amount", "ask_price", "bid_price", "bid_amount"}
+                      if not required.issubset(reader.fieldnames or []):
+                          raise RuntimeError(f"book_ticker schema mismatch: {reader.fieldnames}")
+                      for row in reader:
+                          ts = int(row["local_timestamp"])
+                          b = ts // BUCKET_US
+                          qmap[b] = [
+                              ts,
+                              parse_float(row["bid_price"]), parse_float(row["ask_price"]),
+                              parse_float(row["bid_amount"]), parse_float(row["ask_amount"]),
+                              qmap.get(b, [0, 0, 0, 0, 0, 0])[5] + 1,
+                          ]
+
+                  tmap = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0, 0, math.nan, 0])
+                  with gzip.open(trade_path, "rt", newline="", encoding="utf-8") as f:
+                      reader = csv.DictReader(f)
+                      required = {"local_timestamp", "side", "price", "amount"}
+                      if not required.issubset(reader.fieldnames or []):
+                          raise RuntimeError(f"trades schema mismatch: {reader.fieldnames}")
+                      for row in reader:
+                          ts = int(row["local_timestamp"]); b = ts // BUCKET_US
+                          px = float(row["price"]); qty = float(row["amount"]); notional = px * qty
+                          x = tmap[b]
+                          if row["side"] == "buy":
+                              x[0] += qty; x[2] += notional; x[4] += 1
+                          elif row["side"] == "sell":
+                              x[1] += qty; x[3] += notional; x[5] += 1
+                          x[6] = px; x[7] += 1
+
+                  lmap = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0, 0])
+                  with gzip.open(liq_path, "rt", newline="", encoding="utf-8") as f:
+                      reader = csv.DictReader(f)
+                      required = {"local_timestamp", "side", "price", "amount"}
+                      if not required.issubset(reader.fieldnames or []):
+                          raise RuntimeError(f"liquidations schema mismatch: {reader.fieldnames}")
+                      for row in reader:
+                          ts = int(row["local_timestamp"]); b = ts // BUCKET_US
+                          px = float(row["price"]); qty = float(row["amount"]); n = px * qty
+                          x = lmap[b]
+                          if row["side"] == "buy": x[0] += qty; x[2] += n; x[4] += 1
+                          elif row["side"] == "sell": x[1] += qty; x[3] += n; x[5] += 1
+
+                  keys = sorted(set(qmap) | set(tmap) | set(lmap))
+                  out_path = OUT / f"{symbol}_{y}{m}{d}_250ms.csv.gz"
+                  last_quote = None
+                  rows_written = 0
+                  with gzip.open(out_path, "wt", newline="", encoding="utf-8") as gz:
+                      w = csv.writer(gz)
+                      w.writerow([
+                          "bucket_start_us", "quote_local_timestamp", "bid_price", "ask_price",
+                          "bid_amount", "ask_amount", "quote_updates", "mid", "spread_bps",
+                          "top_imbalance", "microprice", "buy_qty", "sell_qty", "buy_notional",
+                          "sell_notional", "buy_count", "sell_count", "trade_count", "last_trade_price",
+                          "liq_buy_qty", "liq_sell_qty", "liq_buy_notional", "liq_sell_notional",
+                          "liq_buy_count", "liq_sell_count"
+                      ])
+                      for b in keys:
+                          if b in qmap:
+                              last_quote = qmap[b]
+                          if last_quote is None:
+                              continue
+                          _, bid, ask, bq, aq, qu = last_quote
+                          if not (bid > 0 and ask > bid and bq >= 0 and aq >= 0):
+                              continue
+                          mid = (bid + ask) / 2
+                          spread_bps = (ask - bid) / mid * 1e4
+                          den = bq + aq
+                          imb = (bq - aq) / den if den > 0 else 0.0
+                          micro = (ask * bq + bid * aq) / den if den > 0 else mid
+                          tr = tmap[b]; li = lmap[b]
+                          w.writerow([
+                              b * BUCKET_US, last_quote[0], bid, ask, bq, aq, qu, mid, spread_bps,
+                              imb, micro, *tr, *li
+                          ])
+                          rows_written += 1
+
+                  for kind, path in (("trades", trade_path), ("book_ticker", quote_path), ("liquidations", liq_path)):
+                      manifest["files"].append({
+                          "symbol": symbol, "date": date, "kind": kind,
+                          "path": path.as_posix(), "bytes": path.stat().st_size, "sha256": sha256(path)
+                      })
+                  manifest["files"].append({
+                      "symbol": symbol, "date": date, "kind": "aggregated_250ms",
+                      "path": out_path.as_posix(), "bytes": out_path.stat().st_size,
+                      "rows": rows_written, "sha256": sha256(out_path)
+                  })
+                  print(symbol, date, rows_written, out_path.stat().st_size, flush=True)
+                  trade_path.unlink(); quote_path.unlink(); liq_path.unlink()
+
+          (ROOT / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+      - name: Upload compact microstructure research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: tardis-binance-futures-bbo-trades-liq-250ms-2025q
+          path: research_data/tardis_bbo_trades_250ms
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
