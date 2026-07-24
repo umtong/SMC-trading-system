@@ -6,6 +6,10 @@ on:
     paths:
       - ".github/workflows/research-cm-liquidation-tick-data.yml"
       - "research_tools/cm_liquidation_tick/**"
+  push:
+    branches: [agent/cm-liquidation-tick-data-v3-20260724]
+    paths:
+      - ".github/workflows/research-cm-liquidation-tick-data.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,32 +34,44 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Verify canonical frozen event windows
+      - name: Reconstruct and verify canonical frozen event windows
         shell: bash
         run: |
-          cp research_tools/cm_liquidation_tick/windows_v2.csv.gz.b64 /tmp/merged_windows_2023.csv.gz.b64
-          shasum -a 256 /tmp/merged_windows_2023.csv.gz.b64 | tee /tmp/windows_payload_sha256.txt
+          set -euo pipefail
+          find research_tools/cm_liquidation_tick -maxdepth 1 -type f -name 'windows.part*' -print | LC_ALL=C sort > /tmp/chunk_order.txt
+          test "$(wc -l < /tmp/chunk_order.txt | tr -d ' ')" -gt 0
+          while IFS= read -r p; do cat "$p"; done < /tmp/chunk_order.txt > /tmp/windows.transmitted.csv.gz.b64
           python - <<'PY'
           import base64,csv,gzip,hashlib,io,json
           from pathlib import Path
-          path=Path('/tmp/merged_windows_2023.csv.gz.b64')
-          encoded=''.join(path.read_text().split())
-          packed=base64.b64decode(encoded,validate=True)
+          transmitted=Path('/tmp/windows.transmitted.csv.gz.b64')
+          encoded=''.join(transmitted.read_text(encoding='utf-8').split())
+          repaired=encoded[:3011]+'t'+encoded[3011:]
+          repaired=repaired[:8273]+'k'+repaired[8274:]
+          canonical=Path('/tmp/merged_windows_2023.csv.gz.b64')
+          canonical.write_text(repaired+'\n',encoding='utf-8')
+          packed=base64.b64decode(repaired,validate=True)
           raw=gzip.decompress(packed)
           rows=list(csv.DictReader(io.StringIO(raw.decode('utf-8'))))
-          assert len(rows)==2964, len(rows)
-          assert {'symbol','start_ms','end_ms'} <= set(rows[0])
-          for row in rows:
-              assert row['symbol'] in {'BTCUSDT','ETHUSDT'}
-              assert int(row['start_ms']) < int(row['end_ms'])
           evidence={
-              'rows':len(rows),
-              'payload_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
-              'gzip_sha256':hashlib.sha256(packed).hexdigest(),
-              'raw_csv_sha256':hashlib.sha256(raw).hexdigest(),
+            'rows':len(rows),
+            'fieldnames':list(rows[0]) if rows else [],
+            'chunk_count':len(Path('/tmp/chunk_order.txt').read_text().splitlines()),
+            'transmitted_payload_sha256':hashlib.sha256(transmitted.read_bytes()).hexdigest(),
+            'canonical_payload_sha256':hashlib.sha256(canonical.read_bytes()).hexdigest(),
+            'canonical_gzip_sha256':hashlib.sha256(packed).hexdigest(),
+            'canonical_raw_csv_sha256':hashlib.sha256(raw).hexdigest(),
+            'repair_contract':[{'operation':'insert','index':3011,'character':'t'},{'operation':'replace','index':8273,'from':'s','to':'k'}],
+            'orders_submitted':False,
           }
           Path('/tmp/windows_evidence.json').write_text(json.dumps(evidence,indent=2))
           print(json.dumps(evidence,indent=2))
+          assert evidence['canonical_payload_sha256']=='e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e'
+          assert evidence['canonical_gzip_sha256']=='f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4'
+          assert evidence['canonical_raw_csv_sha256']=='045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105'
+          assert len(rows)==2964
+          assert {'symbol','start_ms','end_ms'} <= set(rows[0])
+          assert all(r['symbol'] in {'BTCUSDT','ETHUSDT'} and int(r['start_ms'])<int(r['end_ms']) for r in rows)
           PY
       - name: Extract checksum-verified event windows
         run: |
@@ -64,7 +80,8 @@ jobs:
             --month "${{ matrix.month }}" \
             --windows-b64 /tmp/merged_windows_2023.csv.gz.b64 \
             --output-dir "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"
-          cp /tmp/windows_payload_sha256.txt /tmp/windows_evidence.json "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/"
+          cp /tmp/windows_evidence.json "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/"
+          shasum -a 256 /tmp/merged_windows_2023.csv.gz.b64 > "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/windows_payload_sha256.txt"
       - name: Inspect extraction
         run: |
           python -m json.tool "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}/manifest_${{ matrix.symbol }}_${{ matrix.month }}.json"
@@ -72,8 +89,8 @@ jobs:
           du -h "research_artifact/${{ matrix.symbol }}/${{ matrix.month }}"/*
       - uses: actions/upload-artifact@v4
         with:
-          name: cm-liquidation-tick-${{ matrix.symbol }}-${{ matrix.month }}
+          name: cm-liquidation-tick-v3-${{ matrix.symbol }}-${{ matrix.month }}
           path: research_artifact/${{ matrix.symbol }}/${{ matrix.month }}
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
           compression-level: 6
