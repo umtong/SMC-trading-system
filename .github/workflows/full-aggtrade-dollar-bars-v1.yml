@@ -27,12 +27,36 @@ jobs:
           cache: pip
       - name: Install research dependencies
         run: python -m pip install --upgrade pandas numpy pyarrow requests
+      - name: Restore and verify fast-equivalent state engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          source = Path('research/full_aggtrade_dollar_bars/build_fast.py.gz.b64')
+          encoded = ''.join(source.read_text().split())
+          if hashlib.sha256(encoded.encode()).hexdigest() != '1305a154575ccc83fa01140ef83f0d6e45ef910c69052ca91ee743efd2dde5f8':
+              raise SystemExit('encoded fast-builder digest mismatch')
+          compressed = base64.b64decode(encoded, validate=True)
+          if hashlib.sha256(compressed).hexdigest() != '1f1be94d9815448acdabf582a7160cdc17e484ee75aab75fe3affeb1b7418253':
+              raise SystemExit('gzip fast-builder digest mismatch')
+          raw = gzip.decompress(compressed)
+          if hashlib.sha256(raw).hexdigest() != '90feb1097a1dffe8f41a9306818a1020b74054b397f5b213bc4ba9f94ad4b845':
+              raise SystemExit('decoded fast-builder digest mismatch')
+          Path('/tmp/build_fast.py').write_bytes(raw)
+          PY
+          python -m py_compile /tmp/build_fast.py
+          python /tmp/build_fast.py --symbol TEST --year 1970 --output /tmp/self-test --self-test
       - name: Build checksum-verified dollar-volume bars
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output
-          python research/full_aggtrade_dollar_bars/build.py \
+          python /tmp/build_fast.py \
             --symbol "${{ matrix.symbol }}" \
             --year "${{ matrix.year }}" \
             --output output \
@@ -40,7 +64,7 @@ jobs:
       - name: Upload dollar-volume bars
         uses: actions/upload-artifact@v4
         with:
-          name: full-dollar-bars-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          name: full-dollar-bars-fast-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
           path: output/**
-          retention-days: 7
+          retention-days: 14
           if-no-files-found: error
