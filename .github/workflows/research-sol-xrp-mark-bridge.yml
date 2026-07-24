@@ -48,11 +48,12 @@ jobs:
                   with zipfile.ZipFile(io.BytesIO(payload)) as zf:
                       names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
                       if len(names)!=1:raise RuntimeError((name,names))
-                      raw=pd.read_csv(zf.open(names[0]),header=None)
-                  if str(raw.iloc[0,0]).lower() in {'open_time','open time'}:
-                      raw=pd.read_csv(io.BytesIO(zf.read(names[0])))
+                      member=zf.read(names[0])
+                  probe=pd.read_csv(io.BytesIO(member),header=None,nrows=1)
+                  if str(probe.iloc[0,0]).strip().lower() in {'open_time','open time'}:
+                      raw=pd.read_csv(io.BytesIO(member))
                   else:
-                      raw.columns=columns[:len(raw.columns)]
+                      raw=pd.read_csv(io.BytesIO(member),header=None,names=columns)
                   raw.columns=[str(c).strip().lower().replace(' ','_') for c in raw.columns]
                   frames.append(raw[['open_time','open','high','low','close']].copy())
                   records.append({'symbol':symbol,'month':month,'status':'ok','url':url,'published_sha256':expected,'observed_sha256':observed,'rows':len(raw)})
