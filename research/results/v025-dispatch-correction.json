@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "corrected_dispatcher_commit": "dfd6e32f650955e98293b227955b32dcc74ceab0",
+  "dispatcher_target": "v025-independent-family-orchestrator-v2.yml",
+  "deprecated_families_removed": ["v025b2", "v025c2"],
+  "active_families": ["v025a2", "v025b3", "v025c3"],
+  "candidate_pnl_observed_by_correction": false,
+  "terminal_holdout_opened": false,
+  "production_enabled": false
+}

@@ -1,0 +1,30 @@
+name: Dispatch locked v0.25 independent-family orchestrator v2
+
+on:
+  pull_request:
+    paths:
+      - 'research/v025a2/v025a2_locked_runner.tar.xz'
+      - 'research/v025b3/**'
+      - 'research/v025c3/**'
+      - '.github/workflows/v025-independent-family-orchestrator-v2.yml'
+      - '.github/workflows/v025a2-dispatch.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    steps:
+      - name: Dispatch exact locked independent-family orchestrator v2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run v025-independent-family-orchestrator-v2.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref research/v025a2-eventtime-20260723

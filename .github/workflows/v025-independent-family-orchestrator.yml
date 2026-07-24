@@ -1,0 +1,158 @@
+name: Orchestrate locked v0.25 independent families
+
+on:
+  push:
+    branches:
+      - research/v025a2-eventtime-20260723
+    paths:
+      - '.github/workflows/v025-independent-family-orchestrator.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: v025-independent-family-orchestrator-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    env:
+      BRANCH: research/v025a2-eventtime-20260723
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch and monitor independent frozen studies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p orchestration-evidence
+
+          read_branch_json() {
+            local path="$1"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${BRANCH}" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null
+          }
+
+          json_ready() {
+            local path="$1" expression="$2"
+            local value
+            value="$(read_branch_json "$path" || true)"
+            [ -n "$value" ] && printf '%s' "$value" | jq -e "$expression" >/dev/null 2>&1
+          }
+
+          latest_dispatch_id() {
+            local workflow="$1"
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$BRANCH" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0'
+          }
+
+          dispatch_workflow() {
+            local workflow="$1"
+            local before after
+            before="$(latest_dispatch_id "$workflow")"
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+            for _ in $(seq 1 60); do
+              sleep 5
+              after="$(latest_dispatch_id "$workflow")"
+              if [ "$after" != "0" ] && [ "$after" != "$before" ]; then
+                printf '%s' "$after"
+                return 0
+              fi
+            done
+            echo "Unable to identify new run for ${workflow}" >&2
+            return 1
+          }
+
+          wait_run() {
+            local id="$1" label="$2"
+            local status conclusion
+            for _ in $(seq 1 720); do
+              status="$(gh run view "$id" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
+              if [ "$status" = 'completed' ]; then
+                conclusion="$(gh run view "$id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+                printf '%s\t%s\t%s\n' "$label" "$id" "$conclusion" | tee -a orchestration-evidence/runs.tsv
+                return 0
+              fi
+              sleep 30
+            done
+            echo "Timed out waiting for ${label} run ${id}" >&2
+            return 1
+          }
+
+          wait_json() {
+            local path="$1" expression="$2" label="$3"
+            for _ in $(seq 1 120); do
+              if json_ready "$path" "$expression"; then
+                read_branch_json "$path" > "orchestration-evidence/${label}.json"
+                return 0
+              fi
+              sleep 15
+            done
+            echo "Missing or invalid ${path}" >&2
+            return 1
+          }
+
+          scout_path='research/results/v025a2-context-scout/status.json'
+          if ! json_ready "$scout_path" '.context_summary_present == true and .event_size_summary_present == true and .candidate_pnl_observed == false and .terminal_holdout_opened == false'; then
+            scout_id="$(dispatch_workflow v025a2-context-scout-arm.yml)"
+            wait_run "$scout_id" 'A2-context-scout'
+          fi
+          wait_json "$scout_path" '.context_summary_present == true and .event_size_summary_present == true and .candidate_pnl_observed == false and .terminal_holdout_opened == false' 'A2-context-scout-status'
+
+          a2_id="$(dispatch_workflow v025a2-evaluate.yml)"
+          b2_id="$(dispatch_workflow v025b2-evaluate.yml)"
+
+          wait_run "$a2_id" 'A2-liquidation-exhaustion'
+          wait_json 'research/results/v025a2-evaluation/status.json' '.scientific_run_completed == true and .terminal_holdout_opened == false and .production_enabled == false' 'A2-evaluation-status'
+
+          c2_id="$(dispatch_workflow v025c2-evaluate.yml)"
+
+          wait_run "$b2_id" 'B2-impact-efficiency-collapse'
+          wait_json 'research/results/v025b2-evaluation/status.json' '.scientific_run_completed == true and .A2_performance_consumed == false and .terminal_holdout_opened == false' 'B2-evaluation-status'
+
+          wait_run "$c2_id" 'C2-initiative-continuation'
+          wait_json 'research/results/v025c2-evaluation/status.json' '.scientific_run_completed == true and .a2_target_value_consumed == false and .terminal_holdout_opened == false' 'C2-evaluation-status'
+
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          evidence = Path('orchestration-evidence')
+          statuses = {}
+          for name in ('A2-evaluation-status', 'B2-evaluation-status', 'C2-evaluation-status'):
+              statuses[name] = json.loads((evidence / f'{name}.json').read_text())
+          payload = {
+              'schema_version': 1,
+              'families': statuses,
+              'joint_candidate_selection': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+              'recorded_at_utc': datetime.now(timezone.utc).isoformat(),
+          }
+          Path('research/results/v025-independent-families').mkdir(parents=True, exist_ok=True)
+          Path('research/results/v025-independent-families/status.json').write_text(json.dumps(payload, sort_keys=True, indent=2) + '\n')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/results/v025-independent-families/status.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record independent v0.25 family orchestration'
+            git push origin "HEAD:${BRANCH}"
+          fi
+
+      - name: Upload orchestration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v025-independent-family-orchestration-${{ github.run_id }}
+          path: orchestration-evidence
+          if-no-files-found: warn
+          retention-days: 30

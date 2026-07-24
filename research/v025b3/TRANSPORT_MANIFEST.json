@@ -1,0 +1,33 @@
+{
+  "family": "b3",
+  "parts": [
+    {
+      "chars": 4096,
+      "name": "part-000.b64",
+      "sha256": "17db001b4fbaf88161cfed1a0038b3414534f6dccc86ad640a56507ca53415cb"
+    },
+    {
+      "chars": 4096,
+      "name": "part-001.b64",
+      "sha256": "1c84d94cbca443ca3cf3e5672a20402ffc64859f72a1002271d5426a06b6833c"
+    },
+    {
+      "chars": 4096,
+      "name": "part-002.b64",
+      "sha256": "55db1900eafc222d1da8ab9b97746699e56fb38ee04ebda06b42efa361ef4e26"
+    },
+    {
+      "chars": 4096,
+      "name": "part-003.b64",
+      "sha256": "898ba4f1992a1998387b825aa1a4986fdeaa056482bea4f58a8c2a09135c20f5"
+    },
+    {
+      "chars": 2344,
+      "name": "part-004.b64",
+      "sha256": "7bf173408c0caa377134cfbd85048c51d894d4a45ce9950efb5eef29d85e4bda"
+    }
+  ],
+  "source_chars": 18728,
+  "source_sha256": "447473cd20f2115524ea5b9bb84a5f7c3ec56c58366d24a57585aa59dda61f4e",
+  "archive_sha256": "3ea8f5170cccb0799af0aafc6b43952e2779f75ad483b898a9134dab7768511d"
+}

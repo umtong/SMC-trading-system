@@ -1,0 +1,202 @@
+name: Orchestrate locked v0.25 independent families v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: v025-independent-family-orchestrator-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-slim
+    timeout-minutes: 720
+    env:
+      BRANCH: research/v025a2-eventtime-20260723
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch and verify independent frozen studies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p orchestration-evidence
+          printf 'stage\trun_id\tconclusion\n' > orchestration-evidence/runs.tsv
+
+          read_branch_json() {
+            local path="$1"
+            gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${BRANCH}" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null
+          }
+
+          json_ready() {
+            local path="$1" expression="$2"
+            local payload
+            payload="$(read_branch_json "$path" || true)"
+            [ -n "$payload" ] && printf '%s' "$payload" | jq -e "$expression" >/dev/null 2>&1
+          }
+
+          save_branch_json() {
+            local path="$1" name="$2"
+            read_branch_json "$path" > "orchestration-evidence/${name}.json"
+          }
+
+          latest_active_run() {
+            local workflow="$1"
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "$workflow" \
+              --branch "$BRANCH" \
+              --limit 30 \
+              --json databaseId,status,createdAt \
+              --jq '[.[] | select(.status != "completed")] | sort_by(.createdAt) | reverse | .[0].databaseId // 0'
+          }
+
+          latest_dispatch_id() {
+            local workflow="$1"
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "$workflow" \
+              --branch "$BRANCH" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // 0'
+          }
+
+          dispatch_workflow() {
+            local workflow="$1"
+            local before after
+            before="$(latest_dispatch_id "$workflow")"
+            gh workflow run "$workflow" \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$BRANCH"
+            for _ in $(seq 1 120); do
+              sleep 5
+              after="$(latest_dispatch_id "$workflow")"
+              if [ "$after" != "0" ] && [ "$after" != "$before" ]; then
+                printf '%s' "$after"
+                return 0
+              fi
+            done
+            echo "Unable to identify dispatched run for ${workflow}" >&2
+            return 1
+          }
+
+          wait_run() {
+            local id="$1" label="$2"
+            local status conclusion
+            for _ in $(seq 1 1320); do
+              status="$(gh run view "$id" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
+              if [ "$status" = 'completed' ]; then
+                conclusion="$(gh run view "$id" --repo "$GITHUB_REPOSITORY" --json conclusion --jq '.conclusion')"
+                printf '%s\t%s\t%s\n' "$label" "$id" "$conclusion" | tee -a orchestration-evidence/runs.tsv
+                gh run view "$id" --repo "$GITHUB_REPOSITORY" --json databaseId,name,status,conclusion,event,headBranch,headSha,url > "orchestration-evidence/${label}-run.json"
+                return 0
+              fi
+              sleep 30
+            done
+            echo "Timed out waiting for ${label} run ${id}" >&2
+            return 1
+          }
+
+          wait_json() {
+            local path="$1" expression="$2" name="$3"
+            for _ in $(seq 1 160); do
+              if json_ready "$path" "$expression"; then
+                save_branch_json "$path" "$name"
+                return 0
+              fi
+              sleep 15
+            done
+            echo "Missing or invalid result ${path}" >&2
+            return 1
+          }
+
+          ensure_stage() {
+            local workflow="$1" path="$2" expression="$3" label="$4"
+            local run_id
+            if json_ready "$path" "$expression"; then
+              save_branch_json "$path" "${label}-status"
+              printf '%s\t%s\t%s\n' "$label" 'existing' 'verified' | tee -a orchestration-evidence/runs.tsv
+              return 0
+            fi
+
+            for attempt in 1 2; do
+              run_id="$(latest_active_run "$workflow")"
+              if [ "$run_id" = '0' ]; then
+                run_id="$(dispatch_workflow "$workflow")"
+              fi
+              wait_run "$run_id" "${label}-attempt-${attempt}"
+              if wait_json "$path" "$expression" "${label}-status"; then
+                return 0
+              fi
+            done
+            echo "Stage ${label} did not produce a valid locked result" >&2
+            return 1
+          }
+
+          ensure_stage \
+            'v025a2-context-scout-arm.yml' \
+            'research/results/v025a2-context-scout/status.json' \
+            '.context_summary_present == true and .event_size_summary_present == true and .candidate_pnl_observed == false and .terminal_holdout_opened == false and .production_enabled == false' \
+            'A2-context-scout'
+
+          ensure_stage \
+            'v025a2-evaluate-v2.yml' \
+            'research/results/v025a2-evaluation-v2/status.json' \
+            '.scientific_run_completed == true and .terminal_holdout_opened == false and .production_enabled == false' \
+            'A2-liquidation-exhaustion'
+
+          ensure_stage \
+            'v025b3-evaluate.yml' \
+            'research/results/v025b3-evaluation/status.json' \
+            '.scientific_run_completed == true and .A2_performance_consumed == false and .terminal_holdout_opened == false and .production_enabled == false' \
+            'B3-impact-efficiency-collapse'
+
+          ensure_stage \
+            'v025c3-evaluate.yml' \
+            'research/results/v025c3-evaluation/status.json' \
+            '.scientific_run_completed == true and .A2_performance_consumed == false and .terminal_holdout_opened == false and .production_enabled == false' \
+            'C3-initiative-continuation'
+
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          evidence = Path('orchestration-evidence')
+          families = {}
+          for name in (
+              'A2-liquidation-exhaustion',
+              'B3-impact-efficiency-collapse',
+              'C3-initiative-continuation',
+          ):
+              families[name] = json.loads((evidence / f'{name}-status.json').read_text())
+          payload = {
+              'schema_version': 2,
+              'families': families,
+              'joint_candidate_selection': False,
+              'cross_family_performance_consumed': False,
+              'terminal_holdout_opened': False,
+              'production_enabled': False,
+              'recorded_at_utc': datetime.now(timezone.utc).isoformat(),
+          }
+          (evidence / 'independent-family-status.json').write_text(
+              json.dumps(payload, sort_keys=True, indent=2) + '\n'
+          )
+          PY
+
+      - name: Upload orchestration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v025-independent-family-orchestration-v2-${{ github.run_id }}
+          path: orchestration-evidence
+          if-no-files-found: warn
+          retention-days: 30
