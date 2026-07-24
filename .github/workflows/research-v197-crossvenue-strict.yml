@@ -1,0 +1,84 @@
+name: V1.97 Strict Cross-Venue Lead-Lag
+
+on:
+  push:
+    branches: [research/v197-crossvenue-strict-20260724]
+    paths:
+      - .github/workflows/research-v197-crossvenue-strict.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/research-v197-crossvenue-strict.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: v197-crossvenue-strict-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aggregate-recovery:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install locked dependencies
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - name: Download the already completed 24 frozen panels without filename merging
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: umtong/SMC-trading-system
+          run-id: 30092496546
+          pattern: v197-day-*
+          path: v197-input
+          merge-multiple: false
+      - name: Materialize the same syntax-only repair used to produce the panels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v197-runtime
+          cp research/v196_crossvenue.py v197-runtime/v196_crossvenue.py
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('research/v197_crossvenue_strict.py').read_text(encoding='utf-8')
+          old="day_frame.groupby('day', sort=True).return.sum()"
+          new="day_frame.groupby('day', sort=True)['return'].sum()"
+          if src.count(old) != 1:
+              raise SystemExit(f'expected exactly one repair target, found {src.count(old)}')
+          Path('v197-runtime/v197_crossvenue_strict.py').write_text(src.replace(old,new),encoding='utf-8')
+          PY
+          shasum -a 256 research/v197_crossvenue_strict.py v197-runtime/v197_crossvenue_strict.py | tee v197-runtime/SHA256SUMS.txt
+          python -m py_compile v197-runtime/v196_crossvenue.py v197-runtime/v197_crossvenue_strict.py
+      - name: Verify all panels and evaluator provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find v197-input -name '*_100ms_strict.csv.gz' -type f | wc -l | tr -d ' ')" = 24
+          expected=$(tail -n 1 v197-runtime/SHA256SUMS.txt | awk '{print $1}')
+          found=0
+          while IFS= read -r f; do
+            found=$((found+1))
+            test "$(tail -n 1 "$f" | awk '{print $1}')" = "$expected"
+          done < <(find v197-input -name EVALUATOR_SHA256SUMS.txt -type f -print)
+          test "$found" -eq 24
+      - name: Run frozen 2022 development and 2023 validation screen
+        run: python v197-runtime/v197_crossvenue_strict.py aggregate --input v197-input --out v197-results
+      - name: Inspect result
+        run: |
+          python -m json.tool v197-results/summary_100ms_strict.json
+          shasum -a 256 v197-results/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v197-crossvenue-strict-recovered-results-${{ github.run_id }}
+          path: v197-results
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
