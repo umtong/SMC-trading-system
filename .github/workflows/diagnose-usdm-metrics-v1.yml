@@ -1,0 +1,69 @@
+name: Diagnose ETH SOL USD-M Metrics v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/diagnose-usdm-metrics-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe representative archives
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p metric-diagnostics
+          python - <<'PY' 2>&1 | tee metric-diagnostics/probe.log
+          import io, zipfile
+          import pandas as pd
+          import requests
+
+          samples = [
+              ("ETHUSDT", "2022-01-01"),
+              ("ETHUSDT", "2023-01-01"),
+              ("ETHUSDT", "2024-01-01"),
+              ("ETHUSDT", "2025-01-01"),
+              ("SOLUSDT", "2022-01-01"),
+              ("SOLUSDT", "2023-01-01"),
+              ("SOLUSDT", "2024-01-01"),
+              ("SOLUSDT", "2025-01-01"),
+          ]
+          session = requests.Session()
+          for symbol, stamp in samples:
+              url = f"https://data.binance.vision/data/futures/um/daily/metrics/{symbol}/{symbol}-metrics-{stamp}.zip"
+              print("\n===", symbol, stamp, "===")
+              for target in (url + ".CHECKSUM", url):
+                  r = session.get(target, timeout=(30, 120))
+                  print(target.rsplit('/',1)[-1], r.status_code, r.headers.get('content-type'), r.headers.get('content-length'))
+                  if target.endswith('.CHECKSUM') and r.ok:
+                      print('checksum', repr(r.text[:160]))
+                  if target.endswith('.zip') and r.ok:
+                      print('bytes', len(r.content), 'prefix', r.content[:8])
+                      try:
+                          with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+                              print('zip names', zf.namelist())
+                              raw = zf.read(zf.namelist()[0])
+                          print('raw head', raw[:500])
+                          df = pd.read_csv(io.BytesIO(raw))
+                          print('columns', list(df.columns))
+                          print(df.head(3).to_string(index=False))
+                          print(df.dtypes.to_string())
+                      except Exception as exc:
+                          print('PARSE_ERROR', type(exc).__name__, repr(exc))
+          PY
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: usdm-metrics-diagnostics-${{ github.run_id }}
+          path: metric-diagnostics/**
+          retention-days: 7
+          if-no-files-found: error
