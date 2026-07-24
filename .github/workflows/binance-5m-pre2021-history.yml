@@ -1,0 +1,78 @@
+name: Build Official Binance Pre-2021 5m History
+
+on:
+  push:
+    branches:
+      - agent/binance-5m-research-data
+    paths:
+      - scripts/download_official_binance_5m.py
+      - .github/workflows/binance-5m-pre2021-history.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_official_binance_5m.py
+      - .github/workflows/binance-5m-pre2021-history.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  btc-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install "pandas>=2.2" "pyarrow>=17"
+      - name: Download BTC 5m history
+        run: |
+          python scripts/download_official_binance_5m.py \
+            --output research_data/binance_pre2021_5m/BTCUSDT \
+            --symbols BTCUSDT \
+            --interval 5m \
+            --monthly-start 2020-01 \
+            --monthly-end 2020-12 \
+            --no-daily \
+            --datasets klines \
+            --no-funding \
+            --workers 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-pre2021-5m-BTCUSDT-${{ github.run_id }}
+          path: research_data/binance_pre2021_5m/BTCUSDT
+          if-no-files-found: error
+          retention-days: 7
+
+  eth-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install "pandas>=2.2" "pyarrow>=17"
+      - name: Download ETH 5m history
+        run: |
+          python scripts/download_official_binance_5m.py \
+            --output research_data/binance_pre2021_5m/ETHUSDT \
+            --symbols ETHUSDT \
+            --interval 5m \
+            --monthly-start 2020-01 \
+            --monthly-end 2020-12 \
+            --no-daily \
+            --datasets klines \
+            --no-funding \
+            --workers 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-pre2021-5m-ETHUSDT-${{ github.run_id }}
+          path: research_data/binance_pre2021_5m/ETHUSDT
+          if-no-files-found: error
+          retention-days: 7

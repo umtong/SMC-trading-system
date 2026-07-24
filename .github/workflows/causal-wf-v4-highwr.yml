@@ -1,0 +1,107 @@
+name: Causal High-Win-Rate Walk-Forward V4
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/causal-wf-v4-highwr.yml
+      - scripts/patch_causal_wf_v4.py
+      - scripts/patch_causal_funding_alignment.py
+      - scripts/causal_wf_v3_payload/**
+      - scripts/download_official_binance_5m.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  causal-high-win-rate-v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=2.0" "pandas>=2.2" "pyarrow>=17" "numba>=0.61" "lightgbm>=4.5" "scikit-learn>=1.5"
+
+      - name: Materialize and verify V4 research script
+        run: |
+          cat scripts/causal_wf_v3_payload/part*.txt > /tmp/causal_wf_v3.b64
+          test "$(wc -c < /tmp/causal_wf_v3.b64)" -eq 16484
+          python - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+
+          payload = Path('/tmp/causal_wf_v3.b64').read_text(encoding='ascii')
+          target = Path('scripts/research_causal_wf_v4.py')
+          target.write_bytes(gzip.decompress(base64.b64decode(payload, validate=True)))
+          PY
+          test "$(wc -c < scripts/research_causal_wf_v4.py)" -eq 47423
+          python scripts/patch_causal_wf_v4.py scripts/research_causal_wf_v4.py
+          test "$(wc -c < scripts/research_causal_wf_v4.py)" -eq 50682
+          python scripts/patch_causal_funding_alignment.py scripts/research_causal_wf_v4.py
+          python -m py_compile scripts/research_causal_wf_v4.py
+
+      - name: Build 2020 causal warm-up history
+        run: |
+          python scripts/download_official_binance_5m.py \
+            --output research_data/binance_2020_5m \
+            --symbols BTCUSDT ETHUSDT \
+            --interval 5m \
+            --monthly-start 2020-01 \
+            --monthly-end 2020-12 \
+            --no-daily \
+            --datasets klines \
+            --no-funding \
+            --workers 6
+
+      - name: Build 2021-2026 trade, mark and funding history
+        run: |
+          python scripts/download_official_binance_5m.py \
+            --output research_data/binance_2021_2026_5m \
+            --symbols BTCUSDT ETHUSDT \
+            --interval 5m \
+            --monthly-start 2021-01 \
+            --monthly-end 2026-06 \
+            --no-daily \
+            --datasets klines markPriceKlines \
+            --workers 8
+
+      - name: Run monthly retraining and five-month causal evaluation
+        run: |
+          python scripts/research_causal_wf_v4.py \
+            --data-dir research_data/binance_2020_5m \
+            --data-dir research_data/binance_2021_2026_5m \
+            --output research_results/causal_wf_v4_highwr
+
+      - name: Upload V4 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causal-wf-v4-highwr-reports-${{ github.run_id }}
+          path: |
+            research_results/causal_wf_v4_highwr/*.json
+            research_results/causal_wf_v4_highwr/*.csv
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload V4 ledgers
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: causal-wf-v4-highwr-ledgers-${{ github.run_id }}
+          path: research_results/causal_wf_v4_highwr/*.parquet
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
