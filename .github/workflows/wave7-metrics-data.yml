@@ -7,6 +7,12 @@ on:
     paths:
       - scripts/download_binance_metrics.py
       - .github/workflows/wave7-metrics-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_binance_metrics.py
+      - .github/workflows/wave7-metrics-data.yml
   workflow_dispatch:
 
 permissions:
