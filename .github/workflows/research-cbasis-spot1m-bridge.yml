@@ -1,0 +1,96 @@
+name: Research C-Basis Official Spot 1m Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-cbasis-spot1m-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install fixed dependencies
+        run: python -m pip install pandas==2.2.3 requests==2.32.3
+      - name: Download and verify official spot minute closes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, re, time, zipfile
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT=Path('research_artifact');OUT.mkdir(exist_ok=True)
+          CACHE=Path('/tmp/cbasis-spot1m');CACHE.mkdir(exist_ok=True)
+          months=pd.period_range('2023-05','2025-12',freq='M').astype(str)
+          session=requests.Session(); records=[]
+          roots=(
+              'https://data.binance.vision/data/spot/monthly/klines',
+              'https://s3-ap-northeast-1.amazonaws.com/data.binance.vision/data/spot/monthly/klines',
+          )
+          def fetch(relative:str)->tuple[bytes,str]:
+              errors=[]
+              for root in roots:
+                  url=f'{root}/{relative}'
+                  for attempt in range(4):
+                      try:
+                          r=session.get(url,timeout=180,headers={'User-Agent':'SMC-ICT-research/1.0'})
+                          if r.status_code==200 and r.content:return r.content,url
+                          errors.append(f'{url}:HTTP{r.status_code}')
+                          if r.status_code in (403,404):break
+                      except Exception as exc:errors.append(f'{url}:{type(exc).__name__}:{exc}')
+                      time.sleep(2**attempt)
+              raise RuntimeError('; '.join(errors))
+          for symbol in ('BTCUSDT','ETHUSDT'):
+              frames=[]
+              for month in months:
+                  name=f'{symbol}-1m-{month}.zip';relative=f'{symbol}/1m/{name}'
+                  cp,cpurl=fetch(relative+'.CHECKSUM');expected=re.search(rb'([0-9a-fA-F]{64})',cp).group(1).decode().lower()
+                  payload,url=fetch(relative);observed=hashlib.sha256(payload).hexdigest()
+                  if observed!=expected:raise RuntimeError((name,expected,observed))
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                      names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+                      if len(names)!=1:raise RuntimeError((name,names))
+                      raw=zf.read(names[0])
+                  first=raw.splitlines()[0].decode('utf-8-sig').split(',')[0].strip()
+                  d=pd.read_csv(io.BytesIO(raw),header=0 if not first.lstrip('-').isdigit() else None)
+                  if not first.lstrip('-').isdigit():
+                      cols=[str(c).strip().lower().replace(' ','_') for c in d.columns]
+                      d.columns=cols
+                      tc='open_time' if 'open_time' in cols else cols[0]
+                      cc='close' if 'close' in cols else cols[4]
+                      x=d[[tc,cc]].copy();x.columns=['open_time','close']
+                  else:
+                      x=d.iloc[:,[0,4]].copy();x.columns=['open_time','close']
+                  frames.append(x)
+                  records.append({'symbol':symbol,'month':month,'url':url,'checksum_url':cpurl,'published_sha256':expected,'observed_sha256':observed,'rows':len(x)})
+              out=pd.concat(frames,ignore_index=True)
+              t=pd.to_numeric(out.open_time,errors='raise').astype('int64');t=t.where(t<10**14,t//1000)
+              out['open_time']=t;out['close']=pd.to_numeric(out.close,errors='raise').astype(float)
+              out=out.sort_values('open_time').drop_duplicates('open_time',keep='last').reset_index(drop=True)
+              diff=out.open_time.diff().dropna();gaps=int((diff!=60000).sum())
+              if gaps:raise RuntimeError((symbol,'gaps',gaps))
+              path=OUT/f'{symbol}_spot_close_1m_2023-05_2025-12.csv.gz';out.to_csv(path,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+              records.append({'symbol':symbol,'status':'output','rows':len(out),'first_ms':int(out.open_time.min()),'last_ms':int(out.open_time.max()),'gaps':gaps,'output':path.name,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'bytes':path.stat().st_size})
+          manifest={'source':'official Binance Vision spot monthly 1m klines','period':['2023-05','2025-12'],'records':records,'credentials':False,'orders':False}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps({'outputs':[r for r in records if r.get('status')=='output']},indent=2))
+          PY
+      - name: Upload checksum-verified compact spot data
+        uses: actions/upload-artifact@v4
+        with:
+          name: cbasis-official-spot1m-${{ github.run_id }}
+          path: research_artifact
+          if-no-files-found: error
+          retention-days: 14
