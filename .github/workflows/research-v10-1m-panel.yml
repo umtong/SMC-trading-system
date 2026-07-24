@@ -1,53 +1,18 @@
-name: Research CI
+name: V0.10 Multi-Year One-Minute Panel
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: v10-1m-panel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install
-        run: python -m pip install -e ".[dev]"
-
-      - name: Run strategy tests
-        id: pytest
-        shell: bash
-        run: |
-          set +e
-          python -m pytest tests/easychart_v0 -q > pytest.log 2>&1
-          status=$?
-          cat pytest.log
-          exit "$status"
-
-      - name: Upload pytest log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-log-${{ github.run_id }}
-          path: pytest.log
-          if-no-files-found: error
-          retention-days: 7
-
-  v10-taker-flow:
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v10-taker-flow-data'
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -108,18 +73,18 @@ jobs:
       - name: Install
         run: python -m pip install -e ".[dev]"
 
-      - name: Download checksum-verified taker-flow shard
+      - name: Download and verify one-minute shard
         shell: bash
         run: |
           set -o pipefail
-          python -m scripts.download_binance_um_1m_flow \
-            --symbol '${{ matrix.symbol }}' \
+          python -m scripts.download_binance_um_1m_range \
+            --symbols '${{ matrix.symbol }}' \
             --start '${{ matrix.start }}' \
             --end '${{ matrix.end }}' \
-            --output-dir 'data/v10_1m_flow/${{ matrix.shard }}' \
-            2>&1 | tee 'v10-flow-${{ matrix.shard }}.log'
+            --output-dir 'data/v10_1m_panel/${{ matrix.shard }}' \
+            2>&1 | tee 'v10-1m-panel-${{ matrix.shard }}.log'
 
-      - name: Validate output hash and row count
+      - name: Validate immutable output
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}
@@ -132,30 +97,32 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          root = Path('data/v10_1m_flow') / os.environ['SHARD']
-          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
-          path = root / f"{os.environ['SYMBOL']}_1m_flow.csv.gz"
+          root = Path('data/v10_1m_panel') / os.environ['SHARD']
+          manifest_path = root / 'v10_1m_data_manifest.json'
+          data_path = root / f"{os.environ['SYMBOL']}_1m.csv.gz"
+          if not manifest_path.is_file() or not data_path.is_file():
+              raise SystemExit('missing one-minute shard output')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
           expected = int(
               (pd.Timestamp(os.environ['END'], tz='UTC') - pd.Timestamp(os.environ['START'], tz='UTC'))
               / pd.Timedelta(minutes=1)
           )
-          if manifest['output']['rows'] != expected:
-              raise SystemExit(f"rows={manifest['output']['rows']} expected={expected}")
-          if hashlib.sha256(path.read_bytes()).hexdigest() != manifest['output']['sha256']:
+          output = next(row for row in manifest['outputs'] if row['symbol'] == os.environ['SYMBOL'])
+          if output['rows'] != expected:
+              raise SystemExit(f"rows={output['rows']} expected={expected}")
+          actual = hashlib.sha256(data_path.read_bytes()).hexdigest()
+          if actual != output['sha256']:
               raise SystemExit('normalized SHA-256 mismatch')
-          required = {'quote_volume','trade_count','taker_buy_quote','taker_sell_quote','signed_quote_volume','imbalance_fraction'}
-          if not required.issubset(set(manifest['output']['columns'])):
-              raise SystemExit('missing taker-flow columns')
-          print(os.environ['SHARD'], manifest['output'])
+          print(os.environ['SHARD'], output)
           PY
 
-      - name: Upload immutable taker-flow shard
+      - name: Upload immutable one-minute shard
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v10-1m-flow-${{ matrix.shard }}-${{ github.run_id }}
+          name: v10-1m-panel-${{ matrix.shard }}-${{ github.run_id }}
           path: |
-            data/v10_1m_flow/${{ matrix.shard }}
-            v10-flow-${{ matrix.shard }}.log
+            data/v10_1m_panel/${{ matrix.shard }}
+            v10-1m-panel-${{ matrix.shard }}.log
           if-no-files-found: error
           retention-days: 14
