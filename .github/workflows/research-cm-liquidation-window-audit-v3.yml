@@ -23,12 +23,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Decode and audit existing frozen payload
+      - name: Reconstruct and audit original frozen chunks
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p research_artifact/liquidation-window-audit
-          cp research_tools/cm_liquidation_tick/windows_v2.csv.gz.b64 research_artifact/liquidation-window-audit/windows.csv.gz.b64
+          find research_tools/cm_liquidation_tick -maxdepth 1 -type f -name 'windows.part*' -print | LC_ALL=C sort > research_artifact/liquidation-window-audit/chunk_order.txt
+          test "$(wc -l < research_artifact/liquidation-window-audit/chunk_order.txt | tr -d ' ')" -gt 0
+          while IFS= read -r p; do cat "$p"; done < research_artifact/liquidation-window-audit/chunk_order.txt > research_artifact/liquidation-window-audit/windows.csv.gz.b64
+          shasum -a 256 $(cat research_artifact/liquidation-window-audit/chunk_order.txt) > research_artifact/liquidation-window-audit/chunk_sha256.txt
           python - <<'PY' | tee research_artifact/liquidation-window-audit/audit.log
           import base64,csv,gzip,hashlib,io,json
           from pathlib import Path
@@ -40,6 +43,7 @@ jobs:
           evidence={
             'rows':len(rows),
             'fieldnames':list(rows[0]) if rows else [],
+            'chunk_count':len(Path('research_artifact/liquidation-window-audit/chunk_order.txt').read_text().splitlines()),
             'payload_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
             'normalized_payload_sha256':hashlib.sha256((encoded+'\n').encode()).hexdigest(),
             'gzip_sha256':hashlib.sha256(packed).hexdigest(),
