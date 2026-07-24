@@ -1,0 +1,80 @@
+100, 102, 99.8, 101.5)])
++    funding = empty_funding()
++    # Negative funding would pay a newly opened long, but minute data cannot prove
++    # the order existed before the exact snapshot.  Do not book the credit.
++    funding["BTCUSDT"] = pd.DataFrame({"timestamp": [btc.index[1]], "funding_rate": [-0.01]})
++    result = simulate(candidate(), pd.DataFrame([signal(1, 99.0)]), {"BTCUSDT": btc, "ETHUSDT": btc.copy()}, funding, btc.index[0], btc.index[-1] + pd.Timedelta(minutes=1), zero_cost())
++    assert result["ledger"].iloc[0]["funding_pnl"] == pytest.approx(0.0)
++
++
+ def test_end_of_sample_is_mtm_not_forced_exit() -> None:
+     btc = bars_for([(100, 100, 100, 100), (100, 100.2, 99.8, 100), (101, 101.2, 100.8, 101)])
+     eth = btc.copy()
+@@ -153,3 +193,39 @@ def test_json_writer_converts_nan_to_null(tmp_path: Path) -> None:
+     write_json(path, {"x": float("nan"), "y": np.float64(1.2)})
+     payload = json.loads(path.read_text())
+     assert payload == {"x": None, "y": 1.2}
++
++
++def test_monthly_returns_use_end_of_day_equity_boundaries() -> None:
++    idx = pd.DatetimeIndex([
++        pd.Timestamp("2025-06-30T23:59:00Z"),
++        pd.Timestamp("2025-07-01T00:00:00Z"),
++        pd.Timestamp("2025-07-31T23:59:00Z"),
++        pd.Timestamp("2025-08-31T23:59:00Z"),
++    ])
++    frame = pd.DataFrame(
++        [
++            {"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "quote_volume": 10_000_000.0, "mark_open": 100.0, "mark_high": 100.0, "mark_low": 100.0, "mark_close": 100.0},
++            {"open": 100.0, "high": 100.2, "low": 99.8, "close": 100.0, "quote_volume": 10_000_000.0, "mark_open": 100.0, "mark_high": 100.2, "mark_low": 99.8, "mark_close": 100.0},
++            {"open": 100.0, "high": 102.0, "low": 99.8, "close": 101.5, "quote_volume": 10_000_000.0, "mark_open": 100.0, "mark_high": 102.0, "mark_low": 99.8, "mark_close": 101.5},
++            {"open": 101.5, "high": 101.5, "low": 101.5, "close": 101.5, "quote_volume": 10_000_000.0, "mark_open": 101.5, "mark_high": 101.5, "mark_low": 101.5, "mark_close": 101.5},
++        ],
++        index=idx,
++    )
++    signals = pd.DataFrame([{
++        "candidate_id": "TEST",
++        "signal_id": "MONTH-END",
++        "symbol": "BTCUSDT",
++        "side": 1,
++        "signal_time": pd.Timestamp("2025-06-30T23:59:30Z"),
++        "entry_time": pd.Timestamp("2025-07-01T00:00:00Z"),
++        "stop_price": 99.0,
++        "target_r": 1.5,
++        "score": 1.0,
++    }])
++    result = simulate(
++        candidate(), signals, {"BTCUSDT": frame, "ETHUSDT": frame.copy()}, empty_funding(),
++        pd.Timestamp("2025-07-01T00:00:00Z"), pd.Timestamp("2025-09-01T00:00:00Z"), zero_cost(),
++    )
++    monthly = result["monthly"]
++    assert monthly.loc[pd.Period("2025-07", freq="M")] > 0
++    assert monthly.loc[pd.Period("2025-08", freq="M")] == pytest.approx(0.0)
+diff --git a/research/v025/v025_core.py b/research/v025/v025_core.py
+index 8d77bcb..db4fa3f 100644
+--- a/research/v025/v025_core.py
++++ b/research/v025/v025_core.py
+@@ -68,6 +68,7 @@ class ExhaustionSignal:
+     symbol: str
+     side: int
+     signal_time: pd.Timestamp
++    context_available_time: pd.Timestamp
+     entry_time: pd.Timestamp
+     liquidity_level: float
+     raid_extreme: float
+@@ -81,6 +82,7 @@ class ExhaustionSignal:
+     def to_dict(self) -> dict:
+         out = asdict(self)
+         out["signal_time"] = self.signal_time.isoformat()
++        out["context_available_time"] = self.context_available_time.isoformat()
+         out["entry_time"] = self.entry_time.isoformat()
+         return out
+ 
+@@ -177,9 +179,21 @@ def _normalise_event_frame(events: pd.DataFrame) -> pd.DataFrame:
+     if maker.isna().any():
+         raise ValueError("invalid is_buyer_maker values")
+     frame["is_buyer_maker"] = maker.astype(bool)
+-    frame = frame.sort_values("timestamp", kind="mergesort").drop_duplicates(
+-        subset=["timestamp", "price", "quantity", "is_buyer_maker"], keep="first"
+-    )
++    frame = frame.sort_values("

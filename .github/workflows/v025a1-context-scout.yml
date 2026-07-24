@@ -1,0 +1,65 @@
+name: v0.25A1 immutable source export
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v025a1-context-scout.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct immutable source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          root=Path('research/v025a_bundle')
+          m=json.loads((root/'TRANSPORT_MANIFEST.json').read_text())
+          parts=[]
+          for item in m['parts']:
+              p=root/item['name'];raw=p.read_bytes()
+              assert len(raw)==int(item['bytes'])
+              assert hashlib.sha256(raw).hexdigest()==item['sha256']
+              parts.append(raw)
+          payload=base64.b64decode(b''.join(parts),validate=True)
+          assert hashlib.sha256(payload).hexdigest()==m['archive_sha256']=='bebc0e1277a0b7a471e8447cf667251fda9685700eb8508dacd979f15639a9b1'
+          Path('/tmp/v025a-original.tar.xz').write_bytes(payload)
+          proot=Path('research/v025a1_patch');pm=json.loads((proot/'PATCH_MANIFEST.json').read_text())
+          pp=[]
+          for item in pm['parts']:
+              p=proot/item['name'];raw=p.read_bytes()
+              assert len(raw)==int(item['bytes'])
+              assert hashlib.sha256(raw).hexdigest()==item['sha256']
+              pp.append(raw)
+          patch=b''.join(pp)
+          assert hashlib.sha256(patch).hexdigest()==pm['patch_sha256']=='0c5f3bb99fd60d9b38eb4bbf6522593de29495f1fd84a90701685569d72292f9'
+          Path('/tmp/v025a1.patch').write_bytes(patch)
+          PY
+          rm -rf v025a1-source
+          mkdir v025a1-source
+          tar -xJf /tmp/v025a-original.tar.xz -C v025a1-source
+          (cd v025a1-source && patch --batch --forward -p1 < /tmp/v025a1.patch)
+          mkdir -p v025a1-source/smc_ict_quant
+          cp research/v025a1_support/smc_ict_quant/__init__.py v025a1-source/smc_ict_quant/__init__.py
+          cp research/v025a_support/smc_ict_quant/binance_public_data.py v025a1-source/smc_ict_quant/binance_public_data.py
+          find v025a1-source -type f -print0 | sort -z | xargs -0 shasum -a 256 > v025a1-source/SOURCE_SHA256.txt
+          tar -czf v025a1-source.tar.gz v025a1-source
+          shasum -a 256 v025a1-source.tar.gz | tee v025a1-source-archive.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v025a1-immutable-source-${{ github.run_id }}
+          path: |
+            v025a1-source.tar.gz
+            v025a1-source-archive.sha256
+            v025a1-source/SOURCE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14

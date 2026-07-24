@@ -1,0 +1,84 @@
+timestamp", kind="mergesort")
++    if "agg_trade_id" in frame.columns:
++        frame["agg_trade_id"] = pd.to_numeric(frame["agg_trade_id"], errors="coerce")
++        if frame["agg_trade_id"].notna().all():
++            # Official Binance aggregate-trade IDs are the event identity. Multiple
++            # legitimate events can share timestamp, price, quantity and aggressor side.
++            frame = frame.drop_duplicates(subset=["agg_trade_id"], keep="first")
++        else:
++            frame = frame.drop_duplicates(
++                subset=["timestamp", "price", "quantity", "is_buyer_maker", "agg_trade_id"], keep="first"
++            )
++    else:
++        frame = frame.drop_duplicates(
++            subset=["timestamp", "price", "quantity", "is_buyer_maker"], keep="first"
++        )
+     if (frame["price"] <= 0).any() or (frame["quantity"] <= 0).any():
+         raise ValueError("non-positive trade values")
+     return frame.reset_index(drop=True)
+@@ -291,8 +305,26 @@ def find_exhaustion_signal(
+         return None
+ 
+     signal_time = pd.Timestamp(confirmation["bin_start"]) + pd.Timedelta(seconds=5)
+-    entry_time = next_full_minute(signal_time)
+-    stop_price = raid_extreme + candidate.stop_buffer_atr * context.atr if context.side == -1 else raid_extreme - candidate.stop_buffer_atr * context.atr
++    # The raid context uses the completed one-minute OHLC bar, so it is not
++    # available until that bar closes. Enter only at the next *full* minute
++    # after both the event confirmation and the context-availability time.
++    context_available_time = context.minute_start + pd.Timedelta(minutes=1)
++    decision_available_time = max(signal_time, context_available_time)
++    entry_time = next_full_minute(decision_available_time)
++    # The actual entry decision occurs only after the full raid minute is
++    # available.  Anchor the stop beyond the most extreme price observable by
++    # that decision time, including any post-confirmation extension inside the
++    # completed context minute.
++    decision_raid_extreme = (
++        max(raid_extreme, context.minute_high)
++        if context.side == -1
++        else min(raid_extreme, context.minute_low)
++    )
++    stop_price = (
++        decision_raid_extreme + candidate.stop_buffer_atr * context.atr
++        if context.side == -1
++        else decision_raid_extreme - candidate.stop_buffer_atr * context.atr
++    )
+     if stop_price <= 0:
+         return None
+     score = float(flow_z - decay_ratio + abs(raid_extreme - context.level) / context.atr)
+@@ -311,9 +343,10 @@ def find_exhaustion_signal(
+         symbol=context.symbol,
+         side=context.side,
+         signal_time=signal_time,
++        context_available_time=context_available_time,
+         entry_time=entry_time,
+         liquidity_level=context.level,
+-        raid_extreme=raid_extreme,
++        raid_extreme=float(decision_raid_extreme),
+         stop_price=float(stop_price),
+         target_r=candidate.target_r,
+         flow_z=float(flow_z),
+diff --git a/research/v025/v025_pipeline.py b/research/v025/v025_pipeline.py
+index 5f6ddf8..78dd060 100644
+--- a/research/v025/v025_pipeline.py
++++ b/research/v025/v025_pipeline.py
+@@ -36,7 +36,7 @@ from v025_core import (
+ 
+ UTC = timezone.utc
+ BINANCE_BASE = "https://data.binance.vision/data/futures/um"
+-STUDY_ID = "smc_event_time_liquidation_exhaustion_v0_25_a"
++STUDY_ID = "smc_event_time_liquidation_exhaustion_v0_25_a1"
+ DEVELOPMENT_START = pd.Timestamp("2025-01-01T00:00:00Z")
+ DEVELOPMENT_END = pd.Timestamp("2025-07-01T00:00:00Z")
+ EVALUATION_START = DEVELOPMENT_END
+@@ -52,6 +52,9 @@ REGIME_PERCENTILE_MIN = 0.60
+ CONTEXT_COOLDOWN_MINUTES = 30
+ AGG_WINDOW_BEFORE_SECONDS = 300
+ AGG_WINDOW_AFTER_SECONDS = 180
++MAINTENANCE_MARGIN_RATE = 0.01
++LIQUIDATION_FEE_RATE = 0.005
++LIQUIDATION_SLIPPAGE_BPS = 10.0
+ 
+ KLINE_COLUMNS = [
+     "open_time", "open", "high", "low", "close", "volume", "close_time",
+@@ -403,6 +406,9 @@ def build_contexts(
+         bars["oi_delta_z"] = _merge_aso

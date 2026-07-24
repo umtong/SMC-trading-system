@@ -1,0 +1,63 @@
+the minute boundary (the normal Binance schedule), only the mark
++                    # open is available at that instant; using the current minute's mark
++                    # close would leak the rest of the minute into accounting.  For an
++                    # unusual intraminute timestamp, fall back to the last completed mark
++                    # close, never the still-forming current close.
++                    if ft == ts:
++                        mark_open = float(frame.loc[ts, "mark_open"]) if "mark_open" in frame.columns else float("nan")
++                        mark = mark_open if math.isfinite(mark_open) else float(bar["open"])
++                    else:
++                        previous_ts = ts - pd.Timedelta(minutes=1)
++                        previous_mark = (
++                            float(frame.loc[previous_ts, "mark_close"])
++                            if previous_ts in frame.index and "mark_close" in frame.columns
++                            else float("nan")
++                        )
++                        mark = previous_mark if math.isfinite(previous_mark) else float(bar["open"])
+                     payment = -side * qty * mark * float(f_list[f_cursor].funding_rate)
++                    # At an entry sharing the exact funding timestamp, minute data
++                    # cannot establish exchange-event ordering.  Charge an adverse
++                    # payment but never assume an immediate beneficial credit.
++                    if ft == entry_time and payment > 0:
++                        payment = 0.0
+                     equity += payment
+                     funding_pnl += payment
+                     curve.append((ft, equity + side * qty * (mark - entry_fill)))
+                 f_cursor += 1
+ 
+             o, h, l, c = map(float, (bar["open"], bar["high"], bar["low"], bar["close"]))
++            mark_open = float(bar.get("mark_open", o))
++            mark_high = float(bar.get("mark_high", h))
++            mark_low = float(bar.get("mark_low", l))
++            if not math.isfinite(mark_open):
++                mark_open = o
++            if not math.isfinite(mark_high):
++                mark_high = h
++            if not math.isfinite(mark_low):
++                mark_low = l
++            liquidation_fee = 0.0
+             if side == 1:
+-                if o <= stop:
++                gap_liquidated = liquidation_price is not None and mark_open <= liquidation_price
++                intrabar_liquidation_precedes_stop = (
++                    liquidation_price is not None and liquidation_price >= stop and mark_low <= liquidation_price
++                )
++                if gap_liquidated:
++                    exit_fill = _adverse_price(o, side, max(cost.slippage_bps_per_side, LIQUIDATION_SLIPPAGE_BPS), False)
++                    exit_reason = "gap_liquidation"
++                elif o <= stop:
+                     exit_fill, exit_reason = _adverse_price(o, side, cost.slippage_bps_per_side, False), "gap_stop"
++                elif intrabar_liquidation_precedes_stop:
++                    exit_fill = _adverse_price(float(liquidation_price), side, max(cost.slippage_bps_per_side, LIQUIDATION_SLIPPAGE_BPS), False)
++                    exit_reason = "liquidation"
+                 elif l <= stop and h >= target:
+                     exit_fill, exit_reason = _adverse_price(stop, side, cost.slippage_bps_per_side, False), "same_bar_stop_first"
+                 elif l <= stop:
+                     exit_fill, exit_reason = _adverse_price(stop, side, cost.slippage_bps_per_side, False), "stop"
+                 elif h >= target:
+                     exit_fill, exit_reason = _adverse_price(target, side, cost.slippage_bps_per_side, False), "target"
+-                adverse_mark = l
++                adverse_mark = exit_fill if exit_reason is not None and exit_fill is not None else l
+             else:
+-                if o >= stop:
++                gap_liquidated = liquidation_price is not None and mark_open >= l

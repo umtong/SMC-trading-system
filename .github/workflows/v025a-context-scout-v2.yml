@@ -1,0 +1,121 @@
+name: v0.25A official context scout v2
+
+on:
+  push:
+    branches:
+      - research/v025a-eventtime-20260723
+    paths:
+      - 'research/v025a_bundle/**'
+      - 'research/v025a_support/**'
+      - '.github/workflows/v025a-context-scout-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v025a-context-scout-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DATA_ROOT: ${{ github.workspace }}/.research-data/v025a-minute
+  WORKSPACE: ${{ github.workspace }}/.research-work/v025a-context
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and verify locked bundle
+        run: python research/v025a_support/run_context_scout.py prepare --repo . --output v025a
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v025a/requirements-lock.txt
+
+      - name: Verify preregistration and tests
+        working-directory: v025a
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          mkdir -p ci-evidence
+          sha256sum -c SOURCE_SHA256SUMS.txt | tee ci-evidence/source-sha256.txt
+          PYTHONPATH=research/v025 python -m pytest -q research/v025 | tee ci-evidence/pytest.txt
+          python -m compileall -q research/v025 scripts smc_ict_quant
+          python scripts/download_binance_um_parallel.py --help > ci-evidence/downloader-help.txt
+          python research/v025/v025_pipeline.py --help > ci-evidence/pipeline-help.txt
+
+      - name: Restore checksum-verified minute data
+        uses: actions/cache@v4
+        with:
+          path: .research-data/v025a-minute
+          key: v025a-binance-usdm-minute-9874d8042af578586bba0310e76f376873077be6c32e1d49408d3e15be5fd496-v2
+
+      - name: Download exact official preholdout request set
+        working-directory: v025a
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-evidence "${DATA_ROOT}" "${WORKSPACE}"
+          python scripts/download_binance_um_parallel.py \
+            --request-plan artifacts/v0243/data_acquisition_plan.json \
+            --output "${DATA_ROOT}" --workers 12 2>&1 | tee ci-evidence/minute-download.log
+
+      - name: Build causal contexts without candidate PnL
+        working-directory: v025a
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/v025 python research/v025/v025_pipeline.py context \
+            --data-root "${DATA_ROOT}" \
+            --data-plan artifacts/v0243/data_acquisition_plan.json \
+            --workspace "${WORKSPACE}" 2>&1 | tee ci-evidence/context-build.log
+
+      - name: Scout official aggTrades compressed size
+        working-directory: v025a
+        run: python ../research/v025a_support/run_context_scout.py scout --workspace "${WORKSPACE}" | tee ci-evidence/event-size-scout.log
+
+      - name: Persist compact status to the research branch
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/v025a_support/run_context_scout.py persist \
+            --repo . --workspace "${WORKSPACE}" --job-status "${JOB_STATUS}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/results/v025a-context-scout
+          if ! git diff --cached --quiet; then
+            git commit -m "Record v0.25A context scout status"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload compact evidence without raw market archives
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v025a-context-scout-v2-${{ github.run_id }}
+          path: |
+            transport-evidence
+            v025a/ci-evidence
+            .research-work/v025a-context/context_summary.json
+            .research-work/v025a-context/contexts.csv
+            .research-work/v025a-context/event_day_plan.json
+            .research-work/v025a-context/event_size_scout.json
+            v025a/research/v025/research_plan_locked.json
+          if-no-files-found: warn
+          retention-days: 30

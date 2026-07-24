@@ -1,0 +1,30 @@
+p"] <= end)]
+     if curve_df.empty:
+         curve_df = pd.DataFrame({"timestamp": [start, end], "equity": [INITIAL_EQUITY, final_equity]})
+-    daily_index = pd.date_range(start.floor("D"), (end - pd.Timedelta(minutes=1)).floor("D"), freq="D", tz="UTC")
++    # Evaluate daily/monthly performance at end-of-day boundaries, not at
++    # midnight starting values. The final boundary is always forced to the
++    # conservative final MTM equity.
++    first_boundary = start.floor("D") + pd.Timedelta(days=1)
++    regular_boundaries = pd.date_range(first_boundary, end.floor("D"), freq="D", tz="UTC")
++    boundaries = list(regular_boundaries)
++    if not boundaries or boundaries[-1] < end:
++        boundaries.append(end)
++    daily_index = pd.DatetimeIndex(boundaries)
+     daily = curve_df.set_index("timestamp")["equity"].sort_index().reindex(daily_index, method="ffill").fillna(INITIAL_EQUITY)
+-    daily.iloc[-1] = final_equity
+-    month_end = daily.groupby(daily.index.tz_localize(None).to_period("M")).last()
++    daily.loc[daily_index[-1]] = final_equity
++    reporting_periods = (daily.index - pd.Timedelta(nanoseconds=1)).tz_localize(None).to_period("M")
++    month_end = daily.groupby(reporting_periods).last()
+     monthly = month_end.pct_change()
+     if len(monthly):
+         monthly.iloc[0] = month_end.iloc[0] / INITIAL_EQUITY - 1.0
+@@ -1069,6 +1167,7 @@ def simulate(
+         "symbol_counts": {str(k): int(v) for k, v in symbol_counts.items()},
+         "funding_pnl_total": float(ledger_df["funding_pnl"].sum()) if not ledger_df.empty else 0.0,
+         "fees_total": float((ledger_df["entry_fee"] + ledger_df["exit_fee"]).sum()) if not ledger_df.empty else 0.0,
++        "liquidations": int(ledger_df["exit_reason"].isin(["liquidation", "gap_liquidation"]).sum()) if not ledger_df.empty else 0,
+         "participation": participation,
+         "entry_delay_minutes": entry_delay_minutes,
+         "terminal_holdout_opened": False,

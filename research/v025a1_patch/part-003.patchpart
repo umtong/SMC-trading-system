@@ -1,0 +1,71 @@
+ = aggregate_5s(events).iloc[0]
++    assert bar["count"] == 2
++    assert bar["quote"] == pytest.approx(200.0)
++    assert bar["signed_quote"] == pytest.approx(200.0)
++
++
++def test_stop_uses_full_completed_raid_minute_extreme_available_at_decision() -> None:
++    events = synthetic_short_events()
++    # Event confirmation happens at 00:05:10, while the completed minute's
++    # subsequently observed high is 101.75.  The order is not sent until after
++    # minute close, so the stop must use that known full-minute extreme.
++    signal = find_exhaustion_signal(context(minute_high=101.75), candidate(), events)
++    assert signal is not None
++    assert signal.raid_extreme == pytest.approx(101.75)
++    assert signal.stop_price == pytest.approx(101.85)
+diff --git a/research/v025/test_v025_pipeline.py b/research/v025/test_v025_pipeline.py
+index 65e4aed..77d3915 100644
+--- a/research/v025/test_v025_pipeline.py
++++ b/research/v025/test_v025_pipeline.py
+@@ -72,7 +72,7 @@ def bars_for(values: list[tuple]) -> pd.DataFrame:
+     index = pd.date_range("2025-07-01T00:00:00Z", periods=len(values), freq="1min")
+     rows = []
+     for o, h, l, c in values:
+-        rows.append({"open": o, "high": h, "low": l, "close": c, "quote_volume": 10_000_000.0, "mark_close": c})
++        rows.append({"open": o, "high": h, "low": l, "close": c, "quote_volume": 10_000_000.0, "mark_open": o, "mark_high": h, "mark_low": l, "mark_close": c})
+     return pd.DataFrame(rows, index=index)
+ 
+ 
+@@ -120,6 +120,21 @@ def test_gap_through_stop_fills_at_worse_open() -> None:
+     assert row["r"] < -1.0
+ 
+ 
++def test_gap_beyond_mark_liquidation_is_not_reported_as_ordinary_stop() -> None:
++    btc = bars_for([(100, 100, 100, 100), (100, 100.05, 99.95, 100), (60, 61, 59, 60)])
++    # The strategy stop is closer than liquidation, but a discontinuous mark gap
++    # opens beyond both.  Fail closed as a liquidation rather than an executable
++    # ordinary stop at the impossible skipped level.
++    btc.loc[btc.index[0], "quote_volume"] = 100_000_000.0
++    btc.loc[btc.index[2], ["mark_open", "mark_high", "mark_low", "mark_close"]] = [60, 61, 59, 60]
++    result = simulate(candidate(), pd.DataFrame([signal(1, 99.9)]), {"BTCUSDT": btc, "ETHUSDT": btc.copy()}, empty_funding(), btc.index[0], btc.index[-1] + pd.Timedelta(minutes=1), zero_cost())
++    row = result["ledger"].iloc[0]
++    assert row["exit_reason"] == "gap_liquidation"
++    assert row["liquidation_fee"] > 0
++    assert result["metrics"]["liquidations"] == 1
++    assert result["metrics"]["final_equity_mtm"] >= 0
++
++
+ def test_global_slot_selects_highest_score_signal() -> None:
+     btc = bars_for([(100, 100, 100, 100), (100, 102, 98, 100), (100, 100, 100, 100)])
+     eth = btc.copy()
+@@ -139,6 +154,31 @@ def test_funding_applies_only_while_position_exists() -> None:
+     assert result["ledger"].iloc[0]["funding_pnl"] < 0
+ 
+ 
++def test_funding_at_minute_boundary_uses_mark_open_not_future_mark_close() -> None:
++    btc = bars_for([(100, 100, 100, 100), (100, 100.2, 99.8, 100), (100, 100.2, 99.8, 100), (100, 102, 99.8, 101.5)])
++    # Make the funding minute close absurdly different.  The payment at the
++    # exact minute boundary must remain based on the observable mark open.
++    btc.loc[btc.index[2], "mark_open"] = 100.0
++    btc.loc[btc.index[2], "mark_close"] = 1_000.0
++    eth = btc.copy()
++    funding = empty_funding()
++    funding["BTCUSDT"] = pd.DataFrame({"timestamp": [btc.index[2]], "funding_rate": [0.01]})
++    result = simulate(candidate(), pd.DataFrame([signal(1, 99.0)]), {"BTCUSDT": btc, "ETHUSDT": eth}, funding, btc.index[0], btc.index[-1] + pd.Timedelta(minutes=1), zero_cost())
++    row = result["ledger"].iloc[0]
++    expected = -float(row["quantity"]) * 100.0 * 0.01
++    assert row["funding_pnl"] == pytest.approx(expected)
++
++
++def test_exact_entry_timestamp_never_assumes_beneficial_funding_credit() -> None:
++    btc = bars_for([(100, 100, 100, 100), (100, 100.2, 99.8, 100), (100, 100.2, 99.8, 100), (

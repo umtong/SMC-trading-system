@@ -1,0 +1,77 @@
+diff --git a/research/v025/preregister_v025.py b/research/v025/preregister_v025.py
+index 531c45c..9810296 100644
+--- a/research/v025/preregister_v025.py
++++ b/research/v025/preregister_v025.py
+@@ -34,13 +34,14 @@ def sha256_file(path: Path) -> str:
+ 
+ 
+ def main() -> int:
+-    parser = argparse.ArgumentParser(description="Lock v0.25A before candidate PnL")
++    parser = argparse.ArgumentParser(description="Lock causality-corrected v0.25A1 before candidate PnL")
+     parser.add_argument("--output", type=Path, required=True)
+     parser.add_argument("--v0243-data-plan", type=Path, required=True)
+     parser.add_argument("--scout-profile", type=Path, required=True)
+     args = parser.parse_args()
+ 
+     root = Path(__file__).resolve().parent
++    project_root = root.parents[1]
+     source_names = [
+         "v025_core.py",
+         "v025_pipeline.py",
+@@ -48,7 +49,18 @@ def main() -> int:
+         "test_v025_pipeline.py",
+         "preregister_v025.py",
+     ]
+-    source_files = {name: sha256_file(root / name) for name in source_names}
++    source_files = {f"research/v025/{name}": sha256_file(root / name) for name in source_names}
++    support_names = [
++        "scripts/download_binance_um_parallel.py",
++        "smc_ict_quant/__init__.py",
++        "smc_ict_quant/binance_public_data.py",
++        "requirements-lock.txt",
++    ]
++    for relative in support_names:
++        support_path = project_root / relative
++        if not support_path.exists():
++            raise FileNotFoundError(f"required source-closure file missing: {support_path}")
++        source_files[relative] = sha256_file(support_path)
+     source_manifest = canonical_json_sha256(source_files)
+     data_plan_sha = sha256_file(args.v0243_data_plan)
+     scout_sha = sha256_file(args.scout_profile)
+@@ -60,6 +72,21 @@ def main() -> int:
+         "candidate_pnl_observed_before_plan": False,
+         "terminal_holdout_opened_before_plan": False,
+         "production_enabled": False,
++        "supersedes": "smc_event_time_liquidation_exhaustion_v0_25_a",
++        "correction_evidence": {
++            "candidate_pnl_observed_before_correction": False,
++            "terminal_holdout_opened_before_correction": False,
++            "economic_candidate_grid_changed": False,
++            "changes": [
++                "raid-minute OHLC becomes usable only after its close; entry is the next full minute after max(event confirmation, context availability)",
++                "official agg_trade_id is the canonical event identity",
++                "monthly returns use end-of-day equity boundaries",
++                "funding at a minute boundary uses mark open, never the future minute close",
++                "same-timestamp beneficial funding is not assumed",
++                "mark-price liquidation gaps are modeled conservatively",
++                "stop is beyond the full completed raid-minute extreme available at decision time",
++            ],
++        },
+         "economic_hypothesis": (
+             "At a causally fixed external-liquidity location, an extreme same-direction "
+             "aggressive-flow climax followed by rapid flow decay, range re-entry and an "
+@@ -93,6 +120,8 @@ def main() -> int:
+             "premium_statistics": "prior-only 1-minute rolling distribution",
+             "liquidity_context": "rolling prior 60/240 minute high or low",
+             "trade_windows_seconds": {"before": 300, "after": 180},
++            "context_information_available": "raid minute close plus no less than one full minute boundary before entry",
++            "official_event_identity": "agg_trade_id",
+         },
+         "candidate_count": 64,
+         "candidates": [x.to_dict() for x in candidate_grid()],
+@@ -105,13 +134,17 @@ def main() -> int:
+         },
+         "costs": {name: vars(profile) for name, profile in COSTS.items()},
+         "execution": {
+-            "entry": "next full minute open after event-time confirmation",
++            "entry": "next full minute open s
