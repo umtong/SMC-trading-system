@@ -1,0 +1,181 @@
+name: State-first L2 V2 repaired 2024 selection
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/remote/state_first_l2_v2.py.gz.b64.part*"
+      - "research/remote/state_first_l2_v2_test.py.gz.b64.part*"
+      - "research/state_first_l2_20260724/preregistration.json"
+      - ".github/workflows/state-first-l2-v2-repaired-selection.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: state-first-l2-v2-selection-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: ${{ github.workspace }}/.hf_cache_state_first_v2_selection
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_ETAG_TIMEOUT: "120"
+      HF_HUB_DOWNLOAD_TIMEOUT: "300"
+      ROOT: ${{ github.workspace }}/research_runs/state_first_l2_v2_selection_20260724
+      SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v2_selection_20260724/state_first_l2.py
+      TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v2_selection_20260724/test_state_first_l2.py
+      PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration.json
+      PREDECESSOR: ${{ github.workspace }}/predecessor/development/development_frozen.json
+      EXPECTED_SCRIPT_SHA256: 3cae9ff1e0a9bc2de4e663c8c308ed3f3c247d45eb829f86b2d4d44fb284797d
+      EXPECTED_TEST_SHA256: a3939ccac2ac3af834ce07fc1a732bfdb06721e032a26736ef880aa5973b5319
+      EXPECTED_PREREG_SHA256: b223ae70bd7e1fb9b7b2cc5b23ddb6d608b0a78e6a48db9f07d35dfd1195ed7e
+      EXPECTED_PREDECESSOR_SHA256: 4bac228b5b8590b99a8e4108b30e7972e1326e9e06fe0cf48144c8fefaefd59e
+      DEVELOPMENT_RUN_ID: "30099755965"
+      DEVELOPMENT_ARTIFACT: state-first-l2-v2-repaired-30099755965
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-l2-v2-repaired-20260724
+          fetch-depth: 1
+
+      - name: Download immutable development checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.DEVELOPMENT_ARTIFACT }}
+          path: predecessor
+          github-token: ${{ github.token }}
+          repository: umtong/SMC-trading-system
+          run-id: ${{ env.DEVELOPMENT_RUN_ID }}
+
+      - name: Reconstruct and verify frozen source and predecessor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          cat research/remote/state_first_l2_v2.py.gz.b64.part{00..05} > /tmp/state_first_l2.py.gz.b64
+          cat research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} > /tmp/test_state_first_l2.py.gz.b64
+          base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
+          base64 --decode /tmp/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
+          gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$SCRIPT"
+          gzip --decompress --stdout /tmp/test_state_first_l2.py.gz > "$TEST_SCRIPT"
+          printf '%s  %s\n' "$EXPECTED_SCRIPT_SHA256" "$SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_TEST_SHA256" "$TEST_SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREG" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PREDECESSOR_SHA256" "$PREDECESSOR" | sha256sum --check --strict
+          python -m py_compile "$SCRIPT" "$TEST_SCRIPT"
+          cp "$PREREG" "$ROOT/preregistration.json"
+          cp "$PREDECESSOR" "$ROOT/development_frozen.json"
+
+      - name: Install fixed research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
+            "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" \
+            "scikit-learn==1.6.1" "huggingface_hub==0.27.1" \
+            "hf_xet==1.1.10" "pytest==8.3.4"
+
+      - name: Run causal and accounting regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$ROOT"
+          pytest -q "$TEST_SCRIPT" 2>&1 | tee unit_tests.log
+
+      - name: Run frozen representatives on 2024 selection only
+        id: research
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python "$SCRIPT" \
+            --stage selection \
+            --work-dir "$ROOT/selection" \
+            --cache-dir "$HF_HOME" \
+            --preregistration "$PREREG" \
+            --predecessor "$PREDECESSOR" \
+            2>&1 | tee "$ROOT/selection.log"
+          rc=${PIPESTATUS[0]}
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build immutable selection status and report
+        if: always()
+        env:
+          EXIT_CODE: ${{ steps.research.outputs.exit_code }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('research_runs/state_first_l2_v2_selection_20260724')
+          checkpoint=root/'selection'/'selection_frozen.json'
+          payload={
+            'experiment_rc':int(os.environ.get('EXIT_CODE') or -999),
+            'stage':'selection','2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          lines=['## State-first L2 V2 2024 frozen selection','']
+          if checkpoint.exists():
+              d=json.loads(checkpoint.read_text())
+              payload['selection_gate_count']=int(d.get('selection_gate_count',0))
+              payload['selected']=d.get('selected',[])
+              payload['primary']=d.get('primary')
+              payload['content_digest']=d.get('content_digest')
+              lines += [
+                f"- process rc: `{payload['experiment_rc']}`",
+                f"- selection gate count: `{payload['selection_gate_count']}`",
+                f"- primary: `{json.dumps(payload['primary'],sort_keys=True)}`",
+                '- 2025 opened: `false`','',
+                '```json',json.dumps(payload['selected'],indent=2),'```',
+              ]
+          else:
+              payload['selection_gate_count']=0
+              payload['primary']=None
+              lines += [f"- process rc: `{payload['experiment_rc']}`",'- status: `FAILED_BEFORE_SELECTION_CHECKPOINT`']
+              log=root/'selection.log'
+              if log.exists(): lines += ['', '```text','\n'.join(log.read_text(errors='replace').splitlines()[-180:]),'```']
+          (root/'run_status.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          lines += ['', '_Selection only. 2025/2026 remain unopened; no order authority._']
+          (root/'pr-comment.md').write_text('\n'.join(lines))
+          print(json.dumps(payload,sort_keys=True))
+          PY
+
+      - name: Publish report to draft PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file "$ROOT/pr-comment.md"
+
+      - name: Record output hashes
+        if: always()
+        run: |
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload complete selection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-l2-v2-selection-${{ github.run_id }}
+          path: research_runs/state_first_l2_v2_selection_20260724
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Preserve failed experiment status
+        if: always() && steps.research.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.research.outputs.exit_code }}
+        run: |
+          echo "State-first L2 selection failed with exit code ${EXIT_CODE}"
+          exit 1
