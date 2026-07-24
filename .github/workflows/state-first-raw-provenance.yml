@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: state-first-raw-provenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   probe:
     runs-on: ubuntu-slim
@@ -19,21 +23,37 @@ jobs:
       ROOT: ${{ github.workspace }}/research_runs/state_first_raw_provenance_20260724
       SCRIPT: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/probe.py
       PREREG: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/preregistration.json
-      EXPECTED_SCRIPT_SHA256: 56a41de200d3bc426b6d50ad813d02a59b0ad51d578e21df8ef65b42b6cb7c6d
-      EXPECTED_PREREG_SHA256: 77ef980de309f4f0235551e38b043fe53e9b2b7ca5d415fdb6c676b7657c03e2
+      LOCAL_EXPECTED_SCRIPT_SHA256: 56a41de200d3bc426b6d50ad813d02a59b0ad51d578e21df8ef65b42b6cb7c6d
+      LOCAL_EXPECTED_PREREG_SHA256: 77ef980de309f4f0235551e38b043fe53e9b2b7ca5d415fdb6c676b7657c03e2
     steps:
       - uses: actions/checkout@v4
         with:
           ref: research/state-first-raw-provenance-20260724
           fetch-depth: 1
 
-      - name: Verify immutable preregistration and probe source
+      - name: Diagnose immutable input identity and compile
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          printf '%s  %s\n' "$EXPECTED_SCRIPT_SHA256" "$SCRIPT" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREG" | sha256sum --check --strict
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          items={
+            'script':(Path(os.environ['SCRIPT']),os.environ['LOCAL_EXPECTED_SCRIPT_SHA256']),
+            'preregistration':(Path(os.environ['PREREG']),os.environ['LOCAL_EXPECTED_PREREG_SHA256']),
+          }
+          report={}
+          for key,(path,expected) in items.items():
+            actual=hashlib.sha256(path.read_bytes()).hexdigest()
+            report[key]={'path':str(path),'bytes':path.stat().st_size,'actual_sha256':actual,'local_expected_sha256':expected,'matches_local_copy':actual==expected}
+          report['git_commit']=os.environ.get('GITHUB_SHA')
+          report['strategy_executed']=False
+          report['candidate_pnl_observed']=False
+          (root/'input_identity.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
           python -m py_compile "$SCRIPT"
           cp "$SCRIPT" "$ROOT/locked_probe.py"
           cp "$PREREG" "$ROOT/preregistration.json"
