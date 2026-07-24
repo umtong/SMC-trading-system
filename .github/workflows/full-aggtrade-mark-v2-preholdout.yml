@@ -1,0 +1,71 @@
+name: Build DV Mark Inputs V2 Preholdout
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/full-aggtrade-mark-v2-preholdout.yml'
+      - 'research/full_aggtrade_dollar_bars/collect_mark_1m.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dv-mark-v2-preholdout-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  MARK_COLLECTOR_SHA256: c725a42726bb148a8a1b7c87563f1f2fb64c975d6e00bb7a7e6b9c92f9ba2762
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - symbol: ETHUSDT
+            year: 2021
+          - symbol: ETHUSDT
+            year: 2022
+          - symbol: ETHUSDT
+            year: 2023
+          - symbol: ETHUSDT
+            year: 2024
+          - symbol: SOLUSDT
+            year: 2021
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade 'pandas==2.2.3' 'pyarrow==18.1.0' 'requests==2.32.3'
+      - name: Verify collector before data access
+        run: |
+          echo "${MARK_COLLECTOR_SHA256}  research/full_aggtrade_dollar_bars/collect_mark_1m.py" | sha256sum -c -
+          python -m py_compile research/full_aggtrade_dollar_bars/collect_mark_1m.py
+      - name: Build checksum-verified official mark-price minutes
+        run: |
+          mkdir -p output cache
+          python research/full_aggtrade_dollar_bars/collect_mark_1m.py \
+            --symbol '${{ matrix.symbol }}' --year '${{ matrix.year }}' \
+            --output output --cache cache
+      - name: Audit terminal isolation
+        run: |
+          test '${{ matrix.year }}' -le 2024
+          test -s 'output/${{ matrix.symbol }}_${{ matrix.year }}_mark_1m.parquet'
+          test -s 'output/${{ matrix.symbol }}_${{ matrix.year }}_mark_manifest.json'
+          find output -type f -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dv-mark-v2-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          path: output
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

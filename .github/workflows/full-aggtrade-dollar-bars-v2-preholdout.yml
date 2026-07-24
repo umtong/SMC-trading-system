@@ -1,0 +1,104 @@
+name: Build DV Aggressor Bars V2 Preholdout
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/full-aggtrade-dollar-bars-v2-preholdout.yml'
+      - 'research/full_aggtrade_dollar_bars/build_ultrafast_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dv-aii-v2-preholdout-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+  MALLOC_ARENA_MAX: '2'
+  BUILDER_SHA256: 9c7decfc405a468c22102d5049fe72c24be662cb0e7919f77539d24c7d410bde
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - symbol: ETHUSDT
+            year: 2021
+          - symbol: ETHUSDT
+            year: 2022
+          - symbol: ETHUSDT
+            year: 2023
+          - symbol: ETHUSDT
+            year: 2024
+          - symbol: SOLUSDT
+            year: 2021
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install fixed research environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'pyarrow==18.1.0' 'requests==2.32.3'
+      - name: Verify causal vectorized builder before market data
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${BUILDER_SHA256}  research/full_aggtrade_dollar_bars/build_ultrafast_v2.py" | sha256sum -c -
+          python -m py_compile research/full_aggtrade_dollar_bars/build_ultrafast_v2.py
+          python research/full_aggtrade_dollar_bars/build_ultrafast_v2.py --self-test
+      - name: Build checksum-verified preholdout dollar bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output cache
+          /usr/bin/time -v python research/full_aggtrade_dollar_bars/build_ultrafast_v2.py \
+            --symbol '${{ matrix.symbol }}' \
+            --year '${{ matrix.year }}' \
+            --output output \
+            --cache cache \
+            2>&1 | tee 'output/${{ matrix.symbol }}_${{ matrix.year }}_build_v2.log'
+      - name: Audit output identity and holdout isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test '${{ matrix.year }}' -le 2024
+          test -s 'output/${{ matrix.symbol }}_${{ matrix.year }}_manifest.json'
+          test -s 'output/${{ matrix.symbol }}_${{ matrix.year }}_1m.parquet'
+          test -s 'output/${{ matrix.symbol }}_${{ matrix.year }}_funding.parquet'
+          test "$(find output -name '${{ matrix.symbol }}_${{ matrix.year }}_bpd*_cap*s.parquet' | wc -l | tr -d ' ')" -eq 4
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          symbol='${{ matrix.symbol }}'; year=int('${{ matrix.year }}')
+          p=Path('output')/f'{symbol}_{year}_manifest.json'
+          x=json.loads(p.read_text())
+          assert x['schema_version']==2
+          assert x['symbol']==symbol and x['year']==year
+          assert x['candidate_pnl_observed'] is False
+          assert x['orders_submitted'] is False and x['production_enabled'] is False
+          assert len(x['outputs'])==4
+          assert all(int(r['entry_missing'])>=0 for r in x['outputs'])
+          print(json.dumps({'symbol':symbol,'year':year,'outputs':x['outputs'],'terminal_2025_requested':False},indent=2))
+          PY
+          find output -type f -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dv-aii-v2-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          path: output
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
