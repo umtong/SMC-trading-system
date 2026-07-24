@@ -1,0 +1,76 @@
+name: Research SOL XRP Official Mark Price Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-sol-xrp-mark-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install fixed dependencies
+        run: python -m pip install pandas==2.2.3 requests==2.32.3
+      - name: Download, verify, and normalize official mark-price klines
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/build_mark.py" <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, zipfile
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT=Path('research_artifact'); OUT.mkdir(exist_ok=True)
+          session=requests.Session(); records=[]
+          months=pd.period_range('2022-04','2025-12',freq='M').astype(str)
+          columns=['open_time','open','high','low','close','volume','close_time','quote_asset_volume','number_of_trades','taker_buy_base_asset_volume','taker_buy_quote_asset_volume','ignore']
+          for symbol in ('SOLUSDT','XRPUSDT'):
+              frames=[]
+              for month in months:
+                  name=f'{symbol}-markPriceKlines-5m-{month}.zip'
+                  url=f'https://data.binance.vision/data/futures/um/monthly/markPriceKlines/{symbol}/5m/{name}'
+                  cr=session.get(url+'.CHECKSUM',timeout=30)
+                  if cr.status_code==404:
+                      records.append({'symbol':symbol,'month':month,'status':'missing'});continue
+                  cr.raise_for_status(); expected=cr.text.strip().split()[0].lower()
+                  r=session.get(url,timeout=90);r.raise_for_status();payload=r.content;observed=hashlib.sha256(payload).hexdigest()
+                  if observed!=expected:raise RuntimeError((name,expected,observed))
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                      names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+                      if len(names)!=1:raise RuntimeError((name,names))
+                      raw=pd.read_csv(zf.open(names[0]),header=None)
+                  if str(raw.iloc[0,0]).lower() in {'open_time','open time'}:
+                      raw=pd.read_csv(io.BytesIO(zf.read(names[0])))
+                  else:
+                      raw.columns=columns[:len(raw.columns)]
+                  raw.columns=[str(c).strip().lower().replace(' ','_') for c in raw.columns]
+                  frames.append(raw[['open_time','open','high','low','close']].copy())
+                  records.append({'symbol':symbol,'month':month,'status':'ok','url':url,'published_sha256':expected,'observed_sha256':observed,'rows':len(raw)})
+              if not frames:raise RuntimeError(f'no mark data for {symbol}')
+              out=pd.concat(frames,ignore_index=True);out['open_time']=pd.to_numeric(out.open_time,errors='raise').astype('int64')
+              for c in ('open','high','low','close'):out[c]=pd.to_numeric(out[c],errors='raise').astype(float)
+              out=out.sort_values('open_time').drop_duplicates('open_time',keep='last')
+              if not out.open_time.is_monotonic_increasing or out.open_time.duplicated().any():raise RuntimeError('chronology')
+              path=OUT/f'{symbol}_markPrice_5m_2022-04_2025-12.csv.gz';out.to_csv(path,index=False,compression='gzip')
+              records.append({'symbol':symbol,'status':'output','rows':len(out),'first_ms':int(out.open_time.min()),'last_ms':int(out.open_time.max()),'output':path.name,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'bytes':path.stat().st_size})
+          (OUT/'manifest.json').write_text(json.dumps({'source':'official Binance Vision USD-M monthly markPriceKlines','credentials':False,'orders':False,'records':records},indent=2)+'\n')
+          print(json.dumps({'outputs':[r for r in records if r.get('status')=='output']},indent=2))
+          PY
+          python "$RUNNER_TEMP/build_mark.py"
+      - name: Upload checksum-verified mark-price artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-mark-5m-2022-04_2025-12-${{ github.run_id }}
+          path: research_artifact
+          if-no-files-found: error
+          retention-days: 14
