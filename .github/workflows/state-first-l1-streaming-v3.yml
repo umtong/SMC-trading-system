@@ -110,7 +110,9 @@ jobs:
         if: always()
         with:
           name: state-first-l1-streaming-v3-${{ matrix.symbol }}-${{ github.run_id }}
-          path: state-first-v3-panel/${{ matrix.symbol }}
+          path: |
+            state-first-v3-panel/${{ matrix.symbol }}
+            state-first-v3-${{ matrix.symbol }}.log
           if-no-files-found: warn
           retention-days: 30
           compression-level: 6
