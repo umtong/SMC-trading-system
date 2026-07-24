@@ -1,0 +1,90 @@
+name: Export Tardis BBO Trades Smoke Sample
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/export-tardis-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Aggregate BTC and ETH public sample day to one second
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import csv, gzip, hashlib, json, math, subprocess
+          from collections import defaultdict
+          from pathlib import Path
+
+          exchange = "binance-futures"
+          date = "2025/05/01"
+          symbols = ("BTCUSDT", "ETHUSDT")
+          out = Path("research_data/tardis_smoke_1s")
+          out.mkdir(parents=True, exist_ok=True)
+          manifest = {"exchange": exchange, "date": date, "symbols": {}, "bucket_us": 1000000}
+
+          def get(kind: str, symbol: str) -> Path:
+              p = out / f"{symbol}_{kind}.csv.gz"
+              url = f"https://datasets.tardis.dev/v1/{exchange}/{kind}/{date}/{symbol}.csv.gz"
+              subprocess.run(["curl", "-fL", "--retry", "4", "--max-time", "1800", "-o", str(p), url], check=True)
+              return p
+
+          def sha(p: Path) -> str:
+              h = hashlib.sha256()
+              with p.open("rb") as f:
+                  for block in iter(lambda: f.read(1 << 20), b""):
+                      h.update(block)
+              return h.hexdigest()
+
+          for symbol in symbols:
+              qp = get("book_ticker", symbol)
+              tp = get("trades", symbol)
+              quotes = {}
+              with gzip.open(qp, "rt", newline="", encoding="utf-8") as f:
+                  r = csv.DictReader(f)
+                  for row in r:
+                      b = int(row["local_timestamp"]) // 1000000
+                      quotes[b] = [int(row["local_timestamp"]), float(row["bid_price"]), float(row["ask_price"]), float(row["bid_amount"]), float(row["ask_amount"]), quotes.get(b, [0,0,0,0,0,0])[5] + 1]
+              trades = defaultdict(lambda: [0.0,0.0,0.0,0.0,0,0,math.nan])
+              with gzip.open(tp, "rt", newline="", encoding="utf-8") as f:
+                  r = csv.DictReader(f)
+                  for row in r:
+                      b = int(row["local_timestamp"]) // 1000000
+                      px = float(row["price"]); qty = float(row["amount"]); x = trades[b]
+                      if row["side"] == "buy": x[0] += qty; x[2] += px * qty; x[4] += 1
+                      else: x[1] += qty; x[3] += px * qty; x[5] += 1
+                      x[6] = px
+              path = out / f"{symbol}_20250501_1s.csv.gz"
+              last = None; rows = 0
+              with gzip.open(path, "wt", newline="", encoding="utf-8") as f:
+                  w = csv.writer(f); w.writerow(("bucket_us","quote_ts","bid","ask","bid_qty","ask_qty","quote_updates","mid","spread_bps","top_imbalance","microprice","buy_qty","sell_qty","buy_notional","sell_notional","buy_count","sell_count","last_trade"))
+                  for b in sorted(set(quotes) | set(trades)):
+                      if b in quotes: last = quotes[b]
+                      if last is None: continue
+                      ts,bid,ask,bq,aq,updates = last
+                      if not (bid > 0 and ask > bid): continue
+                      den=bq+aq; mid=(bid+ask)/2; imb=(bq-aq)/den if den>0 else 0; micro=(ask*bq+bid*aq)/den if den>0 else mid
+                      w.writerow((b*1000000,ts,bid,ask,bq,aq,updates,mid,(ask-bid)/mid*10000,imb,micro,*trades[b])); rows += 1
+              manifest["symbols"][symbol] = {"rows": rows, "output": path.as_posix(), "output_sha256": sha(path), "source_book_sha256": sha(qp), "source_trades_sha256": sha(tp)}
+              qp.unlink(); tp.unlink(); print(symbol, rows, path.stat().st_size, flush=True)
+          (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tardis-binance-futures-bbo-trades-smoke-20250501
+          path: research_data/tardis_smoke_1s
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
