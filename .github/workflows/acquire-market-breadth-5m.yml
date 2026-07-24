@@ -1,0 +1,158 @@
+name: Acquire market breadth 5m context
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/acquire-market-breadth-5m.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check numpy pandas
+
+      - name: Download, verify and normalize official Binance archives
+        shell: bash
+        run: |
+          cat > /tmp/acquire.py <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+
+          BASE = 'https://data.binance.vision/data/futures/um/monthly/klines'
+          SYMBOLS = ('BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT')
+          MONTHS = pd.period_range('2020-01', '2026-06', freq='M')
+          OUT = Path('market-breadth-5m')
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          def fetch(url: str, attempts: int = 5) -> bytes | None:
+              last: Exception | None = None
+              for attempt in range(attempts):
+                  request = urllib.request.Request(url, headers={'User-Agent': 'smc-market-breadth-research/1.0'})
+                  try:
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return None
+                      last = exc
+                  except Exception as exc:  # network retry boundary
+                      last = exc
+                  time.sleep(min(20, 2 ** attempt))
+              raise RuntimeError(f'download failed: {url}') from last
+
+          def read_archive(raw: bytes, name: str) -> pd.DataFrame:
+              with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                  csvs = [x for x in archive.namelist() if x.lower().endswith('.csv')]
+                  if len(csvs) != 1:
+                      raise RuntimeError(f'{name}: expected one CSV, got {csvs}')
+                  payload = archive.read(csvs[0])
+              frame = pd.read_csv(io.BytesIO(payload), header=None, low_memory=False)
+              first = str(frame.iat[0, 0]).strip().lower()
+              if first in {'open_time', 'open time'} or not first.lstrip('+-').isdigit():
+                  frame = frame.iloc[1:].reset_index(drop=True)
+              if frame.shape[1] < 6:
+                  raise RuntimeError(f'{name}: invalid kline schema {frame.shape}')
+              frame = frame.iloc[:, :6].copy()
+              frame.columns = ['open_time', 'open', 'high', 'low', 'close', 'volume']
+              for column in frame.columns:
+                  frame[column] = pd.to_numeric(frame[column], errors='raise')
+              timestamp = frame.open_time.to_numpy(np.int64)
+              # Binance archives can mix millisecond and microsecond epochs across
+              # calendar months. Normalize each archive before concatenation.
+              if np.median(timestamp) > 10**14:
+                  timestamp = timestamp // 1000
+              frame['open_time'] = timestamp
+              return frame
+
+          manifest: list[dict[str, object]] = []
+          for symbol in SYMBOLS:
+              chunks: list[pd.DataFrame] = []
+              verified = 0
+              skipped = 0
+              for month in MONTHS:
+                  stamp = str(month)
+                  filename = f'{symbol}-5m-{stamp}.zip'
+                  url = f'{BASE}/{symbol}/5m/{filename}'
+                  raw = fetch(url)
+                  if raw is None:
+                      skipped += 1
+                      continue
+                  checksum_raw = fetch(url + '.CHECKSUM')
+                  if checksum_raw is None:
+                      raise RuntimeError(f'missing checksum for {url}')
+                  expected = checksum_raw.decode('utf-8').strip().split()[0].lower()
+                  actual = hashlib.sha256(raw).hexdigest()
+                  if actual != expected:
+                      raise RuntimeError(f'checksum mismatch {filename}: {actual} != {expected}')
+                  chunks.append(read_archive(raw, filename))
+                  verified += 1
+                  print(symbol, stamp, 'verified', flush=True)
+              if not chunks:
+                  raise RuntimeError(f'no archives found for {symbol}')
+              frame = pd.concat(chunks, ignore_index=True)
+              frame = frame.sort_values('open_time').drop_duplicates('open_time', keep='last').reset_index(drop=True)
+              timestamp = frame.open_time.to_numpy(np.int64)
+              gaps = np.flatnonzero(np.diff(timestamp) != 300_000)
+              if len(gaps):
+                  i = int(gaps[0])
+                  raise RuntimeError(f'{symbol}: non-contiguous after inception at {timestamp[i]} -> {timestamp[i+1]}')
+              o = frame.open.to_numpy(float)
+              h = frame.high.to_numpy(float)
+              l = frame.low.to_numpy(float)
+              c = frame.close.to_numpy(float)
+              if np.any(h < np.maximum.reduce([o, l, c])) or np.any(l > np.minimum.reduce([o, h, c])):
+                  raise RuntimeError(f'{symbol}: invalid OHLC ordering')
+              target = OUT / f'{symbol}_5m.npz'
+              np.savez_compressed(
+                  target,
+                  ts_ns=timestamp * 1_000_000,
+                  open=o.astype(np.float32),
+                  high=h.astype(np.float32),
+                  low=l.astype(np.float32),
+                  close=c.astype(np.float32),
+                  volume=frame.volume.to_numpy(np.float32),
+              )
+              manifest.append({
+                  'symbol': symbol,
+                  'verified_months': verified,
+                  'missing_pre_inception_months': skipped,
+                  'rows': len(frame),
+                  'start_utc': pd.to_datetime(timestamp[0], unit='ms', utc=True).isoformat(),
+                  'end_utc': pd.to_datetime(timestamp[-1], unit='ms', utc=True).isoformat(),
+                  'npz_sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+              })
+
+          import json
+          (OUT / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          print(json.dumps(manifest, indent=2), flush=True)
+          PY
+          python /tmp/acquire.py
+
+      - name: Upload checksum-verified context artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-market-breadth-5m-2020-2026
+          path: market-breadth-5m/
+          if-no-files-found: error
+          retention-days: 30
