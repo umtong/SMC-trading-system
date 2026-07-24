@@ -1,0 +1,124 @@
+name: State-first ETH validation months
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/state-first-eth-validation-months.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-eth-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  EXPECTED_DAILY_V2_BUNDLE_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
+  EXPECTED_DAILY_PATCH_V3_SHA256: 80d0d00e6944856e6a1509794691c15537997da528cce3f558ca5a4b058ff4a2
+  EXPECTED_DAILY_PATCH_V4_SHA256: e1c35db1b9742775c177c4d585c57e8a8b5c58c5eb121c7dcc145a83aaf02186
+  EXPECTED_DAILY_V4_SHA256: 92e5dd743d94c0e687a0b72d4b947ae4808ac58bda0ea7131a42498d46e656b4
+  EXPECTED_DAILY_V4_TEST_SHA256: 29933d9166345c4337912aa35f8b666d20c596d241d81434bcfba1eae97449d5
+  EXPECTED_MONTH_V3_B64_SHA256: 0b0c93d73458721a56f0f5593c98471cd8f5f45ff5dcf0771ac5494900d6131e
+  EXPECTED_MONTH_V3_GZ_SHA256: d32b5281a23419a02a97d40a60d163380b9b9c01829f4bcf95681cb3628120bf
+  EXPECTED_MONTH_V3_SHA256: 3ec453a633af29784128278b55592f88d52108d54e9f1db5df6684d41677f16a
+  EXPECTED_MONTH_V3_TEST_SHA256: a1af4a961a042f2b82045c51fd68ddfa5525e4a4ede4a200c1146c79cc57635d
+  EXPECTED_MONTH_V3_PREREG_SHA256: 7ff96d3333dd811fe52b8332a7b0b887406e368d98532f67d5a648c9309d72a9
+  EXPECTED_MONTH_PATCH_V4_SHA256: f93b4c142a9530efaffe7ebf4797149b017aa80ead62d8982de9b11d72e90ac4
+  EXPECTED_MONTH_V4_SHA256: 996b581f64c3bf5358323cd59ebdb9e16a84f862fba3388d48ed308750af4cd9
+  EXPECTED_MONTH_V4_TEST_SHA256: f9b9381908d087a8facb4a14421e9780e8ca9491d434592b4503f3792529bb58
+  EXPECTED_MONTH_V4_PREREG_SHA256: 4ffc488eba1be1251f80b99f395cde7eb76c69cc745ab3610f9c5010c74e93c5
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        month: ["2023-08", "2023-10", "2023-12"]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-eth-validation-months-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct immutable V4 builders
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
+          src="$root/source"
+          mkdir -p "$src" "$root/output"
+          base64 --decode research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64 > /tmp/daily_v2.tar.gz
+          printf '%s  %s\n' "$EXPECTED_DAILY_V2_BUNDLE_GZ_SHA256" /tmp/daily_v2.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/daily_v2.tar.gz -C "$src"
+          printf '%s  %s\n' "$EXPECTED_DAILY_PATCH_V3_SHA256" research/state_first_raw_provenance_20260724/patch_official_builder_v3.py | sha256sum --check --strict
+          python research/state_first_raw_provenance_20260724/patch_official_builder_v3.py "$src"
+          printf '%s  %s\n' "$EXPECTED_DAILY_PATCH_V4_SHA256" research/state_first_raw_provenance_20260724/patch_official_builder_v4.py | sha256sum --check --strict
+          python research/state_first_raw_provenance_20260724/patch_official_builder_v4.py "$src"
+          printf '%s  %s\n' "$EXPECTED_DAILY_V4_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_DAILY_V4_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
+
+          printf '%s  %s\n' "$EXPECTED_MONTH_V3_B64_SHA256" research/state_first_monthly_panel_20260724/bundle.tar.gz.b64 | sha256sum --check --strict
+          base64 --decode research/state_first_monthly_panel_20260724/bundle.tar.gz.b64 > /tmp/month_v3.tar.gz
+          printf '%s  %s\n' "$EXPECTED_MONTH_V3_GZ_SHA256" /tmp/month_v3.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/month_v3.tar.gz -C "$src"
+          printf '%s  %s\n' "$EXPECTED_MONTH_V3_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_MONTH_V3_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_MONTH_V3_PREREG_SHA256" "$src/monthly_panel_preregistration_v3.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_MONTH_PATCH_V4_SHA256" research/state_first_monthly_panel_20260724/patch_monthly_v4.py | sha256sum --check --strict
+          python research/state_first_monthly_panel_20260724/patch_monthly_v4.py "$src"
+          printf '%s  %s\n' "$EXPECTED_MONTH_V4_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_MONTH_V4_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_MONTH_V4_PREREG_SHA256" "$src/monthly_panel_preregistration_v4.json" | sha256sum --check --strict
+          python -m py_compile "$src"/*.py
+          sha256sum "$src/build_official_state_v4.py" "$src/build_official_state_month.py" > "$root/source_sha256.txt"
+
+      - name: Install fixed environment
+        run: |
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
+
+      - name: Test causal builders
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
+          PYTHONPATH="$root/source" pytest -q "$root/source/test_official_state_v4.py" "$root/source/test_build_official_state_month.py" | tee "$root/unit_tests.log"
+
+      - name: Build checksum-verified ETH month
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
+          python "$root/source/build_official_state_month.py" --symbol ETHUSDT --month "${{ matrix.month }}" --warmup-days 7 --v4-source "$root/source/build_official_state_v4.py" --output "$root/output" 2>&1 | tee "$root/build.log"
+          python - "$root/output/ETHUSDT_${{ matrix.month }}_official_state_v4_manifest.json" <<'PY'
+          import json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert obj['rows']==8928
+          assert obj['audits']['complete_5m_grid'] is True
+          assert obj['audits']['future_depth_rows']==0 and obj['audits']['future_metric_rows']==0
+          assert obj['audits']['forbidden_outcome_columns']==[]
+          assert obj['strategy_executed'] is False and obj['candidate_pnl_observed'] is False
+          assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+          print(json.dumps({'symbol':obj['symbol'],'month':obj['month'],'rows':obj['rows'],'sha256':obj['panel_sha256']},sort_keys=True))
+          PY
+
+      - name: Record immutable checksums
+        if: always()
+        shell: bash
+        run: |
+          root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
+          find "$root" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-eth-${{ matrix.month }}-${{ github.run_id }}
+          path: research_runs/state_first_eth_validation/${{ matrix.month }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
