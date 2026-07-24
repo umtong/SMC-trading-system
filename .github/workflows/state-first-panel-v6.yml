@@ -1,0 +1,188 @@
+name: State-first official source-health V6 panels
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/state_first_panel_clean_20260724/patch_source_health_v6.py.gz.b64.part*"
+      - ".github/workflows/state-first-panel-v6.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-panel-v6-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_COMMIT: d7a2dbc080a3cd7279f6caf342d703b3d7517087
+  DAILY_V2_B64_SHA256: f76ea333a13118a659c91eac6134402c7feac6b32d45152f1603ccc5d9a78176
+  DAILY_V2_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
+  DAILY_PATCH_V3_SHA256: 80d0d00e6944856e6a1509794691c15537997da528cce3f558ca5a4b058ff4a2
+  DAILY_PATCH_V4_SHA256: e1c35db1b9742775c177c4d585c57e8a8b5c58c5eb121c7dcc145a83aaf02186
+  MONTH_V3_B64_SHA256: 0b0c93d73458721a56f0f5593c98471cd8f5f45ff5dcf0771ac5494900d6131e
+  MONTH_V3_GZ_SHA256: d32b5281a23419a02a97d40a60d163380b9b9c01829f4bcf95681cb3628120bf
+  MONTH_PATCH_V4_SHA256: f93b4c142a9530efaffe7ebf4797149b017aa80ead62d8982de9b11d72e90ac4
+  V6_PART00_SHA256: d23f1ce8c356c4ab92bdd820349614865e6d7b325bbd1b9bbece3fcc49ae5815
+  V6_PART01_SHA256: aed75b448bd11f3a132853c21fab93d470ebb78abe82b0812041c2783ef90e3b
+  V6_PART02_SHA256: ab17e54f99aa85bbbf8d5466a71f58db65560d44a1ffd9c64e1f94741bae58ab
+  V6_PART03_SHA256: cc123697286b0b934372df6c6c518c9d8df9fd3329a81f27f162328f14d41784
+  V6_COMBINED_B64_SHA256: 6a98a3042817938cc6e58711d6d1867b06f757199f97a0deb04898f14380ecd7
+  V6_PATCH_GZ_SHA256: 48f296af0c25b9792b9de247fb8448c488434d076659906473d8c66f66551706
+  V6_PATCH_SHA256: 16926865e3b46172b09cd733572187c4a7d700475d0ca2caa0dcfeee5218e43c
+  V6_DAILY_SHA256: fd00559651ae6904d75c8e3b7f3940e6c3a8d1c12af47804cd85650dad69beff
+  V6_DAILY_TEST_SHA256: 6f59c11a4d8fd438e638d3b59953e22a95599044f00371b782983cb9e52456b4
+  V6_MONTH_SHA256: 51fb705cb9eaa6fe4d809959f727c80f4d5866ae4e3d5367f4be0b6a14ab0609
+  V6_MONTH_TEST_SHA256: 64353bb1918bf7dc06e69761a788bb4c29b3b1d5980be612237f52e09e4153bf
+  V6_PREREG_SHA256: 31a6ff3e364e5d9bd525ed78c1a6b9cbe1f5fb0beedfe39500aa6371288f1038
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        month: ["2023-07", "2023-08", "2023-09", "2023-10", "2023-11", "2023-12"]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-panel-clean-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct immutable V4 sources and apply source-health V6
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_v6_20260724/$key"
+          src="$root/source"
+          mkdir -p "$src" "$root/output" /tmp/pinned
+
+          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64" > /tmp/pinned/daily_v2.tar.gz.b64
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/patch_official_builder_v3.py" > /tmp/pinned/patch_daily_v3.py
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/patch_official_builder_v4.py" > /tmp/pinned/patch_daily_v4.py
+          git show "$SOURCE_COMMIT:research/state_first_monthly_panel_20260724/bundle.tar.gz.b64" > /tmp/pinned/month_v3.tar.gz.b64
+          git show "$SOURCE_COMMIT:research/state_first_monthly_panel_20260724/patch_monthly_v4.py" > /tmp/pinned/patch_month_v4.py
+
+          printf '%s  %s\n' "$DAILY_V2_B64_SHA256" /tmp/pinned/daily_v2.tar.gz.b64 | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_PATCH_V3_SHA256" /tmp/pinned/patch_daily_v3.py | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_PATCH_V4_SHA256" /tmp/pinned/patch_daily_v4.py | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_V3_B64_SHA256" /tmp/pinned/month_v3.tar.gz.b64 | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_PATCH_V4_SHA256" /tmp/pinned/patch_month_v4.py | sha256sum --check --strict
+
+          base64 --decode /tmp/pinned/daily_v2.tar.gz.b64 > /tmp/pinned/daily_v2.tar.gz
+          printf '%s  %s\n' "$DAILY_V2_GZ_SHA256" /tmp/pinned/daily_v2.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/pinned/daily_v2.tar.gz -C "$src"
+          python /tmp/pinned/patch_daily_v3.py "$src"
+          python /tmp/pinned/patch_daily_v4.py "$src"
+
+          base64 --decode /tmp/pinned/month_v3.tar.gz.b64 > /tmp/pinned/month_v3.tar.gz
+          printf '%s  %s\n' "$MONTH_V3_GZ_SHA256" /tmp/pinned/month_v3.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/pinned/month_v3.tar.gz -C "$src"
+          python /tmp/pinned/patch_month_v4.py "$src"
+
+          pfx=research/state_first_panel_clean_20260724/patch_source_health_v6.py.gz.b64.part
+          printf '%s  %s\n' "$V6_PART00_SHA256" "${pfx}00" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_PART01_SHA256" "${pfx}01" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_PART02_SHA256" "${pfx}02" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_PART03_SHA256" "${pfx}03" | sha256sum --check --strict
+          cat "${pfx}00" "${pfx}01" "${pfx}02" "${pfx}03" > /tmp/pinned/patch_v6.py.gz.b64
+          printf '%s  %s\n' "$V6_COMBINED_B64_SHA256" /tmp/pinned/patch_v6.py.gz.b64 | sha256sum --check --strict
+          base64 --decode /tmp/pinned/patch_v6.py.gz.b64 > /tmp/pinned/patch_v6.py.gz
+          printf '%s  %s\n' "$V6_PATCH_GZ_SHA256" /tmp/pinned/patch_v6.py.gz | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/pinned/patch_v6.py.gz > /tmp/pinned/patch_v6.py
+          printf '%s  %s\n' "$V6_PATCH_SHA256" /tmp/pinned/patch_v6.py | sha256sum --check --strict
+          python /tmp/pinned/patch_v6.py "$src"
+
+          printf '%s  %s\n' "$V6_DAILY_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_DAILY_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_MONTH_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_MONTH_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$V6_PREREG_SHA256" "$src/source_health_v6_preregistration.json" | sha256sum --check --strict
+          python -m py_compile "$src"/*.py
+
+          find /tmp/pinned -type f -print0 | sort -z | xargs -0 sha256sum > "$root/input_sha256.txt"
+          cp "$src/source_health_v6_preregistration.json" "$root/source_health_v6_preregistration.json"
+
+      - name: Install fixed data environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
+
+      - name: Run all V6 causal and source-health tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_v6_20260724/$key"
+          PYTHONPATH="$root/source" pytest -q "$root/source/test_official_state_v4.py" "$root/source/test_build_official_state_month.py" 2>&1 | tee "$root/unit_tests.log"
+
+      - name: Build checksum-verified official V6 panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_v6_20260724/$key"
+          python "$root/source/build_official_state_month.py" \
+            --symbol "${{ matrix.symbol }}" \
+            --month "${{ matrix.month }}" \
+            --warmup-days 7 \
+            --v4-source "$root/source/build_official_state_v4.py" \
+            --output "$root/output" \
+            2>&1 | tee "$root/build.log"
+
+          manifest="$root/output/${{ matrix.symbol }}_${{ matrix.month }}_official_state_v6_manifest.json"
+          python - "$manifest" <<'PY'
+          import calendar,json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          year,month=map(int,obj['month'].split('-'))
+          expected=calendar.monthrange(year,month)[1]*288
+          audits=obj['audits']
+          assert obj['builder_contract']=='official_state_v6_monthly_masked_source_health'
+          assert obj['rows']==expected
+          assert audits['complete_5m_grid'] is True
+          assert audits['future_depth_rows']==0 and audits['future_metric_rows']==0
+          assert audits['forbidden_outcome_columns']==[]
+          assert audits['official_kline_is_exact_flow_and_count_source'] is True
+          assert audits['one_kline_bad_bar_fraction_tolerance']==0.02
+          assert audits['one_kline_daily_relative_tolerance']==0.005
+          assert audits['aggregate_interior_bad_bar_fraction_tolerance']==0.02
+          assert audits['aggregate_daily_relative_tolerance']==0.005
+          assert audits['aggregate_id_relative_tolerance']==0.005
+          assert {'open','high','low','close','close_time','one_minute_price_reconciled','one_minute_flow_reconciled','aggregate_interior_reconciled'}.issubset(obj['columns'])
+          assert obj['strategy_executed'] is False and obj['candidate_pnl_observed'] is False
+          assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+          assert obj['orders_submitted'] is False and obj['paper_or_live_started'] is False
+          print(json.dumps({
+            'symbol':obj['symbol'],'month':obj['month'],'rows':obj['rows'],
+            'panel_sha256':obj['panel_sha256'],
+            'masked_price':audits['total_one_minute_price_masked_bars'],
+            'masked_flow':audits['total_one_minute_flow_masked_bars'],
+            'masked_aggregate':audits['total_aggregate_interior_masked_bars'],
+          },sort_keys=True))
+          PY
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_v6_20260724/$key"
+          find "$root" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-panel-v6-${{ matrix.symbol }}-${{ matrix.month }}-${{ github.sha }}
+          path: research_runs/state_first_panel_v6_20260724/${{ matrix.symbol }}_${{ matrix.month }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
