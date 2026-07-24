@@ -1,0 +1,132 @@
+name: State-first L2 static causal audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/remote/state_first_l2_v2.py.gz.b64.part*"
+      - "research/remote/state_first_l2_v2_test.py.gz.b64.part*"
+      - "research/state_first_l2_20260724/preregistration.json"
+      - ".github/workflows/state-first-l2-static-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-l2-static-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    env:
+      EXPECTED_SCRIPT_GZ_SHA256: 350348d6349832774f67c00237e0e149a957bdf8a16f4d4e2f93e3d55ae4d396
+      EXPECTED_SCRIPT_SHA256: 3cae6eeb57e2e7ce385bf534b8b6a3c792bec851e1534b3a65ac52971a794298
+      EXPECTED_TEST_GZ_SHA256: 4dc37136936354df36fb08c70a0741d534fb12a581c368ef64bf4d0217179285
+      EXPECTED_TEST_SHA256: a3932277d2bfd234621b726ac0f877cf34d895b0e5248f3df61423a37b248def
+      EXPECTED_PREREG_SHA256: b223ae70bd7e1fb9b7b2cc5b23ddb6d608b0a78e6a48db9f07d35dfd1195ed7e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-l2-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct and diagnose immutable source transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=/tmp/state-first-l2-audit
+          mkdir -p "$root"
+          sha256sum research/remote/state_first_l2_v2.py.gz.b64.part{00..05} \
+            research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} \
+            > "$root/input_part_sha256.txt"
+          cat research/remote/state_first_l2_v2.py.gz.b64.part{00..05} > /tmp/state_first_l2.py.gz.b64
+          cat research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} > /tmp/test_state_first_l2.py.gz.b64
+          base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
+          base64 --decode /tmp/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
+          gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$root/state_first_l2.py"
+          gzip --decompress --stdout /tmp/test_state_first_l2.py.gz > "$root/test_state_first_l2.py"
+          cp research/state_first_l2_20260724/preregistration.json "$root/preregistration.json"
+          python -m py_compile "$root/state_first_l2.py" "$root/test_state_first_l2.py"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('/tmp/state-first-l2-audit')
+          items={
+            'script_gzip':(Path('/tmp/state_first_l2.py.gz'),os.environ['EXPECTED_SCRIPT_GZ_SHA256']),
+            'script':(root/'state_first_l2.py',os.environ['EXPECTED_SCRIPT_SHA256']),
+            'test_gzip':(Path('/tmp/test_state_first_l2.py.gz'),os.environ['EXPECTED_TEST_GZ_SHA256']),
+            'test':(root/'test_state_first_l2.py',os.environ['EXPECTED_TEST_SHA256']),
+            'preregistration':(root/'preregistration.json',os.environ['EXPECTED_PREREG_SHA256']),
+          }
+          report={}
+          for name,(path,expected) in items.items():
+            actual=hashlib.sha256(path.read_bytes()).hexdigest()
+            report[name]={'path':str(path),'bytes':path.stat().st_size,'actual_sha256':actual,'expected_sha256':expected,'matches':actual==expected}
+          report['all_expected_hashes_match']=all(v['matches'] for v in report.values())
+          report['research_executed']=False
+          report['candidate_pnl_observed']=False
+          (root/'transport_identity.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
+
+      - name: Produce static causal and gating inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast, hashlib, json, re
+          from pathlib import Path
+          root=Path('/tmp/state-first-l2-audit')
+          source=(root/'state_first_l2.py').read_text(encoding='utf-8')
+          test_source=(root/'test_state_first_l2.py').read_text(encoding='utf-8')
+          prereg=json.loads((root/'preregistration.json').read_text(encoding='utf-8'))
+          identity=json.loads((root/'transport_identity.json').read_text(encoding='utf-8'))
+          tree=ast.parse(source)
+          functions=[];imports=[]
+          for node in ast.walk(tree):
+              if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                  functions.append({'name':node.name,'line':node.lineno,'args':[a.arg for a in node.args.args]})
+              elif isinstance(node,(ast.Import,ast.ImportFrom)):
+                  imports.append(ast.get_source_segment(source,node) or '')
+          patterns={
+              'forward_column_mentions':r'(?i)fwd_|forward_|future_|label_|target_',
+              'feature_selection_mentions':r'(?i)feature_cols|features|predictors|drop\(',
+              'time_split_mentions':r'(?i)2023-07|2024-01|2025-01|2026-01|confirmation|selection|development',
+              'purge_mentions':r'(?i)purge|embargo|horizon|label_end|exit_time|available',
+              'funding_mentions':r'(?i)funding',
+              'cost_mentions':r'(?i)cost|fee|slippage|impact|spread',
+              'position_mentions':r'(?i)position|free_at|reentry|overlap|max_leverage|risk_fraction',
+              'target_gate_mentions':r'(?i)geo.*daily|target_gate|0\.01',
+              'data_load_mentions':r'(?i)hf_hub|parquet|download|2025|2026',
+          }
+          lines=source.splitlines();matches={}
+          for key,pattern in patterns.items():
+              rx=re.compile(pattern)
+              matches[key]=[{'line':i,'text':line[:500]} for i,line in enumerate(lines,1) if rx.search(line)]
+          report={
+              'schema_version':3,'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+              'test_sha256':hashlib.sha256(test_source.encode()).hexdigest(),
+              'preregistration_sha256':hashlib.sha256((root/'preregistration.json').read_bytes()).hexdigest(),
+              'transport_all_expected_hashes_match':identity['all_expected_hashes_match'],
+              'source_lines':len(lines),'test_lines':len(test_source.splitlines()),
+              'functions':functions,'imports':imports,'matches':matches,
+              'preregistered_time_splits':prereg.get('time_splits'),
+              'research_executed':False,'candidate_pnl_observed':False,
+              '2025_opened':False,'2026_opened':False,'orders_submitted':False,'paper_or_live_started':False,
+          }
+          (root/'static_audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps({k:report[k] for k in ('source_sha256','test_sha256','source_lines','test_lines','transport_all_expected_hashes_match','research_executed')},indent=2))
+          PY
+          find /tmp/state-first-l2-audit -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > /tmp/state-first-l2-audit/SHA256SUMS.txt
+
+      - name: Upload decoded source and static audit only
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-l2-static-audit-${{ github.run_id }}
+          path: /tmp/state-first-l2-audit
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6

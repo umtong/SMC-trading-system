@@ -1,0 +1,145 @@
+{
+  "causality": {
+    "2025_gate": "2025 files are not loaded unless a single primary passes all 2024 selection gates.",
+    "daily_boundary": "UTC 00:00; non-trading days remain in the equity path.",
+    "day_boundary_state": "First 90 minutes of each UTC day are excluded to remove possible daily-file VPIN/Hawkes state-reset artifacts.",
+    "decision": "Feature values from completed five-minute bar t only.",
+    "entry": "First open of bar t+1.",
+    "missing_bars": "Any feature, label or holding path crossing a missing five-minute bar is invalid.",
+    "normalization": "Model imputers and scalers are fit on training data only.",
+    "oi": "Dataset OI features are treated as available at bar close and therefore can affect only the next bar.",
+    "same_bar": "Protective stop has adverse priority; no favorable target is used.",
+    "walkforward": "Monthly retraining; training labels are purged by the prediction horizon and calibration precedes the test month."
+  },
+  "confirmation_gate": {
+    "base_stress15_stress20_returns": ">0",
+    "max_drawdown": "<=0.20",
+    "minimum_trades": 40,
+    "profit_factor": ">=1.05",
+    "top5_positive_share": "<=0.60"
+  },
+  "created_at_utc": "2026-07-24T04:58:42.718537+00:00",
+  "data": {
+    "exclude_first_bars_each_utc_day": 18,
+    "execution_paths": [
+      "raw/klines_5m/BTCUSDT/YYYY-MM-DD.parquet",
+      "BTCUSDT/BTCUSDT_fundingRate.parquet"
+    ],
+    "execution_repo": "linxy/USDT-M_Perpetual_Futures",
+    "execution_revision": "0113be29cdcb7e977037d192c1055c01cf0d369e",
+    "feature_paths": "features/BTCUSDT/YYYY-MM-DD.parquet",
+    "feature_repo": "ibrahimdaud/binance-btcusdt",
+    "feature_revision_policy": "Resolve and freeze one immutable repository SHA before downloading development data; all later stages must verify the same SHA and file hashes.",
+    "forward_columns_are_labels_only": true,
+    "source_provenance_guard": {
+      "claimed_feature_builder_repository": "https://github.com/ibrahimdaud/quant-hack",
+      "confirmation_requirement": "passed selection checkpoint must retain the same attestation digest",
+      "development_use": "exploratory hypothesis evaluation only",
+      "repository_accessible_during_v2_registration": false,
+      "selection_requirement": "immutable independent reconstruction attestation from checksum-verified raw sources"
+    },
+    "symbol": "BTCUSDT"
+  },
+  "development_gate": {
+    "base_stress15_stress20_returns": ">0",
+    "mandatory_diversity": "At most one representative per hazard-model, direction-model, horizon and routing-filter tuple before filling remaining slots.",
+    "max_drawdown": "<=0.20",
+    "minimum_trades": 30,
+    "positive_month_fraction": ">=0.50",
+    "profit_factor": ">=1.10",
+    "representative_cap": 12,
+    "top5_positive_share": "<=0.50"
+  },
+  "economic_hypothesis": "Direction models are unreliable when the pre-trade liquidity state does not permit a move large enough to overcome costs. A separate hazard model should first identify high-information, high-impact states from L2 depth, VPIN, Hawkes intensities, aggressive flow and open interest. Conditional on that state, direction is estimated independently and filtered through continuation, absorption, or unrestricted routing.",
+  "execution_and_risk": {
+    "capacity_fraction_of_prior_quote_volume": 0.001,
+    "cost_per_side_bps": [
+      6.0,
+      9.0,
+      12.0
+    ],
+    "funding": "Actual historical funding settlements.",
+    "initial_equity": 10000.0,
+    "max_leverage": 3.0,
+    "no_reentry_on_exit_bar": true,
+    "one_global_position": true,
+    "risk_fraction": 0.005
+  },
+  "models": {
+    "direction": [
+      "logistic",
+      "hist_gradient_boosting"
+    ],
+    "direction_probability_edges": [
+      0.08,
+      0.12,
+      0.18
+    ],
+    "hazard": [
+      "logistic",
+      "hist_gradient_boosting"
+    ],
+    "hazard_labels_abs_move_bps": {
+      "12": 30,
+      "24": 45
+    },
+    "hazard_probability_quantiles": [
+      0.9,
+      0.95,
+      0.975
+    ],
+    "horizons_5m_bars": [
+      12,
+      24
+    ],
+    "routing_filters": [
+      "unrestricted",
+      "flow_depth_aligned",
+      "absorption_reversal"
+    ],
+    "stop_atr": [
+      1.5,
+      2.5,
+      4.0
+    ],
+    "vpin_minimum": [
+      0.0,
+      0.4
+    ]
+  },
+  "prohibitions": [
+    "No 2024 selection before a passed independent feature-builder provenance attestation exists.",
+    "No 2025 access before a frozen 2024 primary exists.",
+    "No 2026 access.",
+    "No target-return, leverage or risk fitting.",
+    "No paper, testnet or live orders.",
+    "No complete deployment bundle unless the target gate and all pre-live audits pass."
+  ],
+  "research_id": "BINANCE_USDM_BTC_STATE_FIRST_L2_V2_20260724",
+  "schema_version": 2,
+  "selection_gate": {
+    "base_stress15_stress20_returns": ">0",
+    "max_drawdown": "<=0.20",
+    "minimum_trades": 40,
+    "positive_month_fraction": ">=0.50",
+    "profit_factor": ">=1.05",
+    "top5_positive_share": "<=0.50"
+  },
+  "status": "PREREGISTERED_BEFORE_RUN",
+  "target_gate": "Base-cost geometric mean daily return >= 0.01.",
+  "time_splits": {
+    "2026": "sealed",
+    "confirmation": [
+      "2025-01-01T00:00:00Z",
+      "2026-01-01T00:00:00Z"
+    ],
+    "development_oos": [
+      "2023-07-01T00:00:00Z",
+      "2024-01-01T00:00:00Z"
+    ],
+    "selection": [
+      "2024-01-01T00:00:00Z",
+      "2025-01-01T00:00:00Z"
+    ]
+  }
+}

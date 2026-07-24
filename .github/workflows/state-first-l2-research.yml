@@ -1,0 +1,175 @@
+name: State-first L2 causal research
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/remote/state_first_l2_v3.py.gz.b64.part*"
+      - "research/remote/state_first_l2_v3_test.py.gz.b64"
+      - "research/state_first_l2_20260724/preregistration_v2.json"
+      - ".github/workflows/state-first-l2-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-l2-v3-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  causal-development:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: ${{ github.workspace }}/.hf_cache_state_first_v3
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_ETAG_TIMEOUT: "120"
+      HF_HUB_DOWNLOAD_TIMEOUT: "300"
+      ROOT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724
+      SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724/state_first_l2.py
+      TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724/test_state_first_l2.py
+      PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration_v2.json
+      EXPECTED_SCRIPT_GZ_SHA256: 4eec7a94b5622c3d8feaebee29b9a3594cbae4221f2ba63cc12546981b4156e4
+      EXPECTED_SCRIPT_SHA256: 6382b5ba06a20709a9933acf8e025f1072f7b39b2f77982076bb891014b3d4c5
+      EXPECTED_TEST_GZ_SHA256: 8cb271363cf1a072718dfc6a110e3535fafe8b954f14466ad34181f92b84f8aa
+      EXPECTED_TEST_SHA256: e5f05ddf700b2c1feca2391de0fc31af8a75304a669f893ad78bf1a7cbc6accc
+      EXPECTED_PREREG_SHA256: 717d9007b0ec49f6cbd5f3c5be3c5b8fee6bb06b2676717abf4dda50b104437a
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/state-first-l2-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct and verify immutable v3 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          sha256sum \
+            research/remote/state_first_l2_v3.py.gz.b64.part00 \
+            research/remote/state_first_l2_v3.py.gz.b64.part01a \
+            research/remote/state_first_l2_v3.py.gz.b64.part01b \
+            research/remote/state_first_l2_v3.py.gz.b64.part02 \
+            research/remote/state_first_l2_v3_test.py.gz.b64 \
+            > "$ROOT/input_part_sha256.txt"
+          cat \
+            research/remote/state_first_l2_v3.py.gz.b64.part00 \
+            research/remote/state_first_l2_v3.py.gz.b64.part01a \
+            research/remote/state_first_l2_v3.py.gz.b64.part01b \
+            research/remote/state_first_l2_v3.py.gz.b64.part02 \
+            > /tmp/state_first_l2.py.gz.b64
+          base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
+          base64 --decode research/remote/state_first_l2_v3_test.py.gz.b64 > /tmp/test_state_first_l2.py.gz
+          printf '%s  %s\n' "$EXPECTED_SCRIPT_GZ_SHA256" /tmp/state_first_l2.py.gz | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_TEST_GZ_SHA256" /tmp/test_state_first_l2.py.gz | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$SCRIPT"
+          gzip --decompress --stdout /tmp/test_state_first_l2.py.gz > "$TEST_SCRIPT"
+          printf '%s  %s\n' "$EXPECTED_SCRIPT_SHA256" "$SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_TEST_SHA256" "$TEST_SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREG" | sha256sum --check --strict
+          python -m py_compile "$SCRIPT" "$TEST_SCRIPT"
+          cp "$PREREG" "$ROOT/preregistration.json"
+
+      - name: Install fixed research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "scikit-learn==1.6.1" \
+            "huggingface_hub==0.27.1" \
+            "hf_xet==1.1.10" \
+            "pytest==8.3.4"
+          python - <<'PY'
+          import json,platform,sys
+          import numpy,pandas,pyarrow,sklearn,huggingface_hub
+          from pathlib import Path
+          root=Path('research_runs/state_first_l2_v3_20260724')
+          payload={
+            'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),
+            'numpy':numpy.__version__,'pandas':pandas.__version__,'pyarrow':pyarrow.__version__,
+            'scikit_learn':sklearn.__version__,'huggingface_hub':huggingface_hub.__version__,
+            'orders_submitted':False,'paper_or_live_started':False,'2025_opened':False,'2026_opened':False,
+          }
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+
+      - name: Run causal and accounting regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$ROOT"
+          pytest -q "$TEST_SCRIPT" 2>&1 | tee unit_tests.log
+
+      - name: Run development only and preserve provenance gate
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT/development" "$ROOT/selection" "$ROOT/confirmation"
+          dev_rc=0
+          python "$SCRIPT" \
+            --stage development \
+            --work-dir "$ROOT/development" \
+            --cache-dir "$HF_HOME" \
+            --preregistration "$PREREG" \
+            2>&1 | tee "$ROOT/development.log" || dev_rc=$?
+          dev_pass=0
+          if [[ $dev_rc -eq 0 && -f "$ROOT/development/development_frozen.json" ]]; then
+            dev_pass=$(python - "$ROOT/development/development_frozen.json" <<'PY'
+          import json,sys
+          print(int(json.load(open(sys.argv[1],encoding='utf-8')).get('realistic_gate_count',0)))
+          PY
+            )
+          fi
+          python - "$ROOT/selection/selection_not_opened_feature_provenance.json" "$dev_pass" <<'PY'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1])
+          payload={
+            'development_realistic_gate_count':int(sys.argv[2]),
+            'selection_opened':False,
+            'reason':'Independent checksum-verified raw feature-builder reconstruction attestation is not yet PASSED.',
+            '2024_loaded':False,'2025_loaded':False,'2026_opened':False,
+            'candidate_pnl_observed_after_development':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          p.write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          python - "$ROOT/run_status.json" "$dev_rc" "$dev_pass" <<'PY'
+          import json,pathlib,sys
+          payload={
+            'development_rc':int(sys.argv[2]),
+            'development_realistic_gate_count':int(sys.argv[3]),
+            'selection_rc':-2,'selection_primary_exists':False,'confirmation_rc':-2,
+            'feature_builder_attestation_passed':False,
+            'selection_opened':False,'2024_loaded':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,'target_gate_1pct_daily':False,
+          }
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+          exit 0
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload research evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-l2-v3-${{ github.sha }}
+          path: research_runs/state_first_l2_v3_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
