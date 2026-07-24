@@ -4,8 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "research/remote/state_first_l2.py.gz.b64"
-      - "research/remote/test_state_first_l2.py.gz.b64"
+      - "research/remote/state_first_l2_v2.py.gz.b64.part*"
+      - "research/remote/state_first_l2_v2_test.py.gz.b64.part*"
       - "research/state_first_l2_20260724/preregistration.json"
       - ".github/workflows/state-first-l2-research.yml"
 
@@ -30,10 +30,10 @@ jobs:
       SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/state_first_l2.py
       TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/test_state_first_l2.py
       PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration.json
-      EXPECTED_SCRIPT_GZ_SHA256: 8e1e2fc64ace4b726fb9198a63fa368bd5419fcaad768d6459c918c586d074d0
-      EXPECTED_SCRIPT_SHA256: fa9dc42cbc198c688f868f30b7fb1eca2ccd13596f23c3e5ee1b23b9fda8b534
-      EXPECTED_TEST_GZ_SHA256: e675644fe901add6e29a99ae86c85d7f1996acc82cd61cc17b8754dec7d2c491
-      EXPECTED_TEST_SHA256: 832d7c367dfc8ad5ac16e6027b2737dbb57a1e189b875b81e362caf3112db0f4
+      EXPECTED_SCRIPT_GZ_SHA256: 350348d6349832774f67c00237e0e149a957bdf8a16f4d4e2f93e3d55ae4d396
+      EXPECTED_SCRIPT_SHA256: 3cae6eeb57e2e7ce385bf534b8b6a3c792bec851e1534b3a65ac52971a794298
+      EXPECTED_TEST_GZ_SHA256: 4dc37136936354df36fb08c70a0741d534fb12a581c368ef64bf4d0217179285
+      EXPECTED_TEST_SHA256: a3932277d2bfd234621b726ac0f877cf34d895b0e5248f3df61423a37b248def
       EXPECTED_PREREG_SHA256: b223ae70bd7e1fb9b7b2cc5b23ddb6d608b0a78e6a48db9f07d35dfd1195ed7e
     steps:
       - name: Checkout isolated research branch
@@ -47,8 +47,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          base64 --decode research/remote/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
-          base64 --decode research/remote/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
+          sha256sum research/remote/state_first_l2_v2.py.gz.b64.part{00..05} \
+            research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} \
+            > "$ROOT/input_part_sha256.txt"
+          cat research/remote/state_first_l2_v2.py.gz.b64.part{00..05} > /tmp/state_first_l2.py.gz.b64
+          cat research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} > /tmp/test_state_first_l2.py.gz.b64
+          base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
+          base64 --decode /tmp/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
           printf '%s  %s\n' "$EXPECTED_SCRIPT_GZ_SHA256" /tmp/state_first_l2.py.gz | sha256sum --check --strict
           printf '%s  %s\n' "$EXPECTED_TEST_GZ_SHA256" /tmp/test_state_first_l2.py.gz | sha256sum --check --strict
           gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$SCRIPT"
