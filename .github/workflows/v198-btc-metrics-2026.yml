@@ -1,0 +1,75 @@
+name: V1.98 BTC Positioning Metrics 2026
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/v198-btc-metrics-2026.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify official daily metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import concurrent.futures,csv,gzip,hashlib,io,json,re,time,urllib.error,urllib.request,zipfile
+          from datetime import date,timedelta
+          from pathlib import Path
+          ROOT='https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT'
+          OUT=Path('v198-metrics');OUT.mkdir(exist_ok=True)
+          START=date(2025,12,1);END=date(2026,6,30);CHECK=re.compile(r'([0-9a-fA-F]{64})')
+          def days():
+            d=START
+            while d<=END:yield d.isoformat();d+=timedelta(days=1)
+          def get(url):
+            err=None
+            for i in range(6):
+              try:
+                req=urllib.request.Request(url,headers={'User-Agent':'smc-v198-metrics/1.0'})
+                with urllib.request.urlopen(req,timeout=120) as r:return r.read()
+              except Exception as e:
+                err=e;time.sleep(min(2**i,16))
+            raise RuntimeError(f'{url}: {err!r}')
+          def one(day):
+            name=f'BTCUSDT-metrics-{day}.zip';url=f'{ROOT}/{name}'
+            try: cp=get(url+'.CHECKSUM');payload=get(url)
+            except urllib.error.HTTPError as e:
+              if e.code==404:return {'day':day,'status':'missing'}
+              raise
+            m=CHECK.search(cp.decode());official=m.group(1).lower() if m else ''
+            actual=hashlib.sha256(payload).hexdigest()
+            if actual!=official:raise ValueError(f'checksum {day}')
+            with zipfile.ZipFile(io.BytesIO(payload)) as z:
+              member=[n for n in z.namelist() if n.endswith('.csv')][0]
+              text=z.read(member).decode('utf-8-sig')
+            return {'day':day,'status':'ok','sha256':actual,'text':text,'bytes':len(payload)}
+          records=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+            for r in ex.map(one,list(days())):records.append(r)
+          ok=[r for r in records if r['status']=='ok'];header=None;rows=[]
+          for r in ok:
+            data=list(csv.reader(io.StringIO(r.pop('text'))))
+            if header is None:header=data[0]
+            elif data[0]!=header:raise ValueError('header drift')
+            rows.extend(data[1:])
+          path=OUT/'BTCUSDT_metrics_2025-12_to_2026-06.csv.gz'
+          with gzip.open(path,'wt',encoding='utf-8',newline='') as f:
+            w=csv.writer(f);w.writerow(header);w.writerows(rows)
+          manifest={'start':START.isoformat(),'end':END.isoformat(),'verified_days':len(ok),'rows':len(rows),'header':header,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'records':records}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in manifest.items() if k!='records'},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v198-btc-metrics-2026-${{ github.run_id }}
+          path: v198-metrics
+          if-no-files-found: error
+          retention-days: 14
