@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "research/state_first_raw_provenance_20260724/build_official_state.py"
+      - "research/state_first_raw_provenance_20260724/diagnose_reconciliation.py"
       - "research/state_first_raw_provenance_20260724/builder_preregistration.json"
       - ".github/workflows/state-first-official-state-builder.yml"
   workflow_dispatch:
@@ -23,6 +24,7 @@ jobs:
     env:
       ROOT: ${{ github.workspace }}/research_runs/state_first_official_builder_20260724
       SCRIPT: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/build_official_state.py
+      DIAGNOSTIC: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/diagnose_reconciliation.py
       PREREG: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/builder_preregistration.json
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +41,7 @@ jobs:
           import hashlib,json,os
           from pathlib import Path
           root=Path(os.environ['ROOT'])
-          files=[Path(os.environ['SCRIPT']),Path(os.environ['PREREG'])]
+          files=[Path(os.environ['SCRIPT']),Path(os.environ['DIAGNOSTIC']),Path(os.environ['PREREG'])]
           payload={
             'git_commit':os.environ.get('GITHUB_SHA'),
             'files':{str(p):{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files},
@@ -50,8 +52,9 @@ jobs:
           (root/'input_identity.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
           print(json.dumps(payload,indent=2,sort_keys=True))
           PY
-          python -m py_compile "$SCRIPT"
+          python -m py_compile "$SCRIPT" "$DIAGNOSTIC"
           cp "$SCRIPT" "$ROOT/locked_builder.py"
+          cp "$DIAGNOSTIC" "$ROOT/locked_reconciliation_diagnostic.py"
           cp "$PREREG" "$ROOT/builder_preregistration.json"
 
       - name: Install fixed builder environment
@@ -77,11 +80,33 @@ jobs:
           (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
           PY
 
-      - name: Reconstruct one-day state features and run point-in-time audits
+      - name: Diagnose official aggTrade and kline reconciliation
         shell: bash
         run: |
           set -euo pipefail
-          python "$SCRIPT" --output "$ROOT" 2>&1 | tee "$ROOT/builder.log"
+          python "$DIAGNOSTIC" --builder "$SCRIPT" --output "$ROOT" 2>&1 | tee "$ROOT/reconciliation.log"
+
+      - name: Reconstruct one-day state features and run point-in-time audits
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          python "$SCRIPT" --output "$ROOT" 2>&1 | tee "$ROOT/builder.log" || rc=$?
+          python - "$ROOT/builder_status.json" "$rc" <<'PY'
+          import json,pathlib,sys
+          path=pathlib.Path(sys.argv[1])
+          payload={
+            'builder_rc':int(sys.argv[2]),
+            'feature_file_exists':(path.parent/'official_state_features_2023-07-03.parquet').exists(),
+            'manifest_exists':(path.parent/'official_state_builder_manifest.json').exists(),
+            'strategy_executed':False,'candidate_pnl_observed':False,
+            '2024_opened':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          path.write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+          exit 0
 
       - name: Record immutable output checksums
         if: always()
