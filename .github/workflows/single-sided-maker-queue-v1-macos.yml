@@ -1,8 +1,12 @@
-name: Single-Sided Maker Queue V1 macOS
+name: Single-Sided Maker Queue V1 macOS Run2
 
 on:
   push:
-    branches: [research/single-sided-maker-queue-v1-20260724]
+    branches: [research/single-sided-maker-macos-run2-20260724]
+    paths:
+      - '.github/workflows/single-sided-maker-queue-v1-macos.yml'
+  pull_request:
+    branches: [main]
     paths:
       - '.github/workflows/single-sided-maker-queue-v1-macos.yml'
   workflow_dispatch:
@@ -12,7 +16,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: single-sided-maker-v1-macos-${{ github.ref }}
+  group: single-sided-maker-v1-macos-run2-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -49,7 +53,6 @@ jobs:
             df -h .
           done
       - name: Evaluate frozen development and validation gates
-        id: evaluate
         shell: bash
         run: |
           set -euo pipefail
@@ -92,7 +95,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: single-sided-maker-v1-macos-${{ github.run_id }}
+          name: single-sided-maker-v1-macos-run2-${{ github.run_id }}
           path: |
             maker-results
             maker-test-results
@@ -104,4 +107,4 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh pr comment 158 --repo umtong/SMC-trading-system --body "maker macOS run_id: \`${GITHUB_RUN_ID}\`; artifact: \`single-sided-maker-v1-macos-${GITHUB_RUN_ID}\`"
+        run: gh pr comment 158 --repo umtong/SMC-trading-system --body "maker macOS run2 id: \`${GITHUB_RUN_ID}\`; artifact: \`single-sided-maker-v1-macos-run2-${GITHUB_RUN_ID}\`"
