@@ -7,6 +7,12 @@ on:
     paths:
       - research/wave_ofi_dollar_bars.py
       - .github/workflows/ofi-dollar-bars-eth.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - research/wave_ofi_dollar_bars.py
+      - .github/workflows/ofi-dollar-bars-eth.yml
   workflow_dispatch:
 
 permissions:
