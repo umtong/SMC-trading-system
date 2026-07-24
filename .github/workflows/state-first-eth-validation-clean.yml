@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: state-first-eth-validation-clean-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   EXPECTED_DAILY_V2_BUNDLE_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
@@ -41,7 +41,7 @@ jobs:
       max-parallel: 3
       matrix:
         month: ["2023-08", "2023-10", "2023-12"]
-    runs-on: ubuntu-24.04-arm
+    runs-on: macos-14
     timeout-minutes: 300
     steps:
       - name: Checkout immutable builder source
@@ -50,41 +50,58 @@ jobs:
           ref: research/state-first-monthly-panel-20260724
           fetch-depth: 1
 
-      - name: Reconstruct immutable V4 builders
+      - name: Reconstruct and verify immutable V4 builders
         shell: bash
         run: |
           set -euo pipefail
           root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
           src="$root/source"
           mkdir -p "$src" "$root/output"
-          base64 --decode research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64 > /tmp/daily_v2.tar.gz
-          printf '%s  %s\n' "$EXPECTED_DAILY_V2_BUNDLE_GZ_SHA256" /tmp/daily_v2.tar.gz | sha256sum --check --strict
-          tar -xzf /tmp/daily_v2.tar.gz -C "$src"
-          printf '%s  %s\n' "$EXPECTED_DAILY_PATCH_V3_SHA256" research/state_first_raw_provenance_20260724/patch_official_builder_v3.py | sha256sum --check --strict
-          python research/state_first_raw_provenance_20260724/patch_official_builder_v3.py "$src"
-          printf '%s  %s\n' "$EXPECTED_DAILY_PATCH_V4_SHA256" research/state_first_raw_provenance_20260724/patch_official_builder_v4.py | sha256sum --check --strict
-          python research/state_first_raw_provenance_20260724/patch_official_builder_v4.py "$src"
-          printf '%s  %s\n' "$EXPECTED_DAILY_V4_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_DAILY_V4_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_V3_B64_SHA256" research/state_first_monthly_panel_20260724/bundle.tar.gz.b64 | sha256sum --check --strict
-          base64 --decode research/state_first_monthly_panel_20260724/bundle.tar.gz.b64 > /tmp/month_v3.tar.gz
-          printf '%s  %s\n' "$EXPECTED_MONTH_V3_GZ_SHA256" /tmp/month_v3.tar.gz | sha256sum --check --strict
-          tar -xzf /tmp/month_v3.tar.gz -C "$src"
-          printf '%s  %s\n' "$EXPECTED_MONTH_V3_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_V3_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_V3_PREREG_SHA256" "$src/monthly_panel_preregistration_v3.json" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_PATCH_V4_SHA256" research/state_first_monthly_panel_20260724/patch_monthly_v4.py | sha256sum --check --strict
-          python research/state_first_monthly_panel_20260724/patch_monthly_v4.py "$src"
-          printf '%s  %s\n' "$EXPECTED_MONTH_V4_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_V4_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_MONTH_V4_PREREG_SHA256" "$src/monthly_panel_preregistration_v4.json" | sha256sum --check --strict
-          python -m py_compile "$src"/*.py
-          sha256sum "$src/build_official_state_v4.py" "$src/build_official_state_month.py" > "$root/source_sha256.txt"
+          python - <<'PY'
+          from __future__ import annotations
+          import base64, hashlib, os, pathlib, subprocess
+          def sha(path):
+              h=hashlib.sha256()
+              with open(path,'rb') as f:
+                  for b in iter(lambda:f.read(1<<20),b''): h.update(b)
+              return h.hexdigest()
+          def require(path, expected):
+              actual=sha(path)
+              if actual != expected: raise SystemExit(f'hash mismatch {path}: {actual} != {expected}')
+          daily_b64=pathlib.Path('research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64')
+          daily=pathlib.Path('/tmp/daily_v2.tar.gz'); daily.write_bytes(base64.b64decode(daily_b64.read_bytes()))
+          require(daily,os.environ['EXPECTED_DAILY_V2_BUNDLE_GZ_SHA256'])
+          subprocess.run(['tar','-xzf',str(daily),'-C',os.environ['SRC']],check=True)
+          require('research/state_first_raw_provenance_20260724/patch_official_builder_v3.py',os.environ['EXPECTED_DAILY_PATCH_V3_SHA256'])
+          subprocess.run(['python','research/state_first_raw_provenance_20260724/patch_official_builder_v3.py',os.environ['SRC']],check=True)
+          require('research/state_first_raw_provenance_20260724/patch_official_builder_v4.py',os.environ['EXPECTED_DAILY_PATCH_V4_SHA256'])
+          subprocess.run(['python','research/state_first_raw_provenance_20260724/patch_official_builder_v4.py',os.environ['SRC']],check=True)
+          require(pathlib.Path(os.environ['SRC'])/'build_official_state_v4.py',os.environ['EXPECTED_DAILY_V4_SHA256'])
+          require(pathlib.Path(os.environ['SRC'])/'test_official_state_v4.py',os.environ['EXPECTED_DAILY_V4_TEST_SHA256'])
+          require('research/state_first_monthly_panel_20260724/bundle.tar.gz.b64',os.environ['EXPECTED_MONTH_V3_B64_SHA256'])
+          monthly=pathlib.Path('/tmp/month_v3.tar.gz'); monthly.write_bytes(base64.b64decode(pathlib.Path('research/state_first_monthly_panel_20260724/bundle.tar.gz.b64').read_bytes()))
+          require(monthly,os.environ['EXPECTED_MONTH_V3_GZ_SHA256'])
+          subprocess.run(['tar','-xzf',str(monthly),'-C',os.environ['SRC']],check=True)
+          require(pathlib.Path(os.environ['SRC'])/'build_official_state_month.py',os.environ['EXPECTED_MONTH_V3_SHA256'])
+          require(pathlib.Path(os.environ['SRC'])/'test_build_official_state_month.py',os.environ['EXPECTED_MONTH_V3_TEST_SHA256'])
+          require(pathlib.Path(os.environ['SRC'])/'monthly_panel_preregistration_v3.json',os.environ['EXPECTED_MONTH_V3_PREREG_SHA256'])
+          require('research/state_first_monthly_panel_20260724/patch_monthly_v4.py',os.environ['EXPECTED_MONTH_PATCH_V4_SHA256'])
+          subprocess.run(['python','research/state_first_monthly_panel_20260724/patch_monthly_v4.py',os.environ['SRC']],check=True)
+          require(pathlib.Path(os.environ['SRC'])/'build_official_state_month.py',os.environ['EXPECTED_MONTH_V4_SHA256'])
+          require(pathlib.Path(os.environ['SRC'])/'test_build_official_state_month.py',os.environ['EXPECTED_MONTH_V4_TEST_SHA256'])
+          require(pathlib.Path(os.environ['SRC'])/'monthly_panel_preregistration_v4.json',os.environ['EXPECTED_MONTH_V4_PREREG_SHA256'])
+          (pathlib.Path(os.environ['ROOT'])/'source_manifest.json').write_text(__import__('json').dumps({
+              'daily_builder_sha256':sha(pathlib.Path(os.environ['SRC'])/'build_official_state_v4.py'),
+              'monthly_builder_sha256':sha(pathlib.Path(os.environ['SRC'])/'build_official_state_month.py'),
+          },indent=2)+'\n')
+          PY
+        env:
+          ROOT: ${{ github.workspace }}/research_runs/state_first_eth_validation/${{ matrix.month }}
+          SRC: ${{ github.workspace }}/research_runs/state_first_eth_validation/${{ matrix.month }}/source
 
       - name: Install fixed environment
         run: |
-          python -m pip install --upgrade "pip==25.1.1"
-          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
+          python -m pip install --disable-pip-version-check "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
 
       - name: Test causal builders
         shell: bash
@@ -116,7 +133,13 @@ jobs:
         shell: bash
         run: |
           root="$GITHUB_WORKSPACE/research_runs/state_first_eth_validation/${{ matrix.month }}"
-          find "$root" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/OUTPUT_SHA256SUMS.txt"
+          python - "$root" <<'PY'
+          import hashlib,json,pathlib,sys
+          root=pathlib.Path(sys.argv[1]); out={}
+          for p in sorted(root.rglob('*')):
+              if p.is_file() and p.name!='OUTPUT_SHA256SUMS.json': out[str(p.relative_to(root))]=hashlib.sha256(p.read_bytes()).hexdigest()
+          (root/'OUTPUT_SHA256SUMS.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          PY
 
       - uses: actions/upload-artifact@v4
         if: always()
