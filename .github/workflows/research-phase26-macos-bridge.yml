@@ -1,0 +1,68 @@
+name: Research Phase26 Liquidation Depth macOS Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-phase26-macos-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout frozen research branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/phase26-liquidation-depth
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install fixed research dependencies with compatible Parquet reader
+        run: |
+          python -m pip uninstall -y pyarrow || true
+          python -m pip install numpy==2.1.3 pandas==2.2.3 fastparquet==2024.11.0 huggingface_hub==0.30.2 hf_xet==1.1.10
+          python - <<'PY'
+          import fastparquet, pandas, sys
+          print({'python':sys.version,'pandas':pandas.__version__,'fastparquet':fastparquet.__version__})
+          PY
+      - name: Bulk clone public dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          git lfs install
+          git clone --depth 1 https://huggingface.co/datasets/Mindbyte-89/btcusdt-microbar-v2 "$RUNNER_TEMP/btcusdt-microbar-v2"
+          find "$RUNNER_TEMP/btcusdt-microbar-v2" -type f | wc -l
+          du -sh "$RUNNER_TEMP/btcusdt-microbar-v2"
+      - name: Run unchanged causal liquidation-depth screen on local clone
+        env:
+          PHASE26_LOCAL_DATA: ${{ runner.temp }}/btcusdt-microbar-v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf research/phase26_microbar/results
+          cat > "$RUNNER_TEMP/run_phase26.py" <<'PY'
+          import os, runpy, sys
+          import huggingface_hub
+          local = os.environ['PHASE26_LOCAL_DATA']
+          huggingface_hub.snapshot_download = lambda *args, **kwargs: local
+          sys.argv = [
+              'liquidation_depth_research.py',
+              '--out', 'research/phase26_microbar/results',
+          ]
+          runpy.run_path('research/phase26_microbar/liquidation_depth_research.py', run_name='__main__')
+          PY
+          python "$RUNNER_TEMP/run_phase26.py" 2>&1 | tee research/phase26_microbar/run-macos-bridge.log
+      - name: Upload frozen research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase26-liquidation-depth-macos-${{ github.run_id }}
+          path: |
+            research/phase26_microbar/results
+            research/phase26_microbar/run-macos-bridge.log
+          if-no-files-found: warn
+          retention-days: 14
