@@ -1,0 +1,63 @@
+name: Bybit Linear Cross-Venue 1m Data
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/bybit-crossvenue-research
+    paths:
+      - scripts/download_bybit_linear_crossvenue_1m.py
+      - .github/workflows/bybit-linear-crossvenue-1m.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install "pandas>=2.2" "requests>=2.32"
+      - name: Compile collector
+        run: python -m py_compile scripts/download_bybit_linear_crossvenue_1m.py
+      - name: Download Bybit linear minute history and funding
+        run: |
+          python scripts/download_bybit_linear_crossvenue_1m.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start 2020-04-01T00:00:00Z \
+            --end 2026-07-21T23:59:00Z \
+            --pause 0.04 \
+            --output artifacts/bybit_linear_crossvenue_1m
+      - name: Validate snapshot
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('artifacts/bybit_linear_crossvenue_1m')
+          m=json.loads((root/'manifest.json').read_text())
+          required={
+              'BTCUSDT_linear_1m','BTCUSDT_funding',
+              'ETHUSDT_linear_1m','ETHUSDT_funding',
+          }
+          if set(m['datasets']) != required:
+              raise SystemExit(f"dataset mismatch: {set(m['datasets'])}")
+          for name, info in m['datasets'].items():
+              path=root/info['path']
+              if not path.exists() or path.stat().st_size <= 0 or info['rows'] <= 0:
+                  raise SystemExit(f'invalid dataset: {name}')
+          print(json.dumps(m['datasets'], indent=2))
+          PY
+      - name: Upload immutable research snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: bybit-linear-crossvenue-1m-${{ github.sha }}
+          path: artifacts/bybit_linear_crossvenue_1m
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
