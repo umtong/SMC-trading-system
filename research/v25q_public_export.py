@@ -86,12 +86,25 @@ def read_kline(path: Path) -> pd.DataFrame:
         members = [name for name in archive.namelist() if not name.endswith("/")]
         if len(members) != 1:
             raise ValueError(f"unexpected ZIP members: {path}: {members}")
-        raw = pd.read_csv(archive.open(members[0]), header=None)
+        raw = pd.read_csv(archive.open(members[0]), header=None, low_memory=False)
     if raw.shape[1] < 11:
         raise ValueError(f"bad kline schema: {path}: {raw.shape}")
+
+    # Binance historical archives are not uniform across eras: some CSV members
+    # are headerless while newer files can contain a single textual header row.
+    # Detect only that leading schema row. Any other nonnumeric timestamp remains
+    # a hard data error instead of being silently dropped.
+    parsed_time = pd.to_numeric(raw.iloc[:, 0], errors="coerce")
+    if bool(parsed_time.isna().iloc[0]) and bool(parsed_time.iloc[1:].notna().all()):
+        raw = raw.iloc[1:].reset_index(drop=True)
+        parsed_time = parsed_time.iloc[1:].reset_index(drop=True)
+    if bool(parsed_time.isna().any()):
+        bad = raw.loc[parsed_time.isna(), 0].head(5).tolist()
+        raise ValueError(f"nonnumeric kline timestamps: {path}: {bad}")
+
     frame = raw.iloc[:, [0, 1, 2, 3, 4, 7, 8, 10]].copy()
     frame.columns = ["raw_time", "open", "high", "low", "close", "quote_volume", "trades", "taker_buy_quote"]
-    timestamps = pd.to_numeric(frame.raw_time, errors="raise").astype("int64")
+    timestamps = parsed_time.astype("int64")
     unit = "us" if float(timestamps.median()) > 1e14 else "ms"
     frame["open_time"] = pd.to_datetime(timestamps, unit=unit, utc=True)
     for column in ["open", "high", "low", "close", "quote_volume", "trades", "taker_buy_quote"]:
