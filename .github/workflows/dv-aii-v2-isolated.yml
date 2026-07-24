@@ -4,6 +4,9 @@ on:
   push:
     branches: [research/dv-aii-v2-isolated-20260725]
     paths: ['.github/workflows/dv-aii-v2-isolated.yml']
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/dv-aii-v2-isolated.yml']
   workflow_dispatch:
 
 permissions:
@@ -103,5 +106,3 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 6
-
-# Second branch-scoped push records this workflow before execution.
