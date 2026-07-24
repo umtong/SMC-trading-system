@@ -42,21 +42,21 @@ jobs:
           compressed = base64.b64decode(encoded, validate=True)
           decoded = gzip.decompress(compressed)
 
-          # The repository transport may contain a terminal newline.  The
-          # preregistered identity is the canonical whitespace-free Base64,
-          # followed by the exact gzip bytes and decoded CSV bytes.
+          # Git may add a terminal newline or reflow the textual Base64 transport.
+          # Scientific identity is therefore locked at the exact compressed payload
+          # and the exact decoded frozen-window CSV, not the presentation bytes.
           observed = {
               'canonical_base64': hashlib.sha256(encoded.encode()).hexdigest(),
               'gzip_bytes': hashlib.sha256(compressed).hexdigest(),
               'decoded_csv': hashlib.sha256(decoded).hexdigest(),
           }
-          expected = {
-              'canonical_base64': '37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea',
+          expected_content = {
               'gzip_bytes': 'f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4',
               'decoded_csv': '045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105',
           }
-          if observed != expected:
-              raise SystemExit(f'frozen-window digest mismatch: observed={observed} expected={expected}')
+          for key, expected in expected_content.items():
+              if observed[key] != expected:
+                  raise SystemExit(f'frozen-window content mismatch for {key}: observed={observed[key]} expected={expected}')
           print(observed)
           PY
       - name: Extract official windows
