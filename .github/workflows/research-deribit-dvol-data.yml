@@ -1,0 +1,45 @@
+name: Research public Deribit DVOL bundle
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/research-deribit-dvol-data.yml"
+      - "research_tools/deribit_dvol_bundle.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-deribit-dvol-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collect public DVOL candles
+        run: |
+          python research_tools/deribit_dvol_bundle.py \
+            --currencies BTC ETH \
+            --start 2021-01-01T00:00:00Z \
+            --end 2026-04-01T00:00:00Z \
+            --output-dir research_artifact/deribit_dvol_1h
+      - name: Inspect artifact
+        run: |
+          python -m json.tool research_artifact/deribit_dvol_1h/manifest.json | tail -n 200
+          shasum -a 256 research_artifact/deribit_dvol_1h/*
+          du -h research_artifact/deribit_dvol_1h/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deribit-dvol-1h-2021-01_2026-03
+          path: research_artifact/deribit_dvol_1h
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 6
