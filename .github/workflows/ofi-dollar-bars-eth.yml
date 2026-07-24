@@ -1,0 +1,51 @@
+name: ETH Dollar-Volume OFI Research Data
+
+on:
+  push:
+    branches:
+      - agent/ofi-dollar-bars-eth
+    paths:
+      - research/wave_ofi_dollar_bars.py
+      - .github/workflows/ofi-dollar-bars-eth.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        year: [2022, 2023]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install "numpy>=2.0" "pandas>=2.2"
+
+      - name: Build causal dollar-volume bars
+        run: |
+          python research/wave_ofi_dollar_bars.py \
+            --symbol ETHUSDT \
+            --year ${{ matrix.year }} \
+            --target-bars-per-day 48 \
+            --cache "$RUNNER_TEMP/ofi-cache-${{ matrix.year }}" \
+            --output "research-output/${{ matrix.year }}"
+
+      - name: Upload compact verified research panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: ethusdt-ofi-dollar-bars-${{ matrix.year }}-${{ github.sha }}
+          path: research-output/${{ matrix.year }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
