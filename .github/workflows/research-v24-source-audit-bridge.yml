@@ -1,0 +1,55 @@
+name: Research V24 Frozen Source Audit Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-v24-source-audit-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Checkout frozen V24 base
+        uses: actions/checkout@v4
+        with:
+          ref: research/v24-base-20260723
+          fetch-depth: 1
+      - name: Locate immutable candidate and evaluator sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research_artifact/matches research_artifact/context
+          candidate=117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68
+          evaluator=9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1
+          find . -type f -not -path './.git/*' -print0 | sort -z | xargs -0 shasum -a 256 > research_artifact/all_files.sha256
+          awk -v c="$candidate" -v e="$evaluator" '$1==c || $1==e {print}' research_artifact/all_files.sha256 | tee research_artifact/hash_matches.txt
+          test "$(wc -l < research_artifact/hash_matches.txt | tr -d ' ')" -ge 2
+          while read -r digest path; do
+            clean=${path#./}
+            mkdir -p "research_artifact/matches/$(dirname "$clean")"
+            cp "$path" "research_artifact/matches/$clean"
+          done < research_artifact/hash_matches.txt
+          grep -RIl --exclude-dir=.git -E 'C_basis|v24_cross_market_ensemble_v1|basis reversion|basis_z' . \
+            | sort | tee research_artifact/context_paths.txt
+          while read -r path; do
+            clean=${path#./}
+            case "$clean" in
+              *.py|*.json|*.md|*.yml|*.yaml)
+                mkdir -p "research_artifact/context/$(dirname "$clean")"
+                cp "$path" "research_artifact/context/$clean" ;;
+            esac
+          done < research_artifact/context_paths.txt
+          git rev-parse HEAD > research_artifact/checked_out_commit.txt
+          shasum -a 256 research_artifact/matches/**/* 2>/dev/null | sort > research_artifact/matched_copy_sha256.txt || true
+      - name: Upload immutable source evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v24-frozen-source-audit-${{ github.run_id }}
+          path: research_artifact
+          if-no-files-found: error
+          retention-days: 14
