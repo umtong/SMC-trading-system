@@ -1,0 +1,208 @@
+name: Quarter-Hour 1m Research Data
+
+on:
+  push:
+    branches:
+      - agent/quarter-hour-1m-data
+    paths:
+      - .github/workflows/quarter-hour-1m-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/quarter-hour-1m-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-quarter-hour-openings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum and retain only quarter-hour opening minutes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import re
+          import time
+          import urllib.request
+          import zipfile
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = (2020, 12)
+          END = (2025, 7)
+          ROOT = "https://data.binance.vision/data/futures/um/monthly/klines"
+          OUT = Path("quarter_hour_1m")
+          CACHE = Path("quarter_hour_1m_cache")
+          OUT.mkdir(parents=True, exist_ok=True)
+          CACHE.mkdir(parents=True, exist_ok=True)
+          SHA_RE = re.compile(r"\b([0-9a-fA-F]{64})\b")
+
+          def months(start, end):
+              y, m = start
+              while (y, m) <= end:
+                  yield f"{y:04d}-{m:02d}"
+                  y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+          def get(url: str, attempts: int = 7) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": "smc-ict-quarter-hour/1.0"})
+                      with urllib.request.urlopen(request, timeout=180) as response:
+                          return response.read()
+                  except Exception as exc:
+                      error = exc
+                      if attempt + 1 < attempts:
+                          time.sleep(min(2 ** attempt, 20))
+              raise RuntimeError(f"download failed: {url}: {error}")
+
+          def normalise_ms(value: str) -> int:
+              raw = int(float(value))
+              if raw >= 10**15:
+                  return raw // 1000
+              if raw >= 10**11:
+                  return raw
+              return raw * 1000
+
+          def fetch_one(symbol: str, month: str):
+              name = f"{symbol}-1m-{month}.zip"
+              url = f"{ROOT}/{symbol}/1m/{name}"
+              checksum_payload = get(url + ".CHECKSUM")
+              match = SHA_RE.search(checksum_payload.decode("utf-8", errors="strict"))
+              if match is None:
+                  raise ValueError(f"missing checksum: {url}")
+              expected = match.group(1).lower()
+              payload = get(url)
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise ValueError(f"checksum mismatch {url}: {actual} != {expected}")
+              path = CACHE / symbol / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(payload)
+              return {"symbol": symbol, "month": month, "name": name, "url": url, "sha256": actual, "bytes": len(payload)}
+
+          specs = [(symbol, month) for symbol in SYMBOLS for month in months(START, END)]
+          records = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+              futures = {pool.submit(fetch_one, *spec): spec for spec in specs}
+              for future in concurrent.futures.as_completed(futures):
+                  record = future.result()
+                  records.append(record)
+                  print("verified", record["symbol"], record["month"], record["bytes"], flush=True)
+          records.sort(key=lambda item: (item["symbol"], item["month"]))
+
+          header = [
+              "open_time", "open", "high", "low", "close", "volume", "close_time",
+              "quote_volume", "trade_count", "taker_buy_volume", "taker_buy_quote_volume",
+          ]
+          series = []
+          for symbol in SYMBOLS:
+              output = OUT / f"{symbol}_quarter_hour_open_1m.csv.gz"
+              row_count = 0
+              first_ms = None
+              last_ms = None
+              previous_ms = None
+              gaps = 0
+              missing = 0
+              with gzip.open(output, "wt", encoding="utf-8", newline="") as out_handle:
+                  writer = csv.writer(out_handle)
+                  writer.writerow(header)
+                  for item in [r for r in records if r["symbol"] == symbol]:
+                      payload = (CACHE / symbol / item["name"]).read_bytes()
+                      with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                          members = [n for n in archive.namelist() if n.lower().endswith(".csv")]
+                          if len(members) != 1:
+                              raise ValueError(f"unexpected archive members: {item['name']}: {members}")
+                          text = io.TextIOWrapper(archive.open(members[0]), encoding="utf-8", newline="")
+                          for source in csv.reader(text):
+                              if not source or len(source) < 11:
+                                  continue
+                              try:
+                                  open_ms = normalise_ms(source[0])
+                              except ValueError:
+                                  continue
+                              stamp = datetime.fromtimestamp(open_ms / 1000, tz=timezone.utc)
+                              if stamp.minute % 15 != 0:
+                                  continue
+                              if previous_ms is not None:
+                                  delta = open_ms - previous_ms
+                                  if delta != 15 * 60 * 1000:
+                                      gaps += 1
+                                      if delta > 0 and delta % (15 * 60 * 1000) == 0:
+                                          missing += delta // (15 * 60 * 1000) - 1
+                                      else:
+                                          missing += 1
+                              close_ms = normalise_ms(source[6])
+                              o, h, l, c = map(float, source[1:5])
+                              volume = float(source[5])
+                              quote_volume = float(source[7])
+                              taker_volume = float(source[9])
+                              taker_quote = float(source[10])
+                              if min(o, h, l, c) <= 0 or min(volume, quote_volume, taker_volume, taker_quote) < 0:
+                                  raise ValueError(f"invalid numeric row {symbol} {item['month']}")
+                              if h + 1e-12 < max(o, c, l) or l - 1e-12 > min(o, c, h):
+                                  raise ValueError(f"invalid OHLC row {symbol} {item['month']}")
+                              writer.writerow([
+                                  stamp.isoformat(), source[1], source[2], source[3], source[4], source[5],
+                                  datetime.fromtimestamp(close_ms / 1000, tz=timezone.utc).isoformat(),
+                                  source[7], int(float(source[8])), source[9], source[10],
+                              ])
+                              row_count += 1
+                              first_ms = open_ms if first_ms is None else first_ms
+                              last_ms = open_ms
+                              previous_ms = open_ms
+              digest = hashlib.sha256(output.read_bytes()).hexdigest()
+              if gaps or missing:
+                  raise RuntimeError(f"quarter-hour grid audit failed {symbol}: gaps={gaps} missing={missing}")
+              series.append({
+                  "symbol": symbol, "rows": row_count,
+                  "first_open_time": datetime.fromtimestamp(first_ms / 1000, tz=timezone.utc).isoformat(),
+                  "last_open_time": datetime.fromtimestamp(last_ms / 1000, tz=timezone.utc).isoformat(),
+                  "gap_count": gaps, "missing_bar_count": missing,
+                  "output_file": output.name, "output_bytes": output.stat().st_size, "output_sha256": digest,
+              })
+              print("series", json.dumps(series[-1], sort_keys=True), flush=True)
+
+          manifest = {
+              "source": "Binance Vision USD-M monthly 1m klines",
+              "purpose": "causal quarter-hour first-minute research proxy",
+              "start_month": "2020-12", "end_month": "2025-07",
+              "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
+              "archives": records, "series": series,
+          }
+          (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload verified compact research data
+        uses: actions/upload-artifact@v4
+        with:
+          name: quarter-hour-open-1m-2020-12_2025-07-${{ github.sha }}
+          path: |
+            quarter_hour_1m/BTCUSDT_quarter_hour_open_1m.csv.gz
+            quarter_hour_1m/ETHUSDT_quarter_hour_open_1m.csv.gz
+            quarter_hour_1m/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
