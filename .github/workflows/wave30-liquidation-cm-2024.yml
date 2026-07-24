@@ -1,0 +1,160 @@
+name: Wave30 COIN-M liquidation 2024
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave30-liquidation-cm-2024.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    name: ${{ matrix.symbol }} 2024 liquidation snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSD_PERP, ETHUSD_PERP]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and verify official 2024 daily archives
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade requests
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          import tarfile
+          import zipfile
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          import requests
+
+          symbol = os.environ["SYMBOL"]
+          root = Path("out") / symbol
+          raw = root / "raw"
+          raw.mkdir(parents=True, exist_ok=True)
+          base = "https://data.binance.vision/data/futures/cm/daily/liquidationSnapshot"
+          start = date(2024, 1, 1)
+          end = date(2025, 1, 1)
+          days = []
+          d = start
+          while d < end:
+              days.append(d.isoformat())
+              d += timedelta(days=1)
+
+          def fetch(day: str) -> dict:
+              name = f"{symbol}-liquidationSnapshot-{day}.zip"
+              url = f"{base}/{symbol}/{name}"
+              try:
+                  r = requests.get(url, timeout=45)
+                  if r.status_code == 404:
+                      return {"day": day, "status": "missing", "http_status": 404, "url": url}
+                  if r.status_code != 200:
+                      return {"day": day, "status": "http_error", "http_status": r.status_code, "url": url}
+                  c = requests.get(url + ".CHECKSUM", timeout=30)
+              except Exception as exc:
+                  return {"day": day, "status": "request_error", "error": repr(exc), "url": url}
+              if c.status_code != 200:
+                  return {"day": day, "status": "checksum_http_error", "http_status": c.status_code, "url": url}
+              m = re.search(r"([0-9a-fA-F]{64})", c.text)
+              if not m:
+                  return {"day": day, "status": "checksum_parse_error", "url": url}
+              expected = m.group(1).lower()
+              actual = hashlib.sha256(r.content).hexdigest()
+              if actual != expected:
+                  return {"day": day, "status": "checksum_mismatch", "expected": expected, "actual": actual, "url": url}
+              path = raw / name
+              path.write_bytes(r.content)
+              return {"day": day, "status": "verified", "url": url, "file": str(path), "bytes": len(r.content), "sha256": actual}
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+              rows = list(pool.map(fetch, days))
+          rows.sort(key=lambda x: x["day"])
+          found = [x for x in rows if x["status"] == "verified"]
+          errors = [x for x in rows if x["status"] not in {"verified", "missing"}]
+
+          combined = root / "extracted_rows_with_source.tsv.gz"
+          schema_samples = []
+          extracted_rows = 0
+          with gzip.open(combined, "wt", encoding="utf-8", newline="") as gz:
+              writer = csv.writer(gz, delimiter="\t", lineterminator="\n")
+              writer.writerow(["source_day", "source_zip", "row_number", "raw_csv_row"])
+              for meta in found:
+                  path = Path(meta["file"])
+                  try:
+                      with zipfile.ZipFile(path) as zf:
+                          names = [n for n in zf.namelist() if not n.endswith("/")]
+                          for member in names:
+                              lines = zf.read(member).decode("utf-8-sig", errors="strict").splitlines()
+                              if len(schema_samples) < 5:
+                                  schema_samples.append({"day": meta["day"], "member": member, "first_lines": lines[:5], "line_count": len(lines)})
+                              for i, line in enumerate(lines, 1):
+                                  writer.writerow([meta["day"], path.name, i, line])
+                                  extracted_rows += 1
+                  except Exception as exc:
+                      errors.append({"day": meta["day"], "status": "extract_error", "error": repr(exc)})
+
+          archive = root / f"{symbol}_verified_liquidation_2024.tar.gz"
+          with tarfile.open(archive, "w:gz") as tf:
+              for path in sorted(raw.glob("*.zip")):
+                  tf.add(path, arcname=path.name)
+          shutil.rmtree(raw)
+
+          def digest(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          manifest = {
+              "source": "official data.binance.vision COIN-M daily liquidationSnapshot archives",
+              "symbol": symbol,
+              "start": str(start),
+              "end_exclusive": str(end),
+              "requested_days": len(days),
+              "verified_days": len(found),
+              "missing_days": sum(x["status"] == "missing" for x in rows),
+              "error_count": len(errors),
+              "verified_source_bytes": sum(x.get("bytes", 0) for x in found),
+              "extracted_rows_including_headers": extracted_rows,
+              "schema_samples": schema_samples,
+              "archive": {"path": str(archive), "bytes": archive.stat().st_size, "sha256": digest(archive)},
+              "combined_rows": {"path": str(combined), "bytes": combined.stat().st_size, "sha256": digest(combined)},
+              "files": found,
+              "errors": errors,
+              "all_requests": rows,
+              "2025_rows_requested": False,
+              "strategy_or_order_code_changed": False,
+          }
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({k: manifest[k] for k in ["symbol", "requested_days", "verified_days", "missing_days", "error_count", "verified_source_bytes", "extracted_rows_including_headers"]}, indent=2))
+          PY
+
+      - name: Upload checksum-verified 2024 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave30-liquidation-cm-${{ matrix.symbol }}-2024-${{ github.run_id }}
+          path: out/**
+          compression-level: 0
+          retention-days: 14
