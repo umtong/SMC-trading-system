@@ -6,6 +6,11 @@ on:
       - research/hyperliquid-wallet-flow-20260724
     paths:
       - .github/workflows/hyperliquid-wallet-flow-trigger.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/hyperliquid-wallet-flow-trigger.yml
   workflow_dispatch:
 
 permissions:
