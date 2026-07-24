@@ -48,7 +48,7 @@ jobs:
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
             research_tools/state_first_l1_clean_v2/run_fixed.py \
             research_tools/state_first_l1_clean_v2/run_available_dates.py \
-            | tee state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256.txt
+            | tee state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256_${{ matrix.symbol }}.txt
           python -m py_compile \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
             research_tools/state_first_l1_clean_v2/run_fixed.py \
@@ -73,7 +73,7 @@ jobs:
       - name: Audit panel
         shell: bash
         run: |
-          cp state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256.txt state-first-panel/${{ matrix.symbol }}/SOURCE_SHA256.txt
+          cp state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256_${{ matrix.symbol }}.txt state-first-panel/${{ matrix.symbol }}/SOURCE_SHA256_${{ matrix.symbol }}.txt
           python -m json.tool state-first-panel/${{ matrix.symbol }}/${{ matrix.symbol }}_manifest.json
           shasum -a 256 state-first-panel/${{ matrix.symbol }}/*
           du -h state-first-panel/${{ matrix.symbol }}/*
@@ -117,7 +117,7 @@ jobs:
           while IFS= read -r p; do
             diff -u expected.txt "$p"
             found=$((found+1))
-          done < <(find state-first-input -name SOURCE_SHA256.txt -type f -print)
+          done < <(find state-first-input -name 'SOURCE_SHA256_*.txt' -type f -print)
           test "$found" -eq 2
       - name: Run gated selection, validation, and conditional one-shot test
         run: |
