@@ -2,6 +2,10 @@ name: Bybit Linear Cross-Venue 1m Data
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_bybit_linear_crossvenue_1m.py
+      - .github/workflows/bybit-linear-crossvenue-1m.yml
   push:
     branches:
       - agent/bybit-crossvenue-research
