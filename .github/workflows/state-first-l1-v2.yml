@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   day:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -55,7 +55,7 @@ jobs:
       - name: Compile frozen evaluator
         run: |
           python -m py_compile research/state_first_l1_v2.py
-          sha256sum research/state_first_l1_v2.py research/STATE_FIRST_L1_V2_CONTRACT.md
+          shasum -a 256 research/state_first_l1_v2.py research/STATE_FIRST_L1_V2_CONTRACT.md
       - name: Build one checksum-verified causal day panel
         run: |
           python research/state_first_l1_v2.py day \
@@ -92,7 +92,7 @@ jobs:
 
   aggregate:
     needs: day
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -111,13 +111,13 @@ jobs:
         run: |
           test "$(find state-first-input -name '*_l1.csv.gz' -type f | wc -l | tr -d ' ')" = 24
           python -m py_compile research/state_first_l1_v2.py
-          sha256sum research/state_first_l1_v2.py research/STATE_FIRST_L1_V2_CONTRACT.md
+          shasum -a 256 research/state_first_l1_v2.py research/STATE_FIRST_L1_V2_CONTRACT.md
       - name: Run frozen train-calibration-validation screen
         run: python research/state_first_l1_v2.py aggregate --input state-first-input --out state-first-results
       - name: Inspect result
         run: |
           python -m json.tool state-first-results/summary.json
-          sha256sum state-first-results/*
+          shasum -a 256 state-first-results/*
       - uses: actions/upload-artifact@v4
         with:
           name: state-first-l1-v2-results-${{ github.run_id }}
