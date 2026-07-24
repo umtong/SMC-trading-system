@@ -1,0 +1,141 @@
+name: Export Binance prehistory and funding data
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/export-prehistory-funding-data.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download checksum-verified prehistory and funding archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          ROOT=Path('prehistory-funding'); OUT=ROOT/'normalized'; OUT.mkdir(parents=True,exist_ok=True)
+          BASE='https://data.binance.vision/data/futures/um'; SYMBOLS=('BTCUSDT','ETHUSDT')
+          UA={'User-Agent':'easychart-causal-research/1.0'}
+          def months(a,b,c,d):
+              y,m=a,b
+              while (y,m)<=(c,d):
+                  yield y,m
+                  m+=1
+                  if m==13:y+=1;m=1
+          def get(url,missing=False):
+              err=None
+              for attempt in range(7):
+                  try:
+                      with urllib.request.urlopen(urllib.request.Request(url,headers=UA),timeout=90) as r:return r.read()
+                  except urllib.error.HTTPError as exc:
+                      if missing and exc.code==404:return None
+                      err=exc
+                  except Exception as exc:err=exc
+                  time.sleep(min(30,2**attempt))
+              raise RuntimeError(f'download failed {url}: {err}')
+          def verified(url,missing=False):
+              payload=get(url,missing)
+              if payload is None:return None
+              check=get(url+'.CHECKSUM',missing)
+              if check is None:raise RuntimeError(f'missing checksum {url}')
+              expected=check.decode().split()[0].lower(); actual=hashlib.sha256(payload).hexdigest()
+              if actual!=expected:raise RuntimeError(f'checksum mismatch {url}: {expected} != {actual}')
+              return payload,actual
+          manifest={'source':'Binance Public Data USD-M','prehistory':[],'funding':[]}
+
+          jobs=[]
+          for symbol in SYMBOLS:
+              for y,m in months(2020,1,2021,12):
+                  name=f'{symbol}-1m-{y:04d}-{m:02d}.zip';url=f'{BASE}/monthly/klines/{symbol}/1m/{name}'
+                  jobs.append(('kline',symbol,y,m,url,False))
+              for y,m in months(2020,1,2026,6):
+                  name=f'{symbol}-fundingRate-{y:04d}-{m:02d}.zip';url=f'{BASE}/monthly/fundingRate/{symbol}/{name}'
+                  jobs.append(('funding',symbol,y,m,url,True))
+          def work(job):
+              kind,symbol,y,m,url,missing=job
+              return job,verified(url,missing)
+          payloads={}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+              for job,result in ex.map(work,jobs):payloads[job[:4]]=(result,job[4])
+
+          kline_header=('open_time','open','high','low','close','volume','close_time','quote_volume','trade_count','taker_buy_base_volume','taker_buy_quote_volume','ignore')
+          for symbol in SYMBOLS:
+              path=OUT/f'{symbol}_1m_2020_2021.csv.gz'; rows=0; prev=None
+              with gzip.open(path,'wt',encoding='utf-8',newline='') as dst:
+                  w=csv.writer(dst);w.writerow(kline_header)
+                  for y,m in months(2020,1,2021,12):
+                      result,url=payloads[('kline',symbol,y,m)]
+                      if result is None:raise RuntimeError(f'missing prehistory {symbol} {y}-{m:02d}')
+                      payload,digest=result
+                      with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                          member=[x for x in z.namelist() if not x.endswith('/')][0]
+                          reader=csv.reader(io.TextIOWrapper(z.open(member),encoding='utf-8',newline=''))
+                          for row in reader:
+                              if not row or row[0]=='open_time':continue
+                              ts=int(row[0])
+                              if prev is not None and ts-prev!=60_000:raise RuntimeError(f'non-contiguous {symbol}: {prev}->{ts}')
+                              prev=ts;w.writerow(row);rows+=1
+                      manifest['prehistory'].append({'symbol':symbol,'year':y,'month':m,'url':url,'sha256':digest})
+              manifest[f'{symbol}_prehistory']={'path':str(path),'rows':rows,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+
+          for symbol in SYMBOLS:
+              path=OUT/f'{symbol}_funding.csv.gz'; rows=0; header=None; missing=[]
+              with gzip.open(path,'wt',encoding='utf-8',newline='') as dst:
+                  w=csv.writer(dst)
+                  for y,m in months(2020,1,2026,6):
+                      result,url=payloads[('funding',symbol,y,m)]
+                      if result is None:missing.append(f'{y:04d}-{m:02d}');continue
+                      payload,digest=result
+                      with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                          member=[x for x in z.namelist() if not x.endswith('/')][0]
+                          reader=csv.reader(io.TextIOWrapper(z.open(member),encoding='utf-8',newline=''))
+                          current=next(reader)
+                          if header is None:header=current;w.writerow(header)
+                          elif current!=header:raise RuntimeError(f'funding schema drift {symbol} {y}-{m:02d}')
+                          for row in reader:w.writerow(row);rows+=1
+                      manifest['funding'].append({'symbol':symbol,'year':y,'month':m,'url':url,'sha256':digest})
+              manifest[f'{symbol}_funding']={'path':str(path),'rows':rows,'missing_months':missing,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+          (ROOT/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in manifest.items() if k.endswith('history') or k.endswith('funding')},indent=2))
+          PY
+      - name: Package and upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C prehistory-funding -caf easychart-prehistory-funding.tar.zst normalized manifest.json
+          sha256sum easychart-prehistory-funding.tar.zst > easychart-prehistory-funding.tar.zst.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-prehistory-funding
+          path: |
+            easychart-prehistory-funding.tar.zst
+            easychart-prehistory-funding.tar.zst.sha256
+            prehistory-funding/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

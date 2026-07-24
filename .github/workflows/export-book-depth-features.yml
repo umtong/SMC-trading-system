@@ -1,0 +1,254 @@
+name: Export Binance book-depth features
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - ".github/workflows/export-book-depth-features.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        year: [2020, 2021, 2022, 2023]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, verify, and summarize official 10-second book-depth snapshots
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import math
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from collections import defaultdict
+          from datetime import date, timedelta, timezone, datetime
+          from pathlib import Path
+
+          symbol = os.environ["SYMBOL"]
+          year = int(os.environ["YEAR"])
+          root = Path("book-depth") / symbol / str(year)
+          cache = root / "archives"
+          cache.mkdir(parents=True, exist_ok=True)
+          base = f"https://data.binance.vision/data/futures/um/daily/bookDepth/{symbol}"
+          user_agent = "easychart-causal-book-depth/1.0"
+
+          def days_in_year():
+              current = date(year, 1, 1)
+              end = date(year + 1, 1, 1)
+              while current < end:
+                  yield current
+                  current += timedelta(days=1)
+
+          def fetch(url: str, path: Path) -> bool:
+              if path.exists() and path.stat().st_size > 0:
+                  return True
+              for attempt in range(7):
+                  try:
+                      request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          payload = response.read()
+                      tmp = path.with_suffix(path.suffix + ".tmp")
+                      tmp.write_bytes(payload)
+                      tmp.replace(path)
+                      return True
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return False
+                      if attempt == 6:
+                          raise
+                  except Exception:
+                      if attempt == 6:
+                          raise
+                  time.sleep(min(60, 2 ** attempt))
+              return False
+
+          def download(day: date):
+              name = f"{symbol}-bookDepth-{day.isoformat()}.zip"
+              archive = cache / name
+              checksum = cache / f"{name}.CHECKSUM"
+              if not fetch(f"{base}/{name}", archive):
+                  return {"day": day.isoformat(), "available": False}
+              if not fetch(f"{base}/{name}.CHECKSUM", checksum):
+                  raise RuntimeError(f"missing checksum for {name}")
+              expected = checksum.read_text(encoding="utf-8").split()[0].lower()
+              actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if expected != actual:
+                  raise RuntimeError(f"checksum mismatch for {name}: {expected} != {actual}")
+              return {
+                  "day": day.isoformat(),
+                  "available": True,
+                  "archive": str(archive),
+                  "sha256": actual,
+                  "bytes": archive.stat().st_size,
+              }
+
+          days = list(days_in_year())
+          with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+              manifest_rows = list(executor.map(download, days))
+
+          output = root / f"{symbol}_book_depth_1m_{year}.csv.gz"
+          header = ["open_time"]
+          for level in range(1, 6):
+              header += [
+                  f"bid_notional_{level}",
+                  f"ask_notional_{level}",
+                  f"notional_imbalance_{level}",
+                  f"bid_depth_{level}",
+                  f"ask_depth_{level}",
+                  f"depth_imbalance_{level}",
+              ]
+          header += [
+              "near_notional_imbalance",
+              "far_notional_imbalance",
+              "book_notional_slope",
+              "book_depth_slope",
+              "snapshot_count",
+          ]
+
+          rows_written = 0
+          first_time = None
+          last_time = None
+          previous_time = None
+          with gzip.open(output, "wt", encoding="utf-8", newline="") as target:
+              writer = csv.writer(target)
+              writer.writerow(header)
+              for item in manifest_rows:
+                  if not item["available"]:
+                      continue
+                  archive_path = Path(item["archive"])
+                  minute_values: dict[int, dict[int, list[float]]] = defaultdict(dict)
+                  minute_counts: dict[int, int] = defaultdict(int)
+                  with zipfile.ZipFile(archive_path) as zf:
+                      members = [name for name in zf.namelist() if not name.endswith("/")]
+                      if len(members) != 1:
+                          raise RuntimeError(f"unexpected members in {archive_path}: {members}")
+                      with zf.open(members[0]) as source:
+                          text = io.TextIOWrapper(source, encoding="utf-8", newline="")
+                          reader = csv.reader(text)
+                          for raw in reader:
+                              if not raw or raw[0] == "timestamp":
+                                  continue
+                              timestamp = raw[0]
+                              if timestamp.isdigit():
+                                  ts_ms = int(timestamp)
+                              else:
+                                  parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                                  if parsed.tzinfo is None:
+                                      parsed = parsed.replace(tzinfo=timezone.utc)
+                                  ts_ms = int(parsed.timestamp() * 1000)
+                              minute = ts_ms - ts_ms % 60_000
+                              percentage = int(float(raw[1]))
+                              if percentage == 0 or abs(percentage) > 5:
+                                  continue
+                              depth = float(raw[2])
+                              notional = float(raw[3])
+                              # Keep the last observation for each level in each 10-second snapshot;
+                              # then average snapshots within the minute.
+                              key = percentage
+                              values = minute_values[minute].setdefault(key, [0.0, 0.0, 0.0])
+                              values[0] += depth
+                              values[1] += notional
+                              values[2] += 1.0
+                  for minute in sorted(minute_values):
+                      levels = minute_values[minute]
+                      row = [minute]
+                      bid_notional = []
+                      ask_notional = []
+                      bid_depth = []
+                      ask_depth = []
+                      counts = []
+                      for level in range(1, 6):
+                          b = levels.get(-level, [math.nan, math.nan, 0.0])
+                          a = levels.get(level, [math.nan, math.nan, 0.0])
+                          bd = b[0] / b[2] if b[2] else math.nan
+                          bn = b[1] / b[2] if b[2] else math.nan
+                          ad = a[0] / a[2] if a[2] else math.nan
+                          an = a[1] / a[2] if a[2] else math.nan
+                          ni = (bn - an) / (bn + an) if math.isfinite(bn) and math.isfinite(an) and bn + an > 0 else math.nan
+                          di = (bd - ad) / (bd + ad) if math.isfinite(bd) and math.isfinite(ad) and bd + ad > 0 else math.nan
+                          row += [bn, an, ni, bd, ad, di]
+                          bid_notional.append(bn)
+                          ask_notional.append(an)
+                          bid_depth.append(bd)
+                          ask_depth.append(ad)
+                          counts.extend((b[2], a[2]))
+                      def imbalance(bids, asks, levels):
+                          bsum = sum(bids[i] for i in levels if math.isfinite(bids[i]))
+                          asum = sum(asks[i] for i in levels if math.isfinite(asks[i]))
+                          return (bsum - asum) / (bsum + asum) if bsum + asum > 0 else math.nan
+                      near = imbalance(bid_notional, ask_notional, range(0, 2))
+                      far = imbalance(bid_notional, ask_notional, range(2, 5))
+                      near_n = sum(x for x in bid_notional[:2] + ask_notional[:2] if math.isfinite(x))
+                      far_n = sum(x for x in bid_notional[2:] + ask_notional[2:] if math.isfinite(x))
+                      near_d = sum(x for x in bid_depth[:2] + ask_depth[:2] if math.isfinite(x))
+                      far_d = sum(x for x in bid_depth[2:] + ask_depth[2:] if math.isfinite(x))
+                      nslope = near_n / far_n if far_n > 0 else math.nan
+                      dslope = near_d / far_d if far_d > 0 else math.nan
+                      snapshots = int(max(counts)) if counts else 0
+                      row += [near, far, nslope, dslope, snapshots]
+                      writer.writerow(row)
+                      rows_written += 1
+                      if first_time is None:
+                          first_time = minute
+                      if previous_time is not None and minute <= previous_time:
+                          raise RuntimeError(f"non-increasing minute {previous_time} -> {minute}")
+                      previous_time = minute
+                      last_time = minute
+
+          report = {
+              "source": "Binance Public Data USD-M daily bookDepth",
+              "symbol": symbol,
+              "year": year,
+              "available_days": sum(bool(row["available"]) for row in manifest_rows),
+              "missing_days": [row["day"] for row in manifest_rows if not row["available"]],
+              "archives": manifest_rows,
+              "output": str(output),
+              "rows": rows_written,
+              "first_open_time_ms": first_time,
+              "last_open_time_ms": last_time,
+              "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+          }
+          (root / "manifest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+          print(json.dumps({k: v for k, v in report.items() if k != "archives"}, indent=2))
+          PY
+
+      - name: Upload summarized book-depth features
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-depth-${{ matrix.symbol }}-${{ matrix.year }}
+          path: |
+            book-depth/${{ matrix.symbol }}/${{ matrix.year }}/${{ matrix.symbol }}_book_depth_1m_${{ matrix.year }}.csv.gz
+            book-depth/${{ matrix.symbol }}/${{ matrix.year }}/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

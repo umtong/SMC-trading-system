@@ -1,0 +1,264 @@
+name: Export EasyChart positioning context recovery
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - ".github/workflows/export-positioning-context-recovery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and normalize official USD-M positioning context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          ROOT = Path("positioning-recovery")
+          NORMALIZED = ROOT / "normalized"
+          NORMALIZED.mkdir(parents=True, exist_ok=True)
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          METRIC_YEARS = (2022, 2023, 2025)
+          MONTH_START = (2022, 1)
+          MONTH_END = (2026, 6)
+          HEADERS = {"User-Agent": "easychart-positioning-recovery/1.0"}
+
+          def fetch(url: str, *, missing_ok: bool = False) -> bytes | None:
+              last: Exception | None = None
+              for attempt in range(8):
+                  try:
+                      req = urllib.request.Request(url, headers=HEADERS)
+                      with urllib.request.urlopen(req, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404 and missing_ok:
+                          return None
+                      last = exc
+                  except Exception as exc:  # noqa: BLE001
+                      last = exc
+                  time.sleep(min(45, 2**attempt))
+              raise RuntimeError(f"download failed: {url}: {last}")
+
+          def verified_zip(url: str, *, missing_ok: bool = False) -> tuple[bytes, str] | None:
+              body = fetch(url, missing_ok=missing_ok)
+              if body is None:
+                  return None
+              checksum = fetch(url + ".CHECKSUM")
+              assert checksum is not None
+              expected = checksum.decode("utf-8").split()[0].lower()
+              actual = hashlib.sha256(body).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch: {url}: {actual} != {expected}")
+              return body, actual
+
+          def dates_for_year(year: int):
+              start = date(year, 1, 1)
+              end = date(year, 12, 31)
+              for offset in range((end - start).days + 1):
+                  yield start + timedelta(days=offset)
+
+          def months():
+              year, month = MONTH_START
+              while (year, month) <= MONTH_END:
+                  yield year, month
+                  month += 1
+                  if month == 13:
+                      month = 1
+                      year += 1
+
+          manifest: dict[str, object] = {
+              "source": "Binance Public Data USD-M",
+              "symbols": list(SYMBOLS),
+              "metrics_years": list(METRIC_YEARS),
+              "context_start": "2022-01",
+              "context_end": "2026-06",
+              "files": [],
+          }
+
+          def metric_day(job: tuple[str, date]):
+              symbol, day = job
+              stamp = day.isoformat()
+              name = f"{symbol}-metrics-{stamp}.zip"
+              url = f"https://data.binance.vision/data/futures/um/daily/metrics/{symbol}/{name}"
+              result = verified_zip(url, missing_ok=True)
+              return symbol, day, url, result
+
+          for symbol in SYMBOLS:
+              for year in METRIC_YEARS:
+                  jobs = [(symbol, day) for day in dates_for_year(year)]
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                      downloaded = list(executor.map(metric_day, jobs))
+                  schema: list[str] | None = None
+                  rows: dict[str, list[str]] = {}
+                  missing: list[str] = []
+                  archives: list[dict[str, object]] = []
+                  for _, day, url, result in downloaded:
+                      if result is None:
+                          missing.append(day.isoformat())
+                          continue
+                      body, digest = result
+                      with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                          members = [name for name in archive.namelist() if not name.endswith("/")]
+                          if len(members) != 1:
+                              raise RuntimeError(f"unexpected members: {url}: {members}")
+                          with archive.open(members[0]) as source:
+                              reader = csv.reader(io.TextIOWrapper(source, encoding="utf-8", newline=""))
+                              current = next(reader)
+                              if schema is None:
+                                  schema = current
+                              elif current != schema:
+                                  raise RuntimeError(f"metrics schema drift: {url}")
+                              for row in reader:
+                                  if len(row) != len(schema):
+                                      raise RuntimeError(f"metrics row width drift: {url}")
+                                  rows[row[0]] = row
+                      archives.append({"date": day.isoformat(), "url": url, "sha256": digest})
+                  if schema is None or not rows:
+                      raise RuntimeError(f"no metrics rows: {symbol} {year}")
+                  output = NORMALIZED / f"{symbol}_metrics_{year}.csv.gz"
+                  ordered = sorted(rows)
+                  with gzip.open(output, "wt", encoding="utf-8", newline="") as target:
+                      writer = csv.writer(target)
+                      writer.writerow(schema)
+                      for key in ordered:
+                          writer.writerow(rows[key])
+                  manifest["files"].append({
+                      "kind": "metrics",
+                      "symbol": symbol,
+                      "year": year,
+                      "path": str(output),
+                      "rows": len(ordered),
+                      "missing_dates": missing,
+                      "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                      "archives": archives,
+                  })
+                  print("metrics", symbol, year, len(ordered), "missing", len(missing), flush=True)
+
+          def context_month(job: tuple[str, str, int, int]):
+              kind, symbol, year, month = job
+              if kind == "fundingRate":
+                  name = f"{symbol}-fundingRate-{year:04d}-{month:02d}.zip"
+                  url = f"https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{name}"
+              else:
+                  name = f"{symbol}-5m-{year:04d}-{month:02d}.zip"
+                  url = f"https://data.binance.vision/data/futures/um/monthly/{kind}/{symbol}/5m/{name}"
+              return kind, symbol, year, month, url, verified_zip(url, missing_ok=True)
+
+          kinds = ("premiumIndexKlines", "markPriceKlines", "fundingRate")
+          jobs = [(kind, symbol, year, month) for kind in kinds for symbol in SYMBOLS for year, month in months()]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+              downloaded = list(executor.map(context_month, jobs))
+
+          for kind in kinds:
+              for symbol in SYMBOLS:
+                  selected = [item for item in downloaded if item[0] == kind and item[1] == symbol]
+                  rows: dict[int, list[str]] = {}
+                  schema: list[str] | None = None
+                  missing: list[str] = []
+                  archives: list[dict[str, object]] = []
+                  for _, _, year, month, url, result in selected:
+                      stamp = f"{year:04d}-{month:02d}"
+                      if result is None:
+                          missing.append(stamp)
+                          continue
+                      body, digest = result
+                      with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                          members = [name for name in archive.namelist() if not name.endswith("/")]
+                          if len(members) != 1:
+                              raise RuntimeError(f"unexpected context members: {url}: {members}")
+                          with archive.open(members[0]) as source:
+                              text = io.TextIOWrapper(source, encoding="utf-8", newline="")
+                              reader = csv.reader(text)
+                              first = next(reader)
+                              has_header = not first[0].lstrip("+-").isdigit()
+                              if has_header:
+                                  current_schema = first
+                              else:
+                                  if kind == "fundingRate":
+                                      current_schema = ["calc_time", "funding_interval_hours", "last_funding_rate"][:len(first)]
+                                  else:
+                                      current_schema = [
+                                          "open_time", "open", "high", "low", "close", "volume",
+                                          "close_time", "quote_volume", "count", "taker_buy_volume",
+                                          "taker_buy_quote_volume", "ignore",
+                                      ][:len(first)]
+                                  rows[int(first[0])] = first
+                              if schema is None:
+                                  schema = current_schema
+                              elif current_schema != schema:
+                                  raise RuntimeError(f"context schema drift: {url}: {current_schema} != {schema}")
+                              for row in reader:
+                                  if not row:
+                                      continue
+                                  rows[int(row[0])] = row
+                      archives.append({"month": stamp, "url": url, "sha256": digest})
+                  if schema is None or not rows:
+                      raise RuntimeError(f"no context rows: {kind} {symbol}")
+                  output = NORMALIZED / f"{symbol}_{kind}_2022_2026.csv.gz"
+                  ordered = sorted(rows)
+                  with gzip.open(output, "wt", encoding="utf-8", newline="") as target:
+                      writer = csv.writer(target)
+                      writer.writerow(schema)
+                      for key in ordered:
+                          writer.writerow(rows[key])
+                  manifest["files"].append({
+                      "kind": kind,
+                      "symbol": symbol,
+                      "path": str(output),
+                      "rows": len(ordered),
+                      "missing_months": missing,
+                      "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+                      "archives": archives,
+                  })
+                  print(kind, symbol, len(ordered), "missing", missing, flush=True)
+
+          manifest_path = ROOT / "manifest.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({"files": len(manifest["files"])}), flush=True)
+          PY
+
+      - name: Package normalized recovery data
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C positioning-recovery -caf easychart-positioning-context-recovery.tar.zst normalized manifest.json
+          sha256sum easychart-positioning-context-recovery.tar.zst > easychart-positioning-context-recovery.tar.zst.sha256
+          ls -lh easychart-positioning-context-recovery.tar.zst positioning-recovery/normalized/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easychart-positioning-context-recovery
+          path: |
+            easychart-positioning-context-recovery.tar.zst
+            easychart-positioning-context-recovery.tar.zst.sha256
+            positioning-recovery/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

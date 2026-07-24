@@ -1,0 +1,111 @@
+name: Export worst-window USD-M aggregate trades
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - ".github/workflows/export-worst-window-aggtrades.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/export-worst-window-aggtrades.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {symbol: ETHUSDT, date: "2022-07-19"}
+          - {symbol: BTCUSDT, date: "2022-07-24"}
+          - {symbol: BTCUSDT, date: "2022-07-27"}
+          - {symbol: ETHUSDT, date: "2022-07-28"}
+          - {symbol: ETHUSDT, date: "2022-08-02"}
+          - {symbol: ETHUSDT, date: "2022-08-09"}
+          - {symbol: ETHUSDT, date: "2022-08-10"}
+          - {symbol: BTCUSDT, date: "2022-08-15"}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and verify official daily aggregate trades
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          DATE: ${{ matrix.date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.request
+          import zipfile
+          from pathlib import Path
+
+          symbol = os.environ["SYMBOL"]
+          day = os.environ["DATE"]
+          name = f"{symbol}-aggTrades-{day}.zip"
+          url = f"https://data.binance.vision/data/futures/um/daily/aggTrades/{symbol}/{name}"
+          root = Path("aggtrades")
+          root.mkdir(exist_ok=True)
+
+          def get(address: str) -> bytes:
+              last = None
+              for attempt in range(8):
+                  try:
+                      request = urllib.request.Request(address, headers={"User-Agent": "easychart-execution-replay/1.0"})
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(min(30, 2 ** attempt))
+              raise RuntimeError(f"download failed: {address}: {last}")
+
+          payload = get(url)
+          checksum = get(url + ".CHECKSUM").decode("utf-8").split()[0].lower()
+          digest = hashlib.sha256(payload).hexdigest()
+          if digest != checksum:
+              raise RuntimeError(f"checksum mismatch: {digest} != {checksum}")
+          path = root / name
+          path.write_bytes(payload)
+          with zipfile.ZipFile(path) as archive:
+              members = [item for item in archive.namelist() if not item.endswith("/")]
+              if len(members) != 1:
+                  raise RuntimeError(f"unexpected members: {members}")
+              info = archive.getinfo(members[0])
+          metadata = {
+              "source": "Binance Public Data USD-M daily aggTrades",
+              "symbol": symbol,
+              "date": day,
+              "url": url,
+              "sha256": digest,
+              "zip_bytes": len(payload),
+              "csv_member": members[0],
+              "csv_uncompressed_bytes": info.file_size,
+          }
+          (root / f"{symbol}-{day}.manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+          print(json.dumps(metadata, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aggtrades-${{ matrix.symbol }}-${{ matrix.date }}
+          path: |
+            aggtrades/${{ matrix.symbol }}-aggTrades-${{ matrix.date }}.zip
+            aggtrades/${{ matrix.symbol }}-${{ matrix.date }}.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

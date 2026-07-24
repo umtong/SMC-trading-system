@@ -1,0 +1,57 @@
+name: Export Binance spot-perpetual basis features
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - "scripts/export_binance_basis_5m.py"
+      - ".github/workflows/export-binance-basis-5m.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/export_binance_basis_5m.py"
+      - ".github/workflows/export-binance-basis-5m.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, and aggregate spot-perpetual basis inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/export_binance_basis_5m.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start 2020-01 \
+            --end 2026-06 \
+            --workers 8 \
+            --output-dir basis-output
+
+      - name: Upload causal five-minute basis features
+        uses: actions/upload-artifact@v4
+        with:
+          name: basis-${{ matrix.symbol }}
+          path: |
+            basis-output/${{ matrix.symbol }}_spot_perp_basis_5m.csv.gz
+            basis-output/${{ matrix.symbol }}_spot_perp_basis_5m.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
