@@ -1,0 +1,143 @@
+name: v0.27.1 strict results transport
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/v0271-strict-results-transport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SEALED_REF: research/v027-quarter-hour-20260724
+  ARCHIVE_SHA256: e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9
+  PLAN_FILE_SHA256: 723245a408b66808b588be329a1a2cb2f563aaedad260455f4d6626f01f559b1
+  PLAN_PAYLOAD_SHA256: c0cf8dacfdcc5474fd58f7570bb18a875481371658ed02ade3e2c0a5d2815f8f
+  SOURCE_MANIFEST_SHA256: 9de4136de0c0bb74c8bc3d5cdf7ab235040a56e5e81568e3fee1ffd3a4968a11
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      COMBINED: ${{ github.workspace }}/v0271-combined-visible
+      OUTPUT: ${{ github.workspace }}/v0271-strict-results-visible
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SEALED_REF }}
+          fetch-depth: 1
+
+      - name: Reconstruct and verify the exact sealed runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v0271
+          mkdir -p v0271
+          python - <<'PY'
+          import base64, hashlib, json, lzma, tarfile
+          from io import BytesIO
+          from pathlib import Path
+          root=Path('research/v0271_bundle_v2')
+          manifest=json.loads((root/'TRANSPORT_MANIFEST.json').read_text(encoding='utf-8'))
+          encoded=[]
+          for item in manifest['parts']:
+              raw=(root/item['name']).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==item['sha256']
+              encoded.append(b''.join(raw.split()))
+          archive=base64.b64decode(b''.join(encoded),validate=True)
+          assert hashlib.sha256(archive).hexdigest()==manifest['archive_sha256']=='e827d8cdb5de2760f322749de9fad4934327eaeecb817a520e09653792905da9'
+          with tarfile.open(fileobj=BytesIO(lzma.decompress(archive)),mode='r:') as tf:
+              tf.extractall('v0271',filter='data')
+          PY
+          echo "${PLAN_FILE_SHA256}  v0271/artifacts/v027/research_plan_locked.json" | sha256sum -c -
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v0271/requirements-lock.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/BTCUSDT
+          key: v0271-strict-clean-BTCUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/ETHUSDT
+          key: v0271-strict-clean-ETHUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/SOLUSDT
+          key: v0271-strict-clean-SOLUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: .v0271-data/XRPUSDT
+          key: v0271-strict-clean-XRPUSDT-${{ env.PLAN_PAYLOAD_SHA256 }}-v1
+          fail-on-cache-miss: true
+
+      - name: Re-run identical strict evaluation and expose visible results
+        shell: bash
+        working-directory: v0271
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-lock.txt
+          python -m pytest -q
+          mkdir -p "${COMBINED}" "${OUTPUT}"
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            cp "${GITHUB_WORKSPACE}/.v0271-data/${symbol}/${symbol}_"*.csv.gz "${COMBINED}/"
+          done
+          set +e
+          python - <<'PY' 2>&1 | tee "${OUTPUT}/evaluation.log"
+          import json, os
+          from pathlib import Path
+          from research.v027 import qh_pipeline as q
+          original_signal_frame=q.candidate_signal_frame
+          def strict_fixed_signal_frame(routed,candidate,execution_cost,start,end,entry_delay_minutes=0):
+              return original_signal_frame(routed,candidate,q.COSTS['base'],start,end,entry_delay_minutes=entry_delay_minutes)
+          q.candidate_signal_frame=strict_fixed_signal_frame
+          output=Path(os.environ['OUTPUT'])
+          combined=Path(os.environ['COMBINED'])
+          result=q.run_evaluation(combined,combined,output)
+          audit={
+              'schema_version':2,
+              'study_id':q.STUDY_ID,
+              'mode':'strict_fixed_base_signal_set_across_cost_profiles_visible_transport',
+              'candidate_pnl_observed_before_strict_correction':False,
+              'strategy_or_threshold_changed_for_transport':False,
+              'terminal_holdout_opened':False,
+              'production_enabled':False,
+              'any_target_met':bool(result['any_target_met']),
+              'archive_sha256':os.environ['ARCHIVE_SHA256'],
+              'plan_payload_sha256':os.environ['PLAN_PAYLOAD_SHA256'],
+              'source_manifest_sha256':os.environ['SOURCE_MANIFEST_SHA256'],
+          }
+          q.write_json(output/'strict_execution_audit.json',audit)
+          print(json.dumps(q.json_safe(audit),indent=2,sort_keys=True))
+          raise SystemExit(0 if result['any_target_met'] else 1)
+          PY
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -eq 0 -o "$code" -eq 1
+          test -s "${OUTPUT}/strict_execution_audit.json"
+          find "${OUTPUT}" -maxdepth 2 -type f -print -exec sha256sum {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v0271-strict-results-visible-${{ github.run_id }}
+          path: |
+            v0271-strict-results-visible
+            v0271/artifacts/v027/research_plan_locked.json
+          if-no-files-found: error
+          retention-days: 30
