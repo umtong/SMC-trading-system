@@ -22,6 +22,9 @@ concurrency:
   group: state-first-lob-v1-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  EXPECTED_EVALUATOR_SHA256: 2d622016999346eca02e98474b5b92e5911fad108e8f88645a5afdc8f9b66afb
+
 jobs:
   panel:
     runs-on: macos-14
@@ -46,14 +49,23 @@ jobs:
           mkdir -p state-first-runtime
           set +e
           python - <<'PY' > state-first-runtime/reconstruct.log 2>&1
-          import base64, pathlib, traceback
+          import base64, hashlib, pathlib, traceback
           try:
               parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
               if not parts: raise SystemExit('no frozen script chunks')
               encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
-              pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+              padded=encoded + ('=' * (-len(encoded) % 4))
+              payload=base64.b64decode(padded, validate=False)
+              actual=hashlib.sha256(payload).hexdigest()
+              expected='2d622016999346eca02e98474b5b92e5911fad108e8f88645a5afdc8f9b66afb'
               print('parts', [p.name for p in parts])
-              print('encoded_chars', len(encoded))
+              print('encoded_chars', len(encoded), 'mod4', len(encoded)%4)
+              print('decoded_bytes', len(payload))
+              print('actual_sha256', actual)
+              print('expected_sha256', expected)
+              if actual != expected:
+                  raise ValueError(f'frozen evaluator SHA mismatch: {actual} != {expected}')
+              pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(payload)
           except BaseException:
               traceback.print_exc()
               raise
@@ -126,16 +138,20 @@ jobs:
           pattern: state-first-lob-panel-*-${{ github.run_id }}
           path: state-first-input
           merge-multiple: true
-      - name: Reconstruct and compile evaluator
+      - name: Reconstruct, verify and compile evaluator
         shell: bash
         run: |
           mkdir -p state-first-runtime
           python - <<'PY'
-          import base64, pathlib
+          import base64, hashlib, pathlib
           parts=sorted(pathlib.Path('research_tools/state_first_lob_v1').glob('script.part[0-9][0-9]'))
           if not parts: raise SystemExit('no frozen script chunks')
           encoded=''.join(p.read_text(encoding='utf-8').split() for p in parts)
-          pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(base64.b64decode(encoded, validate=True))
+          payload=base64.b64decode(encoded + ('=' * (-len(encoded) % 4)), validate=False)
+          actual=hashlib.sha256(payload).hexdigest()
+          expected='2d622016999346eca02e98474b5b92e5911fad108e8f88645a5afdc8f9b66afb'
+          if actual != expected: raise SystemExit(f'evaluator SHA mismatch: {actual} != {expected}')
+          pathlib.Path('state-first-runtime/state_first_lob_v1.py').write_bytes(payload)
           PY
           shasum -a 256 state-first-runtime/state_first_lob_v1.py | tee state-first-runtime/ACTUAL_SHA256.txt
           python -m py_compile state-first-runtime/state_first_lob_v1.py
