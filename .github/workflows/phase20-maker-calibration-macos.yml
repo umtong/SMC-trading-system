@@ -6,10 +6,15 @@ on:
       - research/phase20-maker-calibration-20260723
     paths:
       - '.github/workflows/phase20-maker-calibration-macos.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase20-maker-calibration-macos.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: v25p-public-2025-macos-${{ github.ref }}
@@ -42,7 +47,6 @@ jobs:
           from pathlib import Path
           import hashlib,json,re,time,urllib.request,zipfile
           import pandas as pd
-
           MONTHS=[f'2025-{m:02d}' for m in range(1,13)]+['2026-01']
           ROOT=Path('.cache/v25p-public');OUT=Path('v25p-public-2025')
           JOBS=[]
@@ -50,7 +54,6 @@ jobs:
               for m in MONTHS:JOBS += [('spot','klines',s,m),('futures','klines',s,m),('futures','markPriceKlines',s,m)]
           for s in ['SOLUSDT','XRPUSDT']:
               for m in MONTHS:JOBS += [('futures','klines',s,m)]
-
           def sha(path):
               h=hashlib.sha256()
               with path.open('rb') as f:
@@ -86,7 +89,6 @@ jobs:
                   records.append(f.result())
                   if n%20==0 or n==len(futs):print(f'downloaded={n}/{len(futs)}',flush=True)
           pd.DataFrame(records).sort_values(['symbol','month','market','kind']).to_csv(OUT/'input_manifest.csv',index=False)
-
           def read(path):
               with zipfile.ZipFile(path) as z:
                   names=[n for n in z.namelist() if not n.endswith('/')]
@@ -130,3 +132,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
+      - name: Publish run locator
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body "## V25P frozen 2025 public input export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- status: \`${{ job.status }}\`\n- artifact: \`v25p-frozen-public-2025-${GITHUB_RUN_ID}\`\n\n_Data only; frozen evaluator and promotion gates are unchanged._"
