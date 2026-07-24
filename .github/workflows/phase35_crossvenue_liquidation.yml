@@ -22,11 +22,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install research dependencies
-        run: python -m pip install --upgrade pip && python -m pip install numpy pandas pyarrow huggingface_hub
-      - name: Run causal cross-venue study
+        run: python -m pip install --upgrade pip && python -m pip install numpy pandas pyarrow huggingface_hub numba
+      - name: Run optimized causal cross-venue study
         env:
           HF_HOME: ${{ runner.temp }}/hf
-        run: python research/phase35_crossvenue_liquidation/run.py | tee research/phase35_crossvenue_liquidation/run.log
+        run: python research/phase35_crossvenue_liquidation/run_optimized_loader.py | tee research/phase35_crossvenue_liquidation/run.log
       - name: Commit compact research results
         if: success() && github.event_name == 'push'
         run: |
