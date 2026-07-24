@@ -1,0 +1,8 @@
+{
+  "candidate_id": "v25p_phase_memory_crossmarket_v1",
+  "candidate_sha256": "923f011998e16836f30c8853b23d84a55103b68013785978b134ec4a414b5ff6",
+  "evaluator_sha256": "46fbc3321d0aa5637290c9efaca83502b1854120aced7a7862113e78388e0cd9",
+  "period": ["2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
+  "warmout_through": "2026-01-31T23:59:00Z",
+  "paper_or_live_authority": false
+}
