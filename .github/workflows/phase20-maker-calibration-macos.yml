@@ -6,10 +6,7 @@ on:
       - research/phase20-maker-calibration-20260723
     paths:
       - '.github/workflows/phase20-maker-calibration-macos.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/phase20-maker-calibration-macos.yml'
+      - 'research/v25p_public_export.py'
   workflow_dispatch:
 
 permissions:
@@ -30,111 +27,47 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install locked dependencies
-        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
       - uses: actions/cache@v4
         with:
           path: .cache/v25p-public
           key: v25p-binance-public-2025-2026jan-btc-eth-sol-xrp-v1
-      - name: Download, checksum, normalize and segment official inputs
+      - name: Run frozen input exporter
+        id: export
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          set -o pipefail
           rm -rf v25p-public-2025
-          mkdir -p v25p-public-2025
-          python - <<'PY'
-          from concurrent.futures import ThreadPoolExecutor,as_completed
-          from pathlib import Path
-          import hashlib,json,re,time,urllib.request,zipfile
-          import pandas as pd
-          MONTHS=[f'2025-{m:02d}' for m in range(1,13)]+['2026-01']
-          ROOT=Path('.cache/v25p-public');OUT=Path('v25p-public-2025')
-          JOBS=[]
-          for s in ['BTCUSDT','ETHUSDT']:
-              for m in MONTHS:JOBS += [('spot','klines',s,m),('futures','klines',s,m),('futures','markPriceKlines',s,m)]
-          for s in ['SOLUSDT','XRPUSDT']:
-              for m in MONTHS:JOBS += [('futures','klines',s,m)]
-          def sha(path):
-              h=hashlib.sha256()
-              with path.open('rb') as f:
-                  for b in iter(lambda:f.read(1<<20),b''):h.update(b)
-              return h.hexdigest()
-          def get(url):
-              err=None
-              for i in range(7):
-                  try:
-                      req=urllib.request.Request(url,headers={'User-Agent':'v25p-frozen-public/1.0'})
-                      with urllib.request.urlopen(req,timeout=300) as r:return r.read()
-                  except Exception as e:
-                      err=e;time.sleep(min(2**i,20))
-              raise RuntimeError(f'{url}: {err!r}')
-          def ensure(job):
-              market,kind,symbol,month=job;name=f'{symbol}-1m-{month}.zip'
-              if market=='spot':url=f'https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/{name}';folder=ROOT/'spot'/symbol
-              else:url=f'https://data.binance.vision/data/futures/um/monthly/{kind}/{symbol}/1m/{name}';folder=ROOT/'futures'/kind/symbol
-              folder.mkdir(parents=True,exist_ok=True);p=folder/name;cp=folder/f'{name}.CHECKSUM'
-              if not cp.exists():cp.write_bytes(get(url+'.CHECKSUM'))
-              mm=re.search(rb'([0-9a-fA-F]{64})',cp.read_bytes())
-              if not mm:raise ValueError(f'bad checksum {cp}')
-              expected=mm.group(1).decode().lower()
-              if not p.exists() or sha(p)!=expected:
-                  tmp=p.with_suffix('.tmp');tmp.write_bytes(get(url))
-                  if sha(tmp)!=expected:raise ValueError(f'checksum mismatch {url}')
-                  tmp.replace(p)
-              return {'market':market,'kind':kind,'symbol':symbol,'month':month,'url':url,'sha256':expected,'bytes':p.stat().st_size,'path':str(p)}
-          records=[]
-          with ThreadPoolExecutor(max_workers=10) as ex:
-              futs=[ex.submit(ensure,j) for j in JOBS]
-              for n,f in enumerate(as_completed(futs),1):
-                  records.append(f.result())
-                  if n%20==0 or n==len(futs):print(f'downloaded={n}/{len(futs)}',flush=True)
-          pd.DataFrame(records).sort_values(['symbol','month','market','kind']).to_csv(OUT/'input_manifest.csv',index=False)
-          def read(path):
-              with zipfile.ZipFile(path) as z:
-                  names=[n for n in z.namelist() if not n.endswith('/')]
-                  if len(names)!=1:raise ValueError(f'unexpected members {path}')
-                  raw=pd.read_csv(z.open(names[0]),header=None)
-              if raw.shape[1]<11:raise ValueError(f'bad schema {path}: {raw.shape}')
-              x=raw.iloc[:,[0,1,2,3,4,7,8,10]].copy();x.columns=['raw_time','open','high','low','close','quote_volume','trades','taker_buy_quote']
-              ts=pd.to_numeric(x.raw_time,errors='raise').astype('int64');unit='us' if float(ts.median())>1e14 else 'ms';x['open_time']=pd.to_datetime(ts,unit=unit,utc=True)
-              for c in ['open','high','low','close','quote_volume','trades','taker_buy_quote']:x[c]=pd.to_numeric(x[c],errors='raise')
-              return x[['open_time','open','high','low','close','quote_volume','trades','taker_buy_quote']]
-          summaries=[]
-          for symbol in ['BTCUSDT','ETHUSDT']:
-              sp=[];fu=[]
-              for month in MONTHS:
-                  sp.append(read(ROOT/'spot'/symbol/f'{symbol}-1m-{month}.zip'))
-                  f=read(ROOT/'futures'/'klines'/symbol/f'{symbol}-1m-{month}.zip')
-                  mk=read(ROOT/'futures'/'markPriceKlines'/symbol/f'{symbol}-1m-{month}.zip')[['open_time','close']].rename(columns={'close':'mark_close'})
-                  z=f.merge(mk,on='open_time',how='left',validate='one_to_one');z=z[z.mark_close.notna()].copy();fu.append(z)
-              for kind,frame in [('spot',pd.concat(sp,ignore_index=True)),('fut',pd.concat(fu,ignore_index=True))]:
-                  frame=frame.sort_values('open_time',kind='mergesort').reset_index(drop=True)
-                  if frame.open_time.duplicated().any():raise ValueError(f'duplicate {symbol} {kind}')
-                  d=frame.open_time.diff();frame['segment_id']=(d.isna()|d.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
-                  p=OUT/f'{symbol}_{kind}_1m.csv.gz';frame.to_csv(p,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
-                  summaries.append({'symbol':symbol,'kind':kind,'rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(p),'bytes':p.stat().st_size})
-          for symbol in ['SOLUSDT','XRPUSDT']:
-              frame=pd.concat([read(ROOT/'futures'/'klines'/symbol/f'{symbol}-1m-{m}.zip') for m in MONTHS],ignore_index=True).sort_values('open_time',kind='mergesort').reset_index(drop=True)
-              if frame.open_time.duplicated().any():raise ValueError(f'duplicate {symbol}')
-              d=frame.open_time.diff();frame['segment_id']=(d.isna()|d.ne(pd.Timedelta(minutes=1))).cumsum().astype('int64')-1
-              p=OUT/f'{symbol}_fut_1m.csv.gz';frame.to_csv(p,index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
-              summaries.append({'symbol':symbol,'kind':'fut','rows':len(frame),'segments':int(frame.segment_id.nunique()),'first':str(frame.open_time.min()),'last':str(frame.open_time.max()),'sha256':sha(p),'bytes':p.stat().st_size})
-          (OUT/'summary.json').write_text(json.dumps(summaries,indent=2)+'\n')
-          print(json.dumps(summaries,indent=2))
-          PY
-      - name: Hash output
-        run: |
-          find v25p-public-2025 -type f -print0 | sort -z | xargs -0 shasum -a 256 | tee v25p-public-2025/SHA256SUMS.txt
+          python research/v25p_public_export.py \
+            --cache .cache/v25p-public \
+            --output v25p-public-2025 \
+            --workers 10 2>&1 | tee v25p-public-export.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Hash outputs
+        if: always()
+        run: find v25p-public-2025 -type f -print0 | sort -z | xargs -0 shasum -a 256 | tee v25p-public-2025/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: v25p-frozen-public-2025-${{ github.run_id }}
-          path: v25p-public-2025
-          if-no-files-found: error
+          path: |
+            v25p-public-2025
+            v25p-public-export.log
+            research/v25p_public_export.py
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 6
       - name: Publish run locator
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR_NUMBER" --body "## V25P frozen 2025 public input export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- status: \`${{ job.status }}\`\n- artifact: \`v25p-frozen-public-2025-${GITHUB_RUN_ID}\`\n\n_Data only; frozen evaluator and promotion gates are unchanged._"
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: gh pr comment 63 --repo umtong/SMC-trading-system --body "## V25P frozen 2025 public input export\n\n- run_id: \`${GITHUB_RUN_ID}\`\n- exit_code: \`${EXIT_CODE}\`\n- artifact: \`v25p-frozen-public-2025-${GITHUB_RUN_ID}\`\n- candidate: \`923f011998e16836f30c8853b23d84a55103b68013785978b134ec4a414b5ff6\`\n\n_Data only; no strategy or order authority changes._"
+      - name: Preserve failure
+        if: always() && steps.export.outputs.exit_code != '0'
+        env:
+          EXIT_CODE: ${{ steps.export.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
