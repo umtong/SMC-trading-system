@@ -1,0 +1,93 @@
+name: V1.30 BookTicker Microstructure Sample
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and verify one official day
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          DAY: 2023-05-16
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee "v130-${SYMBOL}.log"
+          import csv, hashlib, io, json, os, urllib.request, zipfile
+          from pathlib import Path
+
+          symbol = os.environ['SYMBOL']
+          day = os.environ['DAY']
+          root = Path('data/v130') / symbol
+          root.mkdir(parents=True, exist_ok=True)
+          report = {'symbol': symbol, 'day': day, 'sources': {}}
+
+          for dtype in ('bookTicker', 'aggTrades'):
+              name = f'{symbol}-{dtype}-{day}.zip'
+              url = f'https://data.binance.vision/data/futures/um/daily/{dtype}/{symbol}/{name}'
+              req = lambda u: urllib.request.Request(u, headers={'User-Agent':'smc-v130-bookticker/1.0'})
+              with urllib.request.urlopen(req(url + '.CHECKSUM'), timeout=180) as r:
+                  expected = r.read().decode('utf-8-sig').strip().split()[0].lower()
+              with urllib.request.urlopen(req(url), timeout=600) as r:
+                  payload = r.read()
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{dtype}: checksum mismatch {actual} != {expected}')
+              path = root / name
+              path.write_bytes(payload)
+              (root / (name + '.CHECKSUM')).write_text(f'{actual}  {name}\n', encoding='utf-8')
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  members = [n for n in z.namelist() if n.lower().endswith('.csv')]
+                  if not members:
+                      raise SystemExit(f'{dtype}: no CSV member')
+                  member = members[0]
+                  info = z.getinfo(member)
+                  with z.open(member) as fh:
+                      text = io.TextIOWrapper(fh, encoding='utf-8-sig', newline='')
+                      reader = csv.reader(text)
+                      first = next(reader)
+                      second = next(reader, None)
+                  report['sources'][dtype] = {
+                      'url': url,
+                      'sha256': actual,
+                      'archive_bytes': len(payload),
+                      'member': member,
+                      'uncompressed_bytes': info.file_size,
+                      'first_row': first,
+                      'second_row': second,
+                      'columns_first_row': len(first),
+                  }
+          out = root / 'sample_report.json'
+          out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload immutable sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v130-bookticker-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            data/v130/${{ matrix.symbol }}
+            v130-${{ matrix.symbol }}.log
+          if-no-files-found: error
+          retention-days: 7
