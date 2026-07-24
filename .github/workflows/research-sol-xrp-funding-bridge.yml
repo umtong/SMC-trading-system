@@ -1,0 +1,81 @@
+name: Research SOL XRP Official Funding Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-sol-xrp-funding-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install fixed dependencies
+        run: python -m pip install pandas==2.2.3 requests==2.32.3
+      - name: Download, verify, and normalize official funding
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/build_funding.py" <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, zipfile
+          from pathlib import Path
+          import pandas as pd
+          import requests
+
+          OUT=Path('research_artifact'); OUT.mkdir(exist_ok=True)
+          session=requests.Session()
+          records=[]
+          months=pd.period_range('2022-04','2025-12',freq='M').astype(str)
+          for symbol in ('SOLUSDT','XRPUSDT'):
+              frames=[]
+              for month in months:
+                  name=f'{symbol}-fundingRate-{month}.zip'
+                  url=f'https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/{name}'
+                  cr=session.get(url+'.CHECKSUM',timeout=30)
+                  if cr.status_code==404:
+                      records.append({'symbol':symbol,'month':month,'status':'missing'})
+                      continue
+                  cr.raise_for_status(); expected=cr.text.strip().split()[0].lower()
+                  r=session.get(url,timeout=60); r.raise_for_status(); payload=r.content
+                  observed=hashlib.sha256(payload).hexdigest()
+                  if observed!=expected: raise RuntimeError((name,expected,observed))
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                      names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+                      if len(names)!=1: raise RuntimeError((name,names))
+                      frame=pd.read_csv(zf.open(names[0]))
+                  frame.columns=[str(c).strip().lower() for c in frame.columns]
+                  aliases={'fundingtime':'calc_time','funding_time':'calc_time','calctime':'calc_time','lastfundingrate':'last_funding_rate','fundingrate':'last_funding_rate'}
+                  frame=frame.rename(columns={k:v for k,v in aliases.items() if k in frame.columns})
+                  if 'calc_time' not in frame or 'last_funding_rate' not in frame: raise RuntimeError((name,list(frame.columns)))
+                  keep=['calc_time','last_funding_rate']+(['funding_interval_hours'] if 'funding_interval_hours' in frame else [])
+                  frame=frame[keep].copy();frame['symbol']=symbol;frame['source_month']=month
+                  frames.append(frame)
+                  records.append({'symbol':symbol,'month':month,'status':'ok','url':url,'published_sha256':expected,'observed_sha256':observed,'rows':len(frame)})
+              if not frames: raise RuntimeError(f'no funding for {symbol}')
+              out=pd.concat(frames,ignore_index=True)
+              out['calc_time']=pd.to_numeric(out.calc_time,errors='raise').astype('int64')
+              out['last_funding_rate']=pd.to_numeric(out.last_funding_rate,errors='raise').astype(float)
+              out=out.sort_values('calc_time').drop_duplicates('calc_time',keep='last')
+              if not out.calc_time.is_monotonic_increasing or out.calc_time.duplicated().any(): raise RuntimeError('chronology')
+              path=OUT/f'{symbol}_fundingRate_2022-04_2025-12.csv.gz';out.to_csv(path,index=False,compression='gzip')
+              records.append({'symbol':symbol,'status':'output','rows':len(out),'first_ms':int(out.calc_time.min()),'last_ms':int(out.calc_time.max()),'output':path.name,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'bytes':path.stat().st_size})
+          manifest={'source':'official Binance Vision USD-M monthly fundingRate','credentials':False,'orders':False,'records':records}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps({'outputs':[r for r in records if r.get('status')=='output']},indent=2))
+          PY
+          python "$RUNNER_TEMP/build_funding.py"
+      - name: Upload checksum-verified funding artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-funding-2022-04_2025-12-${{ github.run_id }}
+          path: research_artifact
+          if-no-files-found: error
+          retention-days: 14
