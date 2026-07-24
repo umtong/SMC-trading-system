@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+import polars as pl
+from huggingface_hub import snapshot_download
+
+OUT = Path('research/phase32_microbar_liquidation/results')
+OUT.mkdir(parents=True, exist_ok=True)
+REPO_ID = 'Mindbyte-89/btcusdt-microbar-v2'
+REQUIRED = ('trades', 'depth', 'liquidations')
+FEE_STRESS_BPS = (8.0, 12.0, 18.0)
+
+
+@dataclass(frozen=True)
+class Split:
+    dev: tuple[str, ...]
+    val: tuple[str, ...]
+    hold: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Rule:
+    route: str
+    threshold_q: float
+    confirmation_s: int
+    horizon_s: int
+    price_threshold_bps: float
+    flow_threshold: float
+    depth_ratio_threshold: float
+    cooldown_s: int
+
+
+def trim(values: np.ndarray, n: int) -> float:
+    values = np.asarray(values, dtype=float)
+    return float(np.sort(values)[:-n].mean()) if len(values) > n else math.nan
+
+
+def file_groups(local: Path) -> dict[str, dict[str, list[Path]]]:
+    groups: dict[str, dict[str, list[Path]]] = {}
+    for path in local.rglob('*.parquet'):
+        parts = path.parts
+        stream = next((x for x in REQUIRED if x in parts), None)
+        if stream is None:
