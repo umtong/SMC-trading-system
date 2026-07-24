@@ -1,0 +1,29 @@
+                                                rec[f'{name}_{int(fee)}bp_{k}'] = v
+                                    dev = rec.get('dev_12bp_mean_bps', math.nan)
+                                    val = rec.get('val_12bp_mean_bps', math.nan)
+                                    dtrim = rec.get('dev_12bp_top3_removed_bps', math.nan)
+                                    vtrim = rec.get('val_12bp_top3_removed_bps', math.nan)
+                                    rec['selection_score'] = min(dev, val, dtrim, vtrim) if all(np.isfinite([dev,val,dtrim,vtrim])) else -1e9
+                                    rows.append(rec)
+    grid = pd.DataFrame(rows).sort_values(['selection_score', 'hold_12bp_mean_bps'], ascending=False)
+    grid.to_csv(OUT / 'RULE_GRID.csv', index=False)
+    robust = grid[
+        (grid.dev_12bp_n >= 20) & (grid.val_12bp_n >= 10)
+        & (grid.dev_12bp_mean_bps > 0) & (grid.val_12bp_mean_bps > 0)
+        & (grid.dev_12bp_top3_removed_bps > 0) & (grid.val_12bp_top3_removed_bps > 0)
+        & (grid.dev_18bp_mean_bps > 0) & (grid.val_18bp_mean_bps > 0)
+    ].copy()
+    robust.to_csv(OUT / 'ROBUST.csv', index=False)
+    summary = {
+        'status': 'CANDIDATE' if len(robust) else 'CASH', 'split': asdict(split), 'thresholds': quantiles,
+        'event_panel_rows': int(len(panel)), 'grid_rows': int(len(grid)), 'robust_rows': int(len(robust)),
+        'top': grid.head(20).replace({np.nan: None}).to_dict('records'),
+        'top_robust': robust.head(20).replace({np.nan: None}).to_dict('records'),
+        'causality': 'rising threshold crossing; pre-depth before event; confirmation uses only observed post-event seconds; next-second executable bid/ask entry',
+    }
+    (OUT / 'SUMMARY.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+    print(json.dumps({'status': summary['status'], 'days': len(days), 'events': len(panel), 'robust': len(robust)}, indent=2))
+
+
+if __name__ == '__main__':
+    main()

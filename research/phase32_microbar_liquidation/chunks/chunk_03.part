@@ -1,0 +1,50 @@
+    x['microprice'] = np.divide(ask_price * bid_qty + bid_price * ask_qty, denom, out=x['mid'].to_numpy(float).copy(), where=denom > 0)
+    keep = ['sec', 'timestamp_ms', 'bid_price_0', 'ask_price_0', 'mid', 'spread_bps', 'bid_depth', 'ask_depth', 'microprice']
+    return x[keep]
+
+
+def build_day(day: str, streams: dict[str, list[Path]]) -> pd.DataFrame:
+    depth = collect_depth(streams['depth'])
+    trades = collect_trades(streams['trades'])
+    liq = collect_liquidations(streams['liquidations'])
+    if depth.empty:
+        raise ValueError(f'no depth for {day}')
+    start = int(depth.sec.min())
+    end = int(depth.sec.max())
+    index = pd.Index(np.arange(start, end + 1, dtype=np.int64), name='sec')
+    d = depth.set_index('sec').reindex(index).ffill()
+    d['depth_age_ms'] = index.to_numpy(np.int64) * 1000 - d.timestamp_ms.to_numpy(float)
+    d.loc[d.depth_age_ms > 2000, ['bid_price_0', 'ask_price_0', 'mid', 'spread_bps', 'bid_depth', 'ask_depth', 'microprice']] = np.nan
+    d = d.join(trades.set_index('sec'), how='left').join(liq.set_index('sec'), how='left')
+    for c in ('buy_quote', 'sell_quote', 'trade_quote', 'trade_count', 'buy_liq', 'sell_liq'):
+        d[c] = d[c].fillna(0.0)
+    d['signed_flow'] = d.buy_quote - d.sell_quote
+    d['flow_imbalance'] = np.divide(d.signed_flow, d.trade_quote, out=np.zeros(len(d)), where=d.trade_quote.to_numpy(float) > 0)
+    d['liq_buy_5s'] = d.buy_liq.rolling(5, min_periods=1).sum()
+    d['liq_sell_5s'] = d.sell_liq.rolling(5, min_periods=1).sum()
+    d['liq_total_5s'] = d.liq_buy_5s + d.liq_sell_5s
+    d['liq_direction'] = np.sign(d.liq_buy_5s - d.liq_sell_5s)
+    d['liq_dominance'] = np.divide(np.abs(d.liq_buy_5s - d.liq_sell_5s), d.liq_total_5s, out=np.zeros(len(d)), where=d.liq_total_5s.to_numpy(float) > 0)
+    d['bid_depth_median_300'] = d.bid_depth.rolling(300, min_periods=60).median().shift(1)
+    d['ask_depth_median_300'] = d.ask_depth.rolling(300, min_periods=60).median().shift(1)
+    d['spread_median_300'] = d.spread_bps.rolling(300, min_periods=60).median().shift(1)
+    d['day'] = day
+    return d.reset_index()
+
+
+def event_rows(day_frame: pd.DataFrame, threshold: float, cooldown_s: int) -> pd.DataFrame:
+    total = day_frame.liq_total_5s.to_numpy(float)
+    dom = day_frame.liq_dominance.to_numpy(float)
+    eligible = np.isfinite(total) & (total >= threshold) & (dom >= 0.70) & np.isfinite(day_frame.mid.to_numpy(float))
+    crossing = eligible & ~np.r_[False, eligible[:-1]]
+    idx = np.flatnonzero(crossing)
+    chosen: list[int] = []
+    free = -1
+    for i in idx:
+        if i >= free:
+            chosen.append(int(i))
+            free = int(i + cooldown_s)
+    return day_frame.iloc[chosen].copy()
+
+
+def enrich_events(day_frame: pd.DataFrame, events: pd.DataFrame, confirmation_s: int, horizon_s: int) -> pd.DataFrame:

@@ -1,0 +1,50 @@
+    if events.empty:
+        return events.copy()
+    pos = {int(sec): i for i, sec in enumerate(day_frame.sec.to_numpy(np.int64))}
+    rows: list[dict[str, float | int | str]] = []
+    for r in events.itertuples(index=False):
+        i = pos[int(r.sec)]
+        pre = i - 1
+        confirm = i + confirmation_s
+        entry_i = confirm + 1
+        exit_i = entry_i + horizon_s
+        if pre < 0 or exit_i >= len(day_frame):
+            continue
+        vals = day_frame.iloc[[pre, confirm, entry_i, exit_i]]
+        if not np.isfinite(vals[['mid', 'bid_price_0', 'ask_price_0', 'bid_depth', 'ask_depth', 'microprice']].to_numpy(float)).all():
+            continue
+        direction = int(np.sign(r.liq_direction))
+        if direction == 0:
+            continue
+        pre_row = day_frame.iloc[pre]
+        conf_row = day_frame.iloc[confirm]
+        entry_row = day_frame.iloc[entry_i]
+        exit_row = day_frame.iloc[exit_i]
+        impacted_pre = float(pre_row.ask_depth if direction > 0 else pre_row.bid_depth)
+        impacted_conf = float(conf_row.ask_depth if direction > 0 else conf_row.bid_depth)
+        median_depth = float(pre_row.ask_depth_median_300 if direction > 0 else pre_row.bid_depth_median_300)
+        if not np.isfinite(impacted_pre) or impacted_pre <= 0:
+            continue
+        flow_slice = day_frame.iloc[i:confirm+1]
+        flow_total = float(flow_slice.trade_quote.sum())
+        flow_align = direction * float(flow_slice.signed_flow.sum()) / flow_total if flow_total > 0 else 0.0
+        price_move = direction * (float(conf_row.mid) / float(pre_row.mid) - 1.0) * 1e4
+        depth_ratio = impacted_conf / impacted_pre
+        fragility = impacted_pre / median_depth if np.isfinite(median_depth) and median_depth > 0 else math.nan
+        micro_align = direction * (float(conf_row.microprice) / float(conf_row.mid) - 1.0) * 1e4
+        for route, side in (('CONT', direction), ('REV', -direction)):
+            entry = float(entry_row.ask_price_0 if side > 0 else entry_row.bid_price_0)
+            exitp = float(exit_row.bid_price_0 if side > 0 else exit_row.ask_price_0)
+            gross = side * (exitp / entry - 1.0) * 1e4
+            rows.append({
+                'day': str(r.day), 'event_sec': int(r.sec), 'entry_sec': int(entry_row.sec), 'exit_sec': int(exit_row.sec),
+                'route': route, 'side': side, 'direction': direction, 'liq_quote_5s': float(r.liq_total_5s),
+                'dominance': float(r.liq_dominance), 'price_move_bps': price_move, 'flow_align': flow_align,
+                'depth_ratio': depth_ratio, 'fragility': fragility, 'micro_align_bps': micro_align,
+                'spread_bps': float(entry_row.spread_bps), 'gross_crossed_bps': gross,
+                'entry': entry, 'exit': exitp, 'confirmation_s': confirmation_s, 'horizon_s': horizon_s,
+            })
+    return pd.DataFrame(rows)
+
+
+def apply_rule(events: pd.DataFrame, rule: Rule, fee_bps: float, days: tuple[str, ...]) -> pd.DataFrame:
