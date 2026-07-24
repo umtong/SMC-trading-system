@@ -1,0 +1,50 @@
+        .sort('sec')
+    )
+    return lf.collect(engine='streaming').to_pandas()
+
+
+def collect_liquidations(files: Iterable[Path]) -> pd.DataFrame:
+    paths = [str(x) for x in files]
+    lf = (
+        pl.scan_parquet(paths)
+        .select(['timestamp_ms', 'price', 'quantity', 'side'])
+        .with_columns([
+            (pl.col('timestamp_ms') // 1000).cast(pl.Int64).alias('sec'),
+            (pl.col('price') * pl.col('quantity')).alias('quote'),
+            pl.col('side').cast(pl.String).str.to_uppercase(),
+        ])
+        .group_by(['sec', 'side'])
+        .agg(pl.col('quote').sum().alias('liq_quote'))
+        .sort(['sec', 'side'])
+    )
+    x = lf.collect(engine='streaming').to_pandas()
+    if x.empty:
+        return pd.DataFrame(columns=['sec', 'buy_liq', 'sell_liq'])
+    p = x.pivot(index='sec', columns='side', values='liq_quote').fillna(0.0)
+    p = p.rename(columns={'BUY': 'buy_liq', 'SELL': 'sell_liq'}).reset_index()
+    for c in ('buy_liq', 'sell_liq'):
+        if c not in p:
+            p[c] = 0.0
+    return p[['sec', 'buy_liq', 'sell_liq']]
+
+
+def collect_depth(files: Iterable[Path]) -> pd.DataFrame:
+    cols = ['timestamp_ms']
+    for side in ('bid', 'ask'):
+        for field in ('price', 'qty'):
+            cols.extend([f'{side}_{field}_{i}' for i in range(5)])
+    paths = [str(x) for x in files]
+    x = pl.scan_parquet(paths).select(cols).sort('timestamp_ms').collect(engine='streaming').to_pandas()
+    if x.empty:
+        return x
+    x['sec'] = (x.timestamp_ms.to_numpy(np.int64) // 1000).astype(np.int64)
+    x = x.sort_values('timestamp_ms').drop_duplicates('sec', keep='last')
+    bid_price = x['bid_price_0'].to_numpy(float)
+    ask_price = x['ask_price_0'].to_numpy(float)
+    bid_qty = x['bid_qty_0'].to_numpy(float)
+    ask_qty = x['ask_qty_0'].to_numpy(float)
+    x['mid'] = (bid_price + ask_price) / 2.0
+    x['spread_bps'] = (ask_price / bid_price - 1.0) * 1e4
+    x['bid_depth'] = sum(x[f'bid_price_{i}'].to_numpy(float) * x[f'bid_qty_{i}'].to_numpy(float) for i in range(5))
+    x['ask_depth'] = sum(x[f'ask_price_{i}'].to_numpy(float) * x[f'ask_qty_{i}'].to_numpy(float) for i in range(5))
+    denom = bid_qty + ask_qty
