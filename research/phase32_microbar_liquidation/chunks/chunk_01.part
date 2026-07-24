@@ -1,0 +1,50 @@
+            continue
+        i = parts.index(stream)
+        if i + 1 >= len(parts):
+            continue
+        day = parts[i + 1]
+        try:
+            pd.Timestamp(day)
+        except Exception:
+            continue
+        groups.setdefault(day, {}).setdefault(stream, []).append(path)
+    return {
+        day: {k: sorted(v) for k, v in streams.items()}
+        for day, streams in groups.items()
+        if all(k in streams and streams[k] for k in REQUIRED)
+    }
+
+
+def chronological_split(days: list[str]) -> Split | None:
+    n = len(days)
+    if n < 6:
+        return None
+    n_dev = max(2, int(math.floor(n * 0.5)))
+    n_val = max(2, int(math.floor(n * 0.25)))
+    if n_dev + n_val >= n:
+        n_dev = max(2, n - 4)
+        n_val = 2
+    return Split(tuple(days[:n_dev]), tuple(days[n_dev:n_dev+n_val]), tuple(days[n_dev+n_val:]))
+
+
+def collect_trades(files: Iterable[Path]) -> pd.DataFrame:
+    paths = [str(x) for x in files]
+    lf = (
+        pl.scan_parquet(paths)
+        .select(['timestamp_ms', 'price', 'quantity', 'is_buyer_maker'])
+        .with_columns([
+            (pl.col('timestamp_ms') // 1000).cast(pl.Int64).alias('sec'),
+            (pl.col('price') * pl.col('quantity')).alias('quote'),
+        ])
+        .with_columns([
+            pl.when(~pl.col('is_buyer_maker')).then(pl.col('quote')).otherwise(0.0).alias('buy_quote'),
+            pl.when(pl.col('is_buyer_maker')).then(pl.col('quote')).otherwise(0.0).alias('sell_quote'),
+        ])
+        .group_by('sec')
+        .agg([
+            pl.col('buy_quote').sum(),
+            pl.col('sell_quote').sum(),
+            pl.col('quote').sum().alias('trade_quote'),
+            pl.col('price').last().alias('last_trade'),
+            pl.len().alias('trade_count'),
+        ])
