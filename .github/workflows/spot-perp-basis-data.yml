@@ -1,0 +1,176 @@
+name: Audited Spot Perp Basis Data macOS
+
+on:
+  push:
+    branches:
+      - research/spot-perp-basis-macos-20260724
+    paths:
+      - .github/workflows/spot-perp-basis-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/spot-perp-basis-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-basis-data:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install \
+            "huggingface_hub==0.34.4" \
+            "pandas==2.3.1" \
+            "pyarrow==20.0.0"
+
+      - name: Download, trim and audit spot/perpetual files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+          import pyarrow as pa
+          import pyarrow.parquet as pq
+          from huggingface_hub import HfApi, hf_hub_download
+
+          REPO = "rogerdehe/klines-binance"
+          FILES = {
+              "BTCUSDT_spot_5m": "spot/5m/BTC_USDT.parquet",
+              "ETHUSDT_spot_5m": "spot/5m/ETH_USDT.parquet",
+              "BTCUSDT_perp_5m": "futures/5m/BTC_USDT_USDT.parquet",
+              "ETHUSDT_perp_5m": "futures/5m/ETH_USDT_USDT.parquet",
+          }
+          CUTOFF = pd.Timestamp("2025-06-01T00:00:00Z")
+          OUT = Path("audited_spot_perp")
+          OUT.mkdir(parents=True, exist_ok=True)
+
+          api = HfApi()
+          info = api.dataset_info(REPO, revision="main")
+          revision = info.sha
+          if not revision:
+              raise RuntimeError("failed to resolve immutable dataset revision")
+
+          records = []
+          normalized = {}
+          for name, remote_path in FILES.items():
+              local = Path(hf_hub_download(
+                  repo_id=REPO,
+                  filename=remote_path,
+                  repo_type="dataset",
+                  revision=revision,
+              ))
+              raw_bytes = local.read_bytes()
+              frame = pd.read_parquet(local)
+              expected = {"date", "open", "high", "low", "close", "volume"}
+              if not expected.issubset(frame.columns):
+                  raise RuntimeError(f"unexpected schema {remote_path}: {frame.columns.tolist()}")
+              frame = frame[["date", "open", "high", "low", "close", "volume"]].copy()
+              frame["date"] = pd.to_datetime(frame["date"], utc=True)
+              frame = frame[frame.date < CUTOFF].sort_values("date")
+              frame = frame.drop_duplicates("date", keep="last").reset_index(drop=True)
+              if frame.empty:
+                  raise RuntimeError(f"empty series after cutoff: {remote_path}")
+              numeric = frame[["open", "high", "low", "close", "volume"]].apply(
+                  pd.to_numeric, errors="coerce"
+              )
+              if numeric.isna().any().any():
+                  raise RuntimeError(f"NaN numeric fields: {remote_path}")
+              if (numeric[["open", "high", "low", "close"]] <= 0).any().any() or (numeric.volume < 0).any():
+                  raise RuntimeError(f"invalid values: {remote_path}")
+              if (numeric.high + 1e-12 < numeric[["open", "close", "low"]].max(axis=1)).any():
+                  raise RuntimeError(f"invalid highs: {remote_path}")
+              if (numeric.low - 1e-12 > numeric[["open", "close", "high"]].min(axis=1)).any():
+                  raise RuntimeError(f"invalid lows: {remote_path}")
+              deltas = frame.date.diff().dropna()
+              irregular = int((deltas != pd.Timedelta(minutes=5)).sum())
+              missing = int(sum(
+                  max(int(delta / pd.Timedelta(minutes=5)) - 1, 0)
+                  if delta > pd.Timedelta(minutes=5) and delta % pd.Timedelta(minutes=5) == pd.Timedelta(0)
+                  else int(delta != pd.Timedelta(minutes=5))
+                  for delta in deltas
+              ))
+              output = OUT / f"{name}.parquet"
+              table = pa.Table.from_pandas(frame, preserve_index=False)
+              pq.write_table(table, output, compression="zstd", compression_level=9)
+              normalized[name] = frame
+              records.append({
+                  "name": name,
+                  "remote_path": remote_path,
+                  "source_bytes": len(raw_bytes),
+                  "source_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                  "rows": len(frame),
+                  "first_time": frame.date.iloc[0].isoformat(),
+                  "last_time": frame.date.iloc[-1].isoformat(),
+                  "irregular_interval_count": irregular,
+                  "missing_bar_count": missing,
+                  "output_file": output.name,
+                  "output_bytes": output.stat().st_size,
+                  "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+              })
+
+          alignments = {}
+          for symbol in ("BTCUSDT", "ETHUSDT"):
+              spot = normalized[f"{symbol}_spot_5m"]
+              perp = normalized[f"{symbol}_perp_5m"]
+              common = spot[["date", "close"]].merge(
+                  perp[["date", "close"]], on="date", how="inner", suffixes=("_spot", "_perp")
+              )
+              if len(common) < 400_000:
+                  raise RuntimeError(f"insufficient common coverage for {symbol}: {len(common)}")
+              if common.date.duplicated().any():
+                  raise RuntimeError(f"duplicate common timestamps for {symbol}")
+              basis = common.close_perp / common.close_spot - 1.0
+              alignments[symbol] = {
+                  "common_rows": len(common),
+                  "first_common_time": common.date.iloc[0].isoformat(),
+                  "last_common_time": common.date.iloc[-1].isoformat(),
+                  "basis_median": float(basis.median()),
+                  "basis_abs_p99": float(basis.abs().quantile(0.99)),
+              }
+
+          manifest = {
+              "source_repository": REPO,
+              "source_revision": revision,
+              "source_card_warning": "Third-party redistribution; futures must be cross-checked against official Binance files before strategy use.",
+              "cutoff_exclusive": CUTOFF.isoformat(),
+              "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
+              "series": records,
+              "alignments": alignments,
+          }
+          (OUT / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload audited data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audited-spot-perp-basis-data-macos-${{ github.run_id }}
+          path: |
+            audited_spot_perp/*.parquet
+            audited_spot_perp/manifest.json
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 7
