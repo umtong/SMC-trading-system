@@ -6,12 +6,16 @@ on:
       - "research/v12-funding-basis-20260724"
     paths:
       - "research/v12_causality_patch.py"
+      - "research/v12_restore.py"
+      - "research/v12_source_parts/**"
       - ".github/workflows/v12-funding-basis-v2.yml"
   pull_request:
     branches:
       - main
     paths:
       - "research/v12_causality_patch.py"
+      - "research/v12_restore.py"
+      - "research/v12_source_parts/**"
       - ".github/workflows/v12-funding-basis-v2.yml"
   workflow_dispatch:
 
@@ -31,20 +35,24 @@ jobs:
       - name: Install research dependencies
         run: python -m pip install --upgrade pip "numpy<3" "pandas<3" requests
       - name: Restore, patch, and syntax-check source
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p artifacts/v12-funding-basis-v2
-          python research/v12_restore.py /tmp/v12_funding_basis_multiarm.py | tee artifacts/v12-funding-basis-v2/restore.log
-          python research/v12_causality_patch.py /tmp/v12_funding_basis_multiarm.py | tee artifacts/v12-funding-basis-v2/patch.log
-          python /tmp/v12_funding_basis_multiarm.py --synthetic-test | tee artifacts/v12-funding-basis-v2/synthetic-test.json
+          sha256sum research/v12_restore.py research/v12_causality_patch.py research/v12_source_parts/*.b64 | tee artifacts/v12-funding-basis-v2/source-files.sha256
+          python research/v12_restore.py /tmp/v12_funding_basis_multiarm.py 2>&1 | tee artifacts/v12-funding-basis-v2/restore.log
+          test -s /tmp/v12_funding_basis_multiarm.py
+          python research/v12_causality_patch.py /tmp/v12_funding_basis_multiarm.py 2>&1 | tee artifacts/v12-funding-basis-v2/patch.log
+          python /tmp/v12_funding_basis_multiarm.py --synthetic-test 2>&1 | tee artifacts/v12-funding-basis-v2/synthetic-test.json
       - name: Restore official Binance archive cache
         uses: actions/cache@v4
         with:
           path: .cache/xsmc-v12
-          key: xsmc-v12-binance-funding-basis-15m-2020-2026-v1
+          key: xsmc-v12-binance-funding-basis-15m-2020-2026-v2
       - name: Run patched causal funding-basis search
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           python /tmp/v12_funding_basis_multiarm.py \
             --start-month 2020-09 \
             --end-month 2026-06 \
@@ -83,9 +91,10 @@ jobs:
               ]
           else:
               lines += ['- status: `FAILED_BEFORE_SUMMARY`']
-              log = out / 'run.log'
-              if log.exists():
-                  lines += ['', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```']
+              for name in ('restore.log','patch.log','synthetic-test.json','run.log'):
+                  log = out / name
+                  if log.exists() and log.stat().st_size:
+                      lines += ['', f'## {name}', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-180:]), '```']
           (out / 'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
           PY
       - name: Upload research outputs
