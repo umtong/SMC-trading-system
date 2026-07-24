@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SMC ICT Parallel Run Report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "epoch_id",
+    "lane_id",
+    "task_id",
+    "base_revision",
+    "started_at",
+    "ended_at",
+    "objective",
+    "work_performed",
+    "result",
+    "decision",
+    "artifacts",
+    "next_action"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "epoch_id": {"type": "string"},
+    "lane_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "base_revision": {"type": "integer", "minimum": 0},
+    "started_at": {"type": "string"},
+    "ended_at": {"type": "string"},
+    "objective": {"type": "string"},
+    "scope": {"type": "string"},
+    "conditions": {"type": "object"},
+    "work_performed": {"type": "array"},
+    "result": {"type": "object"},
+    "validity": {"type": "object"},
+    "decision": {"enum": ["keep", "modify", "hold", "discard", "invalidate", "promote"]},
+    "champion_impact": {"type": "string"},
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "drive": {"type": "array"},
+        "github_branch": {"type": ["string", "null"]},
+        "github_commits": {"type": "array"},
+        "pull_request": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "bottlenecks": {"type": "array"},
+    "next_action": {"type": "string"}
+  },
+  "additionalProperties": true
+}
