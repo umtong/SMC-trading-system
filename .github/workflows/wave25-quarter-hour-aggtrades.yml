@@ -1,0 +1,332 @@
+name: Wave25 Quarter-Hour AggTrades
+
+on:
+  push:
+    branches:
+      - agent/wave25-quarter-hour-aggtrades
+    paths:
+      - .github/workflows/wave25-quarter-hour-aggtrades.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wave25-quarter-hour-aggtrades.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract-quarter-hour-flow:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        segment:
+          - {symbol: BTCUSDT, name: BTC_2021, start: '2021-01-01', end: '2021-12-31'}
+          - {symbol: BTCUSDT, name: BTC_2022, start: '2022-01-01', end: '2022-12-31'}
+          - {symbol: BTCUSDT, name: BTC_2023, start: '2023-01-01', end: '2023-12-31'}
+          - {symbol: BTCUSDT, name: BTC_2024, start: '2024-01-01', end: '2024-12-31'}
+          - {symbol: BTCUSDT, name: BTC_2025H1, start: '2025-01-01', end: '2025-07-31'}
+          - {symbol: ETHUSDT, name: ETH_2021, start: '2021-01-01', end: '2021-12-31'}
+          - {symbol: ETHUSDT, name: ETH_2022, start: '2022-01-01', end: '2022-12-31'}
+          - {symbol: ETHUSDT, name: ETH_2023, start: '2023-01-01', end: '2023-12-31'}
+          - {symbol: ETHUSDT, name: ETH_2024, start: '2024-01-01', end: '2024-12-31'}
+          - {symbol: ETHUSDT, name: ETH_2025H1, start: '2025-01-01', end: '2025-07-31'}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download verified official aggTrades and extract first 30 seconds
+        env:
+          SYMBOL: ${{ matrix.segment.symbol }}
+          SEGMENT: ${{ matrix.segment.name }}
+          START_DATE: ${{ matrix.segment.start }}
+          END_DATE: ${{ matrix.segment.end }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import math
+          import os
+          import random
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from datetime import date, datetime, timedelta, timezone
+          from pathlib import Path
+
+          SYMBOL = os.environ['SYMBOL']
+          SEGMENT = os.environ['SEGMENT']
+          START = date.fromisoformat(os.environ['START_DATE'])
+          END = date.fromisoformat(os.environ['END_DATE'])
+          ROOT = 'https://data.binance.vision/data/futures/um/daily/aggTrades'
+          OUT = Path('wave25_quarter_hour') / SEGMENT
+          OUT.mkdir(parents=True, exist_ok=True)
+          SHA_RE = re.compile(r'\b([0-9a-fA-F]{64})\b')
+          QH_MS = 15 * 60 * 1000
+
+          def days():
+              current = START
+              while current <= END:
+                  yield current.isoformat()
+                  current += timedelta(days=1)
+
+          def get(url: str, attempts: int = 10) -> bytes:
+              error = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url,
+                          headers={'User-Agent': 'smc-wave25-quarter-hour/1.0'},
+                      )
+                      with urllib.request.urlopen(request, timeout=240) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          raise FileNotFoundError(url) from exc
+                      error = exc
+                  except Exception as exc:
+                      error = exc
+                  if attempt + 1 < attempts:
+                      time.sleep(min(2 ** attempt, 30) + random.random())
+              raise RuntimeError(f'download failed: {url}: {error}')
+
+          def epoch_ms(raw: str) -> int:
+              value = int(float(raw))
+              if value >= 10**17:
+                  return value // 1_000_000
+              if value >= 10**14:
+                  return value // 1_000
+              if value >= 10**11:
+                  return value
+              return value * 1_000
+
+          def new_bin() -> dict[str, float | int | None]:
+              return {
+                  'first_time_ms': None,
+                  'last_time_ms': None,
+                  'first_price': None,
+                  'last_price': None,
+                  'base_volume': 0.0,
+                  'quote_volume': 0.0,
+                  'signed_base': 0.0,
+                  'signed_quote': 0.0,
+                  'trade_count': 0,
+                  'buy_count': 0,
+                  'sell_count': 0,
+                  'sum_trade_quote_sq': 0.0,
+              }
+
+          def process_day(day: str):
+              name = f'{SYMBOL}-aggTrades-{day}.zip'
+              url = f'{ROOT}/{SYMBOL}/{name}'
+              try:
+                  checksum_payload = get(url + '.CHECKSUM')
+                  match = SHA_RE.search(checksum_payload.decode('utf-8', errors='strict'))
+                  if match is None:
+                      raise ValueError(f'missing checksum: {url}')
+                  expected = match.group(1).lower()
+                  payload = get(url)
+              except FileNotFoundError:
+                  return {'day': day, 'status': 'missing'}, []
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise ValueError(f'checksum mismatch {url}: {actual} != {expected}')
+
+              bins: dict[tuple[int, int], dict[str, float | int | None]] = {}
+              total_rows = 0
+              selected_rows = 0
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [item for item in archive.namelist() if item.lower().endswith('.csv')]
+                  if len(members) != 1:
+                      raise ValueError(f'unexpected archive members {url}: {members}')
+                  with archive.open(members[0]) as binary:
+                      text = io.TextIOWrapper(binary, encoding='utf-8-sig', newline='')
+                      reader = csv.reader(text)
+                      for row in reader:
+                          if not row:
+                              continue
+                          try:
+                              price = float(row[1])
+                              quantity = float(row[2])
+                              timestamp_ms = epoch_ms(row[5])
+                          except (ValueError, IndexError):
+                              continue
+                          total_rows += 1
+                          if price <= 0 or quantity < 0:
+                              raise ValueError(f'invalid trade row {SYMBOL} {day}')
+                          dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+                          if dt.minute % 15 != 0 or dt.second >= 30:
+                              continue
+                          selected_rows += 1
+                          boundary_ms = timestamp_ms - (timestamp_ms % QH_MS)
+                          ten_second_bin = dt.second // 10
+                          key = (boundary_ms, ten_second_bin)
+                          item = bins.setdefault(key, new_bin())
+                          buyer_maker = str(row[6]).strip().lower() in {'true', '1'}
+                          direction = -1.0 if buyer_maker else 1.0
+                          quote = price * quantity
+                          if item['first_time_ms'] is None or timestamp_ms < int(item['first_time_ms']):
+                              item['first_time_ms'] = timestamp_ms
+                              item['first_price'] = price
+                          if item['last_time_ms'] is None or timestamp_ms >= int(item['last_time_ms']):
+                              item['last_time_ms'] = timestamp_ms
+                              item['last_price'] = price
+                          item['base_volume'] = float(item['base_volume']) + quantity
+                          item['quote_volume'] = float(item['quote_volume']) + quote
+                          item['signed_base'] = float(item['signed_base']) + direction * quantity
+                          item['signed_quote'] = float(item['signed_quote']) + direction * quote
+                          item['trade_count'] = int(item['trade_count']) + 1
+                          if direction > 0:
+                              item['buy_count'] = int(item['buy_count']) + 1
+                          else:
+                              item['sell_count'] = int(item['sell_count']) + 1
+                          item['sum_trade_quote_sq'] = float(item['sum_trade_quote_sq']) + quote * quote
+
+              records = []
+              boundaries = sorted({key[0] for key in bins})
+              for boundary_ms in boundaries:
+                  record: dict[str, object] = {
+                      'boundary_time': datetime.fromtimestamp(boundary_ms / 1000, tz=timezone.utc).isoformat(),
+                      'symbol': SYMBOL,
+                  }
+                  for b in range(3):
+                      item = bins.get((boundary_ms, b))
+                      prefix = f'b{b}'
+                      if item is None:
+                          record.update({
+                              f'{prefix}_first_price': None,
+                              f'{prefix}_last_price': None,
+                              f'{prefix}_log_return': None,
+                              f'{prefix}_base_volume': 0.0,
+                              f'{prefix}_quote_volume': 0.0,
+                              f'{prefix}_signed_base': 0.0,
+                              f'{prefix}_signed_quote': 0.0,
+                              f'{prefix}_imbalance_base': None,
+                              f'{prefix}_imbalance_quote': None,
+                              f'{prefix}_trade_count': 0,
+                              f'{prefix}_buy_count': 0,
+                              f'{prefix}_sell_count': 0,
+                              f'{prefix}_mean_trade_quote': None,
+                              f'{prefix}_trade_quote_cv': None,
+                          })
+                          continue
+                      first = float(item['first_price'])
+                      last = float(item['last_price'])
+                      base = float(item['base_volume'])
+                      quote = float(item['quote_volume'])
+                      count = int(item['trade_count'])
+                      mean_quote = quote / count if count else None
+                      variance = max(float(item['sum_trade_quote_sq']) / count - mean_quote * mean_quote, 0.0) if count else None
+                      record.update({
+                          f'{prefix}_first_price': first,
+                          f'{prefix}_last_price': last,
+                          f'{prefix}_log_return': math.log(last / first),
+                          f'{prefix}_base_volume': base,
+                          f'{prefix}_quote_volume': quote,
+                          f'{prefix}_signed_base': float(item['signed_base']),
+                          f'{prefix}_signed_quote': float(item['signed_quote']),
+                          f'{prefix}_imbalance_base': float(item['signed_base']) / base if base > 0 else None,
+                          f'{prefix}_imbalance_quote': float(item['signed_quote']) / quote if quote > 0 else None,
+                          f'{prefix}_trade_count': count,
+                          f'{prefix}_buy_count': int(item['buy_count']),
+                          f'{prefix}_sell_count': int(item['sell_count']),
+                          f'{prefix}_mean_trade_quote': mean_quote,
+                          f'{prefix}_trade_quote_cv': math.sqrt(variance) / mean_quote if mean_quote and mean_quote > 0 else None,
+                      })
+                  records.append(record)
+              return {
+                  'day': day,
+                  'status': 'verified',
+                  'url': url,
+                  'sha256': actual,
+                  'zip_bytes': len(payload),
+                  'total_trade_rows': total_rows,
+                  'selected_first30s_rows': selected_rows,
+                  'quarter_hour_boundaries': len(boundaries),
+              }, records
+
+          archive_records = []
+          feature_records = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              futures = {pool.submit(process_day, day): day for day in days()}
+              for future in concurrent.futures.as_completed(futures):
+                  archive, features = future.result()
+                  archive_records.append(archive)
+                  feature_records.extend(features)
+                  print(
+                      archive['status'], SYMBOL, archive['day'],
+                      archive.get('zip_bytes'), archive.get('quarter_hour_boundaries'),
+                      flush=True,
+                  )
+          archive_records.sort(key=lambda item: item['day'])
+          feature_records.sort(key=lambda item: item['boundary_time'])
+          verified = [item for item in archive_records if item['status'] == 'verified']
+          missing = [item for item in archive_records if item['status'] == 'missing']
+          coverage = len(verified) / max(len(archive_records), 1)
+          if coverage < 0.995:
+              raise RuntimeError(f'archive coverage too low for {SEGMENT}: {coverage:.4%}')
+          duplicate_keys = len(feature_records) - len({(item['boundary_time'], item['symbol']) for item in feature_records})
+          if duplicate_keys:
+              raise RuntimeError(f'duplicate boundary rows: {duplicate_keys}')
+
+          output = OUT / f'{SEGMENT}_quarter_hour_30s.csv.gz'
+          if not feature_records:
+              raise RuntimeError(f'no extracted features for {SEGMENT}')
+          fieldnames = list(feature_records[0].keys())
+          with gzip.open(output, 'wt', encoding='utf-8', newline='') as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(feature_records)
+
+          manifest = {
+              'source': 'Binance Vision official USD-M daily aggTrades',
+              'symbol': SYMBOL,
+              'segment': SEGMENT,
+              'start': START.isoformat(),
+              'end': END.isoformat(),
+              'sealed_oos_excluded_from': '2025-08-01T00:00:00+00:00',
+              'requested_archives': len(archive_records),
+              'verified_archives': len(verified),
+              'missing_archives': missing,
+              'coverage': coverage,
+              'feature_rows': len(feature_records),
+              'duplicate_feature_keys': duplicate_keys,
+              'output_file': output.name,
+              'output_bytes': output.stat().st_size,
+              'output_sha256': hashlib.sha256(output.read_bytes()).hexdigest(),
+              'archive_records': archive_records,
+          }
+          (OUT / 'manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps({k: v for k, v in manifest.items() if k != 'archive_records'}, indent=2))
+          PY
+
+      - name: Upload compact verified quarter-hour features
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave25-quarter-hour-${{ matrix.segment.name }}-${{ github.sha }}
+          path: wave25_quarter_hour/${{ matrix.segment.name }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
