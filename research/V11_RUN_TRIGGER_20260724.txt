@@ -1,0 +1,2 @@
+V11 causal microstructure multi-arm run trigger.
+Completed-bar signals, next-bar execution, global one-position scheduler, base and 1.5x cost stress.
