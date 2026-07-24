@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   export:
@@ -38,3 +39,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Publish artifact locator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 158 --repo umtong/SMC-trading-system --body "maker source export run_id: \`${GITHUB_RUN_ID}\`; artifact: \`single-sided-maker-v1-source-${GITHUB_RUN_ID}\`"
