@@ -3,6 +3,12 @@ on:
   push:
     branches:
       - research/phase35-crossvenue-liquidation
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'research/phase35_crossvenue_liquidation/**'
+      - '.github/workflows/phase35_crossvenue_liquidation.yml'
   workflow_dispatch:
 permissions:
   contents: write
@@ -22,7 +28,7 @@ jobs:
           HF_HOME: ${{ runner.temp }}/hf
         run: python research/phase35_crossvenue_liquidation/run.py | tee research/phase35_crossvenue_liquidation/run.log
       - name: Commit compact research results
-        if: success()
+        if: success() && github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
