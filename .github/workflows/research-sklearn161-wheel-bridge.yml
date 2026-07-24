@@ -1,0 +1,42 @@
+name: Research Scikit-Learn 1.6.1 Linux Wheel Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-sklearn161-wheel-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download fixed Linux CPython 3.13 wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          mkdir -p wheelhouse
+          python -m pip download \
+            --only-binary=:all: \
+            --platform manylinux_2_17_x86_64 \
+            --python-version 313 \
+            --implementation cp \
+            --abi cp313 \
+            --no-deps \
+            --dest wheelhouse \
+            scikit-learn==1.6.1
+          shasum -a 256 wheelhouse/* | tee wheelhouse/SHA256SUMS
+      - name: Upload immutable research dependency
+        uses: actions/upload-artifact@v4
+        with:
+          name: scikit-learn-1.6.1-linux-cp313-${{ github.run_id }}
+          path: wheelhouse
+          if-no-files-found: error
+          retention-days: 7
