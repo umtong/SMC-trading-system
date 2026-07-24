@@ -1,0 +1,105 @@
+name: Sampled Hyperliquid informed-wallet CSV data
+
+on:
+  push:
+    branches:
+      - research/hyperliquid-wallet-flow-20260724
+    paths:
+      - .github/workflows/hyperliquid-wallet-flow-trigger.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    name: ${{ matrix.day }}-${{ matrix.hour }}UTC
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {day: '2025-09-15', hour: '12'}
+          - {day: '2025-10-01', hour: '18'}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check duckdb==1.3.2 pandas==2.2.3 pyarrow==19.0.1 requests==2.32.4
+      - name: Extract causal wallet fills and Binance reference trades
+        env:
+          DAY: ${{ matrix.day }}
+          HOUR: ${{ matrix.hour }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cat > /tmp/extract.py <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, os, zipfile
+          from pathlib import Path
+          import duckdb
+          import numpy as np
+          import pandas as pd
+          import requests
+
+          day=os.environ['DAY']; hour=int(os.environ['HOUR']); compact=day.replace('-','')
+          src=f'node_fills_by_block/hourly/{compact}/{hour:02d}.lz4'
+          out=Path('out')
+          meta=requests.get('https://datasets-server.huggingface.co/parquet?dataset=gionuibk%2Fhyperliquid-node-fills-by-block',timeout=120);meta.raise_for_status()
+          urls=[x['url'] for x in meta.json()['parquet_files'] if x['split']=='train']
+          if not urls: raise RuntimeError('no parquet shards')
+          con=duckdb.connect();con.execute('INSTALL httpfs');con.execute('LOAD httpfs')
+          quoted='['+','.join("'"+u.replace("'","''")+"'" for u in urls)+']'
+          hp=out/'hyperliquid_blocks.parquet'
+          con.execute(f"COPY (SELECT local_time,block_time,block_number,events,_src FROM read_parquet({quoted},union_by_name=true) WHERE _src='{src}') TO '{hp}' (FORMAT PARQUET,COMPRESSION ZSTD)")
+          blocks=pd.read_parquet(hp)
+          if blocks.empty: raise RuntimeError(src)
+          rows=[]
+          for block in blocks.itertuples(index=False):
+              events=json.loads(block.events) if isinstance(block.events,str) else block.events
+              for item in events or []:
+                  if not isinstance(item,(list,tuple)) or len(item)!=2: continue
+                  wallet,fill=item; coin=str(fill.get('coin',''))
+                  if coin not in {'BTC','ETH'}: continue
+                  px=float(fill['px']); sz=float(fill['sz']); side=str(fill['side'])
+                  rows.append({'wallet':str(wallet).lower(),'coin':coin,'time_ms':int(fill['time']),'side':side,'signed_quote':(1 if side=='B' else -1)*px*sz,'quote':px*sz,'price':px,'size':sz,'crossed':bool(fill.get('crossed',False)),'direction':str(fill.get('dir','')),'start_position':float(fill.get('startPosition') or 0),'closed_pnl':float(fill.get('closedPnl') or 0),'fee':float(fill.get('fee') or 0),'trade_id':int(fill.get('tid') or -1),'block_number':int(block.block_number),'block_time':block.block_time,'local_time':block.local_time})
+          fills=pd.DataFrame(rows).sort_values(['time_ms','block_number','wallet','trade_id'])
+          if fills.empty: raise RuntimeError('no fills')
+          fills.to_parquet(out/'hyperliquid_wallet_fills.parquet',index=False,compression='zstd')
+          fills.to_csv(out/'hyperliquid_wallet_fills.csv.gz',index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+          start=int(pd.Timestamp(day,tz='UTC').value//1_000_000)+hour*3_600_000;end=start+3_600_000
+          refs=[];source={}
+          for symbol in ('BTCUSDT','ETHUSDT'):
+              name=f'{symbol}-aggTrades-{day}.zip';url=f'https://data.binance.vision/data/futures/um/daily/aggTrades/{symbol}/{name}'
+              z=requests.get(url,timeout=180);z.raise_for_status();c=requests.get(url+'.CHECKSUM',timeout=180);c.raise_for_status()
+              expected=c.text.split()[0];actual=hashlib.sha256(z.content).hexdigest()
+              if actual!=expected: raise RuntimeError(name)
+              source[name]=actual
+              with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
+                  members=[n for n in zf.namelist() if n.endswith('.csv')];payload=zf.read(members[0])
+              first=payload.splitlines()[0].decode('utf-8-sig').split(',')[0].strip();header=not first.lstrip('-').isdigit()
+              f=pd.read_csv(io.BytesIO(payload),header=0 if header else None)
+              if not header:f.columns=['agg_trade_id','price','quantity','first_trade_id','last_trade_id','transact_time','is_buyer_maker']
+              for col in ('price','quantity','transact_time'):f[col]=pd.to_numeric(f[col],errors='coerce')
+              if f.transact_time.median()>1e14:f['transact_time']=(f.transact_time//1000).astype('int64')
+              f=f[(f.transact_time>=start)&(f.transact_time<end)].copy();maker=f.is_buyer_maker.astype(str).str.lower().isin(['true','1'])
+              f['symbol']=symbol;f['quote']=f.price*f.quantity;f['signed_quote']=np.where(maker,-f.quote,f.quote);f['time_ms']=f.transact_time.astype('int64')
+              refs.append(f[['symbol','time_ms','price','quantity','quote','signed_quote']])
+          ref=pd.concat(refs,ignore_index=True).sort_values(['time_ms','symbol'])
+          ref.to_parquet(out/'binance_aggtrades.parquet',index=False,compression='zstd')
+          ref.to_csv(out/'binance_aggtrades.csv.gz',index=False,compression={'method':'gzip','compresslevel':6,'mtime':0})
+          outputs=[out/'hyperliquid_wallet_fills.parquet',out/'hyperliquid_wallet_fills.csv.gz',out/'binance_aggtrades.parquet',out/'binance_aggtrades.csv.gz']
+          manifest={'day':day,'hour_utc':hour,'source_path':src,'hyperliquid_block_rows':len(blocks),'hyperliquid_fill_rows':len(fills),'hyperliquid_wallets':fills.wallet.nunique(),'binance_trade_rows':len(ref),'source_sha256':source,'output_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in outputs},'availability_rule':'strategy decisions use only completed buckets and enter strictly afterward'}
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n');print(json.dumps(manifest))
+          PY
+          python /tmp/extract.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sampled-hl-wallet-csv-${{ matrix.day }}-${{ matrix.hour }}
+          path: out/
+          retention-days: 7
+          compression-level: 6
