@@ -1,0 +1,105 @@
+name: V2.71 Premium Dislocation Data
+
+on:
+  push:
+    branches: [research/v271-premium-dislocation]
+    paths:
+      - .github/workflows/v271-premium-dislocation-data.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/v271-premium-dislocation-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v271-premium-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated dependencies
+        run: python -m pip install --upgrade pandas pyarrow
+      - name: Download and validate mark/index/premium state
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          from pathlib import Path
+          import hashlib, json, os, time, urllib.request
+          import pandas as pd
+
+          symbol=os.environ['SYMBOL']
+          root='https://huggingface.co/datasets/linxy/USDT-M_Perpetual_Futures/resolve/main'
+          names=[
+            f'{symbol}_premiumIndex_5m.parquet',
+            f'{symbol}_markPrice_5m.parquet',
+            f'{symbol}_indexPrice_5m.parquet',
+            f'{symbol}_metrics.parquet',
+            f'{symbol}_fundingRate.parquet',
+          ]
+          out=Path('v271-output')/symbol;out.mkdir(parents=True,exist_ok=True)
+          records=[]
+          def fetch(url:str)->bytes:
+            err=None
+            for k in range(7):
+              try:
+                req=urllib.request.Request(url,headers={'User-Agent':'smc-v271-premium/1.0'})
+                with urllib.request.urlopen(req,timeout=300) as r:return r.read()
+              except Exception as exc:
+                err=exc;time.sleep(min(2**k,30))
+            raise RuntimeError(f'fetch failed {url}: {err!r}')
+          for name in names:
+            url=f'{root}/{symbol}/{name}?download=true'
+            payload=fetch(url);path=out/name;path.write_bytes(payload)
+            df=pd.read_parquet(path)
+            time_col=next((c for c in ['open_time','create_time','calc_time'] if c in df.columns),None)
+            if time_col is None: raise ValueError(f'{name}: no time column {list(df.columns)}')
+            ts=pd.to_datetime(df[time_col],utc=True,errors='coerce')
+            if ts.isna().any(): raise ValueError(f'{name}: invalid timestamps')
+            order=ts.argsort(kind='stable');df=df.iloc[order].reset_index(drop=True);ts=ts.iloc[order].reset_index(drop=True)
+            if ts.duplicated().any(): raise ValueError(f'{name}: duplicate timestamps')
+            use=(ts>=pd.Timestamp('2023-01-01',tz='UTC'))&(ts<pd.Timestamp('2026-07-01',tz='UTC'))
+            df=df.loc[use].reset_index(drop=True);ts=ts.loc[use].reset_index(drop=True)
+            target=out/f'filtered_{name}';df.to_parquet(target,index=False,compression='zstd')
+            records.append({
+              'name':name,'url':url,'source_sha256':hashlib.sha256(payload).hexdigest(),
+              'source_bytes':len(payload),'rows':len(df),'columns':list(df.columns),
+              'start':str(ts.min()) if len(ts) else None,'end':str(ts.max()) if len(ts) else None,
+              'output_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),
+            })
+            path.unlink()
+          manifest={
+            'symbol':symbol,'source':'linxy/USDT-M_Perpetual_Futures; documented mirror of Binance public data',
+            'research_only':True,'production_evidence':False,
+            'decision_contract':'only completed 5m premium/mark/index and contemporaneously published metrics/funding may be used',
+            'records':records,
+          }
+          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps(manifest,indent=2))
+          PY
+      - name: Upload premium state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v271-premium-${{ matrix.symbol }}-${{ github.run_id }}
+          path: v271-output/${{ matrix.symbol }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
