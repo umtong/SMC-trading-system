@@ -1,0 +1,136 @@
+name: Research V24 Frozen Source Audit Bridge
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/research-v24-source-audit-bridge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout frozen V24 base with history
+        uses: actions/checkout@v4
+        with:
+          ref: research/v24-base-20260723
+          fetch-depth: 0
+      - name: Locate raw, encoded, or compressed immutable V24 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          mkdir -p research_artifact/context research_artifact/exact_matches
+          python - <<'PY'
+          from __future__ import annotations
+          import base64, binascii, gzip, hashlib, io, json, re, subprocess, zipfile, zlib
+          from pathlib import Path
+
+          ROOT=Path('research_artifact')
+          TARGETS={
+            'candidate':'117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68',
+            'evaluator':'9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1',
+          }
+          target_by_digest={v:k for k,v in TARGETS.items()}
+          context_pat=re.compile(rb'C_basis|v24_cross_market_ensemble_v1|basis reversion|basis_z|117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68|9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1',re.I)
+          b64_pat=re.compile(rb'(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]{256,}={0,2})(?![A-Za-z0-9+/=])')
+          objects=subprocess.check_output(['git','rev-list','--objects','--all'],text=True,errors='replace').splitlines()
+          paths_by_oid={}
+          for line in objects:
+            oid,*rest=line.split(' ',1)
+            if rest: paths_by_oid.setdefault(oid,set()).add(rest[0])
+            else: paths_by_oid.setdefault(oid,set())
+          matches=[]; context=[]; checked=0; skipped_large=0
+
+          def record_match(*,oid:str,pathset:set[str],transform:str,payload:bytes,detail:str='') -> None:
+            digest=hashlib.sha256(payload).hexdigest()
+            role=target_by_digest.get(digest)
+            if role is None:return
+            suffix='.py' if payload.lstrip().startswith((b'from ',b'import ',b'#!/')) else '.bin'
+            out=ROOT/'exact_matches'/f'{role}__{oid}__{transform.replace("/","_")}{suffix}'
+            out.write_bytes(payload)
+            matches.append({'role':role,'sha256':digest,'git_object':oid,'paths':sorted(pathset),'transform':transform,'detail':detail,'bytes':len(payload),'output':str(out.relative_to(ROOT))})
+
+          def try_payload(oid:str,pathset:set[str],name:str,payload:bytes) -> None:
+            if not payload:return
+            record_match(oid=oid,pathset=pathset,transform=name,payload=payload)
+            normalized=payload.replace(b'\r\n',b'\n')
+            if normalized!=payload:record_match(oid=oid,pathset=pathset,transform=name+'/crlf_to_lf',payload=normalized)
+            stripped=payload.strip()
+            if stripped!=payload:record_match(oid=oid,pathset=pathset,transform=name+'/strip',payload=stripped)
+
+          for oid,pathset in paths_by_oid.items():
+            try:
+              typ=subprocess.check_output(['git','cat-file','-t',oid],text=True).strip()
+            except subprocess.CalledProcessError:
+              continue
+            if typ!='blob':continue
+            size=int(subprocess.check_output(['git','cat-file','-s',oid],text=True))
+            if size>25_000_000:
+              skipped_large+=1;continue
+            data=subprocess.check_output(['git','cat-file','blob',oid]);checked+=1
+            try_payload(oid,pathset,'raw',data)
+            if context_pat.search(data):
+              suffix=Path(next(iter(pathset),'blob.txt')).suffix or '.txt'
+              out=ROOT/'context'/f'{oid}{suffix}';out.write_bytes(data)
+              context.append({'git_object':oid,'sha256':hashlib.sha256(data).hexdigest(),'paths':sorted(pathset),'bytes':len(data),'output':str(out.relative_to(ROOT))})
+            # Whole-blob transports.
+            candidates=[]
+            compact=b''.join(data.split())
+            if 128<=len(compact)<=40_000_000:
+              try:candidates.append(('base64_whole',base64.b64decode(compact,validate=True)))
+              except (binascii.Error,ValueError):pass
+              if re.fullmatch(rb'[0-9a-fA-F]+',compact) and len(compact)%2==0:
+                try:candidates.append(('hex_whole',bytes.fromhex(compact.decode())))
+                except ValueError:pass
+            if data[:2]==b'\x1f\x8b':
+              try:candidates.append(('gzip_raw',gzip.decompress(data)))
+              except OSError:pass
+            if data[:2] in (b'x\x9c',b'x\xda',b'x\x01'):
+              try:candidates.append(('zlib_raw',zlib.decompress(data)))
+              except zlib.error:pass
+            if data[:4]==b'PK\x03\x04':
+              try:
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                  for member in zf.namelist():
+                    if not member.endswith('/'):
+                      candidates.append((f'zip/{member}',zf.read(member)))
+              except zipfile.BadZipFile:pass
+            # Embedded base64 transports in workflows/JSON/markdown.
+            if len(data)<=12_000_000:
+              for j,m in enumerate(b64_pat.finditer(data)):
+                token=m.group(1)
+                if len(token)>16_000_000:continue
+                try:decoded=base64.b64decode(token,validate=True)
+                except (binascii.Error,ValueError):continue
+                candidates.append((f'embedded_base64_{j}',decoded))
+            for name,payload in candidates:
+              try_payload(oid,pathset,name,payload)
+              if payload[:2]==b'\x1f\x8b':
+                try:try_payload(oid,pathset,name+'/gzip',gzip.decompress(payload))
+                except OSError:pass
+              if payload[:4]==b'PK\x03\x04':
+                try:
+                  with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                    for member in zf.namelist():
+                      if not member.endswith('/'):
+                        try_payload(oid,pathset,name+f'/zip/{member}',zf.read(member))
+                except zipfile.BadZipFile:pass
+          manifest={'targets':TARGETS,'checked_unique_blobs':checked,'skipped_large_blobs':skipped_large,'exact_matches':matches,'context_blobs':context}
+          (ROOT/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps({'checked_unique_blobs':checked,'skipped_large_blobs':skipped_large,'exact_matches':matches,'context_count':len(context)},indent=2))
+          PY
+          git rev-parse HEAD > research_artifact/checked_out_commit.txt
+          git show-ref > research_artifact/all_refs.txt
+      - name: Upload immutable source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v24-frozen-transport-audit-${{ github.run_id }}
+          path: research_artifact
+          if-no-files-found: error
+          retention-days: 14
