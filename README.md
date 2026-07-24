@@ -27,6 +27,7 @@ SMC-trading-system/
 ├─ results/easychart_*/             버전별 요약·진단·거래 원장
 ├─ data/easychart_captions/yt_dlp/  EasyChart 연구에 사용한 영상 자막
 ├─ registrations/                   사용 자료 묶음과 등록 정보
+├─ project/                         병렬 프로젝트 채팅 제어면과 평가 계약
 ├─ MAIN_AGENT_STATE.md              현재 전략·결과·다음 작업의 기준선
 ├─ pyproject.toml                   Python 패키지·CLI·테스트 설정
 └─ README.md                        프로젝트 개요와 진입 안내
@@ -49,11 +50,23 @@ SMC-trading-system/
 - [V0.5 연구 선두 보고서](artifacts/strategy_composition_2026_07_18/EASYCHART_OB_V0_5_LIQUIDITY_DELIVERY_COMPARISON_KO.md)
 - [V0.7 최신 비교 보고서](artifacts/strategy_composition_2026_07_18/EASYCHART_SR_FLIP_FVG_V0_7_COMPARISON_KO.md)
 
+## 프로젝트 병렬 연구 제어면
+
+여러 ChatGPT 프로젝트 채팅을 동시에 연구 lane으로 운영할 때는 [`project/README.md`](project/README.md)에서 시작한다.
+
+- [`project/PROJECT_INSTRUCTIONS.md`](project/PROJECT_INSTRUCTIONS.md): Project Settings에 넣는 실제 실행 규칙
+- [`project/OPERATING_SYSTEM.md`](project/OPERATING_SYSTEM.md): Google Drive·GitHub·병렬 lane 운영 계약
+- [`project/EVALUATION_CONTRACT.md`](project/EVALUATION_CONTRACT.md): 목표, 무효 조건과 Champion 비교 기준
+- [`project/DRIVE_CONTROL_PLANE.md`](project/DRIVE_CONTROL_PLANE.md): 라이브 상태 구조
+
+Google Drive는 현재 상태와 대규모 자료의 고빈도 제어면으로, GitHub는 코드·manifest·재현 증거와 장기 변경 이력의 정본으로 사용한다.
+
 ## 설치와 확인
 
 ```powershell
 python -m pip install -e .
 python -m pytest tests\easychart_v0 -q
+python project\scripts\validate_control_plane.py
 ```
 
 CLI 진입점은 다음과 같다.

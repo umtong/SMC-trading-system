@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SMC ICT Champion",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "state_revision",
+    "updated_at",
+    "champion_id",
+    "status",
+    "reason",
+    "metrics",
+    "evidence",
+    "reproduction"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "minimum": 1},
+    "state_revision": {"type": "integer", "minimum": 0},
+    "updated_at": {"type": "string"},
+    "champion_id": {"type": ["string", "null"]},
+    "name": {"type": ["string", "null"]},
+    "status": {"enum": ["none", "provisional", "candidate", "validated", "goal_achieved"]},
+    "reason": {"type": "string"},
+    "metrics": {"type": "object"},
+    "evidence": {"type": "array"},
+    "reproduction": {"type": "object"},
+    "known_weaknesses": {"type": "array"}
+  },
+  "additionalProperties": true
+}

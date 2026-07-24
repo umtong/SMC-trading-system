@@ -1,24 +1,8 @@
-"""ICT day-trading research engine, isolated from the legacy workspace."""
+"""EasyChart-based SMC/ICT research package.
 
-from .backtest import BacktestConfig, BacktestResult, run_backtest
-from .s2_signals import S2Config
-from .s3_signals import S3Config
-from .s4_signals import S4Config
-from .s5_signals import S5Config
-from .s6_signals import S6Config
-from .s7_signals import S7Config
-from .signals import S1Config, detect_pivot_events
+The active implementation lives in :mod:`ictbt.easychart_v0`.  The package
+root intentionally avoids eager imports so that removed legacy modules do not
+break importing the maintained subpackage.
+"""
 
-__all__ = [
-    "BacktestConfig",
-    "BacktestResult",
-    "S1Config",
-    "S2Config",
-    "S3Config",
-    "S4Config",
-    "S5Config",
-    "S6Config",
-    "S7Config",
-    "detect_pivot_events",
-    "run_backtest",
-]
+__all__: list[str] = []
