@@ -43,15 +43,19 @@ jobs:
           mkdir -p state-first-evidence/${{ matrix.symbol }}
           shasum -a 256 \
             research_tools/state_first_l1_clean_v2/PREREGISTRATION_KO.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_001_TRAIN_ONLY_THRESHOLD.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_002_DATA_AVAILABILITY_DATES.md \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
             research_tools/state_first_l1_clean_v2/run_fixed.py \
+            research_tools/state_first_l1_clean_v2/run_available_dates.py \
             | tee state-first-evidence/${{ matrix.symbol }}/SOURCE_SHA256.txt
           python -m py_compile \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
-            research_tools/state_first_l1_clean_v2/run_fixed.py
+            research_tools/state_first_l1_clean_v2/run_fixed.py \
+            research_tools/state_first_l1_clean_v2/run_available_dates.py
       - name: Build checksum-verified causal panel
         run: |
-          python research_tools/state_first_l1_clean_v2/run_fixed.py panel \
+          python research_tools/state_first_l1_clean_v2/run_available_dates.py panel \
             --symbol '${{ matrix.symbol }}' \
             --data-dir 'state-first-cache/${{ matrix.symbol }}' \
             --output-dir 'state-first-panel/${{ matrix.symbol }}'
@@ -103,8 +107,11 @@ jobs:
         run: |
           shasum -a 256 \
             research_tools/state_first_l1_clean_v2/PREREGISTRATION_KO.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_001_TRAIN_ONLY_THRESHOLD.md \
+            research_tools/state_first_l1_clean_v2/AMENDMENT_002_DATA_AVAILABILITY_DATES.md \
             research_tools/state_first_l1_clean_v2/state_first_l1_clean_v2.py \
             research_tools/state_first_l1_clean_v2/run_fixed.py \
+            research_tools/state_first_l1_clean_v2/run_available_dates.py \
             > expected.txt
           found=0
           while IFS= read -r p; do
@@ -114,7 +121,7 @@ jobs:
           test "$found" -eq 2
       - name: Run gated selection, validation, and conditional one-shot test
         run: |
-          python research_tools/state_first_l1_clean_v2/run_fixed.py evaluate \
+          python research_tools/state_first_l1_clean_v2/run_available_dates.py evaluate \
             --input-dir state-first-input \
             --output-dir state-first-results
       - name: Audit results
