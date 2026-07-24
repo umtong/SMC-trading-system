@@ -1,0 +1,56 @@
+name: State-First L1 Streaming V3 Diagnostic
+
+on:
+  push:
+    branches: [research/state-first-l1-streaming-v3b-20260724]
+    paths:
+      - '.github/workflows/state-first-l1-streaming-v3-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install and inspect source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'scikit-learn==1.6.1'
+          mkdir -p diagnostic cache panels
+          python -m py_compile research_tools/state_first_l1_clean_v2/*.py
+          python research_tools/state_first_l1_clean_v2/state_first_l1_streaming_v3.py selftest 2>&1 | tee diagnostic/selftest.log
+          shasum -a 256 research_tools/state_first_l1_clean_v2/*.py research_tools/state_first_l1_clean_v2/*.md > diagnostic/SOURCE_SHA256.txt
+          df -h . > diagnostic/disk_before.txt
+          sysctl hw.memsize > diagnostic/memory.txt
+      - name: Capture complete BTC panel failure
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          /usr/bin/time -l python research_tools/state_first_l1_clean_v2/state_first_l1_streaming_v3.py panel \
+            --symbol BTCUSDT \
+            --data-dir cache/BTCUSDT \
+            --output-dir panels/BTCUSDT \
+            > diagnostic/btc_panel.log 2>&1
+          status=$?
+          echo "$status" > diagnostic/exit_code.txt
+          df -h . > diagnostic/disk_after.txt
+          find cache panels -maxdepth 3 -type f -print0 | xargs -0 ls -lh > diagnostic/files.txt 2>&1 || true
+          tail -n 500 diagnostic/btc_panel.log > diagnostic/btc_panel_tail.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-l1-v3-diagnostic-${{ github.run_id }}
+          path: diagnostic
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
