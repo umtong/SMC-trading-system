@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   research:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 340
     env:
       PYTHONUNBUFFERED: '1'
@@ -84,7 +84,18 @@ jobs:
           cp "$ROOT/wave78_true_spread_capture_v2.py" "$OUTPUT/"
           cp wave78-source-blobs.txt "$OUTPUT/" || true
           cp wave78-tests.log "$OUTPUT/" || true
-          find "$OUTPUT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$OUTPUT/OUTPUT_SHA256SUMS.txt"
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root=Path('wave78-true-passive-results')
+          lines=[]
+          for path in sorted(p for p in root.rglob('*') if p.is_file() and p.name!='OUTPUT_SHA256SUMS.txt'):
+              h=hashlib.sha256()
+              with path.open('rb') as fh:
+                  for block in iter(lambda:fh.read(1<<20),b''):h.update(block)
+              lines.append(f'{h.hexdigest()}  {path.relative_to(root)}')
+          (root/'OUTPUT_SHA256SUMS.txt').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          PY
 
       - name: Upload research evidence only
         if: always()
