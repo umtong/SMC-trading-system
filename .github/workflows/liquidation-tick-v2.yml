@@ -1,0 +1,53 @@
+name: Liquidation Tick V2 Data
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/liquidation-tick-v2.yml'
+      - 'research_tools/liquidation_tick_v2/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: liquidation-tick-v2-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  extract:
+    runs-on: macos-14
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        month: [2023-06, 2023-07, 2023-08, 2023-09, 2023-10, 2023-11, 2023-12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify frozen windows
+        shell: bash
+        run: |
+          cat research_tools/liquidation_tick_v2/windows.part* > /tmp/windows.b64
+          test "$(shasum -a 256 /tmp/windows.b64 | awk '{print $1}')" = "37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea"
+          python - <<'PY'
+          import base64,gzip,hashlib,pathlib
+          p=pathlib.Path('/tmp/windows.b64');e=''.join(p.read_text().split());g=base64.b64decode(e,validate=True);r=gzip.decompress(g)
+          assert hashlib.sha256(e.encode()).hexdigest()=='37d9efe89cb017e7dd4767431976077f7fe8220f35b25731f38801e02b3c53ea'
+          assert hashlib.sha256(g).hexdigest()=='f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4'
+          assert hashlib.sha256(r).hexdigest()=='045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105'
+          PY
+      - name: Extract official windows
+        run: |
+          python research_tools/liquidation_tick_v2/extract.py \
+            --symbol '${{ matrix.symbol }}' --month '${{ matrix.month }}' \
+            --windows /tmp/windows.b64 \
+            --out 'artifact/${{ matrix.symbol }}/${{ matrix.month }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liquidation-v2-${{ matrix.symbol }}-${{ matrix.month }}-${{ github.run_id }}
+          path: artifact/${{ matrix.symbol }}/${{ matrix.month }}
+          retention-days: 7
+          compression-level: 6
+          if-no-files-found: error
