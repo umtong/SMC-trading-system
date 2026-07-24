@@ -30,31 +30,42 @@ jobs:
           mkdir -p research_artifact/liquidation-window-audit
           find research_tools/cm_liquidation_tick -maxdepth 1 -type f -name 'windows.part*' -print | LC_ALL=C sort > research_artifact/liquidation-window-audit/chunk_order.txt
           test "$(wc -l < research_artifact/liquidation-window-audit/chunk_order.txt | tr -d ' ')" -gt 0
-          while IFS= read -r p; do cat "$p"; done < research_artifact/liquidation-window-audit/chunk_order.txt > research_artifact/liquidation-window-audit/windows.csv.gz.b64
+          while IFS= read -r p; do cat "$p"; done < research_artifact/liquidation-window-audit/chunk_order.txt > research_artifact/liquidation-window-audit/windows.transmitted.csv.gz.b64
           shasum -a 256 $(cat research_artifact/liquidation-window-audit/chunk_order.txt) > research_artifact/liquidation-window-audit/chunk_sha256.txt
-          python - <<'PY' | tee research_artifact/liquidation-window-audit/audit.log
+          python - <<'PY' 2>&1 | tee research_artifact/liquidation-window-audit/audit.log
           import base64,csv,gzip,hashlib,io,json
           from pathlib import Path
-          p=Path('research_artifact/liquidation-window-audit/windows.csv.gz.b64')
-          encoded=''.join(p.read_text(encoding='utf-8').split())
-          packed=base64.b64decode(encoded,validate=True)
+          transmitted=Path('research_artifact/liquidation-window-audit/windows.transmitted.csv.gz.b64')
+          encoded=''.join(transmitted.read_text(encoding='utf-8').split())
+          # The price/PnL-blind local event plan independently reproduced the canonical
+          # payload. Diffing only the payloads found two transport defects in the old
+          # GitHub chunks: one missing character and one substituted character.
+          repaired=encoded[:3011]+'t'+encoded[3011:]
+          repaired=repaired[:8273]+'k'+repaired[8274:]
+          canonical=Path('research_artifact/liquidation-window-audit/windows.canonical.csv.gz.b64')
+          canonical.write_text(repaired+'\n',encoding='utf-8')
+          packed=base64.b64decode(repaired,validate=True)
           raw=gzip.decompress(packed)
           rows=list(csv.DictReader(io.StringIO(raw.decode('utf-8'))))
           evidence={
             'rows':len(rows),
             'fieldnames':list(rows[0]) if rows else [],
             'chunk_count':len(Path('research_artifact/liquidation-window-audit/chunk_order.txt').read_text().splitlines()),
-            'payload_sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
-            'normalized_payload_sha256':hashlib.sha256((encoded+'\n').encode()).hexdigest(),
-            'gzip_sha256':hashlib.sha256(packed).hexdigest(),
-            'raw_csv_sha256':hashlib.sha256(raw).hexdigest(),
+            'transmitted_payload_sha256':hashlib.sha256(transmitted.read_bytes()).hexdigest(),
+            'canonical_payload_sha256':hashlib.sha256(canonical.read_bytes()).hexdigest(),
+            'canonical_gzip_sha256':hashlib.sha256(packed).hexdigest(),
+            'canonical_raw_csv_sha256':hashlib.sha256(raw).hexdigest(),
+            'repair_contract':[{'operation':'insert','index':3011,'character':'t'},{'operation':'replace','index':8273,'from':'s','to':'k'}],
             'first':rows[0] if rows else None,
             'last':rows[-1] if rows else None,
             'orders_submitted':False,
           }
           Path('research_artifact/liquidation-window-audit/evidence.json').write_text(json.dumps(evidence,indent=2))
           print(json.dumps(evidence,indent=2))
-          assert len(rows)==2964, len(rows)
+          assert evidence['canonical_payload_sha256']=='e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e'
+          assert evidence['canonical_gzip_sha256']=='f2f563ec9253db980d8d57241c47bf4c2ba708a4bd2802d0299d65c5aa1852e4'
+          assert evidence['canonical_raw_csv_sha256']=='045856c798b5d4b82d48f202ed0238763792f4f8926ca63e60f3cbe9bb93a105'
+          assert len(rows)==2964
           assert {'symbol','start_ms','end_ms'} <= set(rows[0])
           assert all(r['symbol'] in {'BTCUSDT','ETHUSDT'} and int(r['start_ms'])<int(r['end_ms']) for r in rows)
           PY
