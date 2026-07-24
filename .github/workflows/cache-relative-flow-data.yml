@@ -1,0 +1,102 @@
+name: Cache Relative-Flow Research Data
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-relative-flow-data.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data tools
+        run: python -m pip install --upgrade duckdb pyarrow pandas requests
+
+      - name: Download, verify, align, and clip development data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p raw cached
+          curl -L --fail --retry 3 --retry-all-errors -o raw/BTCUSDT.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/btcusdt_perp_1m_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o raw/ETHUSDT.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/ethusdt_perp_1m_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o raw/BTCUSDT_funding.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/btcusdt_perp_funding_8h_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          curl -L --fail --retry 3 --retry-all-errors -o raw/ETHUSDT_funding.parquet \
+            "https://huggingface.co/datasets/Torch-Trade/ethusdt_perp_funding_8h_05_2021_to_02_2026/resolve/main/data/train-00000-of-00001.parquet?download=true"
+          echo "40e0cb41e8623a49d1e7561197f0bef4c1e1cc8fb471ae8ac9dde7a116cdc4ae  raw/BTCUSDT.parquet" | sha256sum -c -
+          echo "369c49083c31293e6f96ef4ef8e04a0fd5cb853753464d6ec123043c17d87537  raw/ETHUSDT.parquet" | sha256sum -c -
+
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          import json
+          from pathlib import Path
+          import duckdb
+          import pandas as pd
+
+          start = "2021-05-01 00:00:00+00"
+          end = "2025-07-01 00:00:00+00"
+          columns = "timestamp, open, high, low, close, volume, quote_volume, num_trades, taker_buy_base_volume, taker_buy_quote_volume"
+          con = duckdb.connect()
+          con.execute(f"CREATE VIEW btc AS SELECT {columns} FROM read_parquet('raw/BTCUSDT.parquet') WHERE timestamp >= TIMESTAMPTZ '{start}' AND timestamp < TIMESTAMPTZ '{end}'")
+          con.execute(f"CREATE VIEW eth AS SELECT {columns} FROM read_parquet('raw/ETHUSDT.parquet') WHERE timestamp >= TIMESTAMPTZ '{start}' AND timestamp < TIMESTAMPTZ '{end}'")
+          con.execute("COPY (SELECT b.* FROM btc b SEMI JOIN eth e USING(timestamp) ORDER BY timestamp) TO 'cached/BTCUSDT_preholdout.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)")
+          con.execute("COPY (SELECT e.* FROM eth e SEMI JOIN btc b USING(timestamp) ORDER BY timestamp) TO 'cached/ETHUSDT_preholdout.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 200000)")
+          con.execute(f"COPY (SELECT * FROM read_parquet('raw/BTCUSDT_funding.parquet') WHERE timestamp < TIMESTAMPTZ '{end}' ORDER BY timestamp) TO 'cached/BTCUSDT_funding_preholdout.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)")
+          con.execute(f"COPY (SELECT * FROM read_parquet('raw/ETHUSDT_funding.parquet') WHERE timestamp < TIMESTAMPTZ '{end}' ORDER BY timestamp) TO 'cached/ETHUSDT_funding_preholdout.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)")
+
+          def digest(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(4 * 1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          stats = con.execute("""
+              WITH x AS (SELECT timestamp, timestamp - lag(timestamp) OVER (ORDER BY timestamp) AS d FROM read_parquet('cached/BTCUSDT_preholdout.parquet'))
+              SELECT count(*) AS rows, min(timestamp) AS start, max(timestamp) AS end, count(*) FILTER (WHERE d <> INTERVAL 1 MINUTE) AS gaps, max(d) AS largest_gap FROM x
+          """).fetchone()
+          eth_rows = con.execute("SELECT count(*) FROM read_parquet('cached/ETHUSDT_preholdout.parquet')").fetchone()[0]
+          if stats[0] != eth_rows:
+              raise RuntimeError(f'aligned row mismatch: BTC={stats[0]} ETH={eth_rows}')
+          manifest = {
+              'source': 'Torch-Trade derivatives of Binance USD-M perpetual archives',
+              'development_start': start,
+              'holdout_cutoff_exclusive': end,
+              'holdout_rows_included': False,
+              'aligned_rows': stats[0],
+              'common_start': str(stats[1]),
+              'common_last_timestamp': str(stats[2]),
+              'common_gap_count': stats[3],
+              'largest_gap': str(stats[4]),
+              'raw_files': {},
+              'cached_files': {},
+          }
+          for path in sorted(Path('raw').glob('*.parquet')):
+              manifest['raw_files'][path.name] = {'bytes': path.stat().st_size, 'sha256': digest(path)}
+          for path in sorted(Path('cached').glob('*.parquet')):
+              manifest['cached_files'][path.name] = {'bytes': path.stat().st_size, 'sha256': digest(path)}
+          Path('cached/manifest.json').write_text(json.dumps(manifest, indent=2, default=str), encoding='utf-8')
+          print(json.dumps(manifest, indent=2, default=str))
+          PY
+
+      - name: Upload clipped aligned cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-flow-preholdout-data-${{ github.run_id }}
+          path: cached/**
+          compression-level: 0
+          retention-days: 7
