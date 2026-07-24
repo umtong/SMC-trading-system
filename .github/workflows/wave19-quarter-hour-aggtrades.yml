@@ -1,73 +1,49 @@
-name: Research CI
+name: Wave19 Quarter-Hour AggTrades
 
 on:
-  pull_request:
   push:
     branches:
+      - agent/wave19-quarter-hour-aggtrades
+    paths:
+      - scripts/build_quarter_hour_aggtrade_features.py
+      - registrations/wave19_quarter_hour_aggtrades_v1.json
+      - .github/workflows/wave19-quarter-hour-aggtrades.yml
+  pull_request:
+    branches:
       - main
+    paths:
+      - scripts/build_quarter_hour_aggtrade_features.py
+      - registrations/wave19_quarter_hour_aggtrades_v1.json
+      - .github/workflows/wave19-quarter-hour-aggtrades.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: wave19-quarter-hour-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install
-        run: python -m pip install -e ".[dev]"
-
-      - name: Run strategy tests
-        id: pytest
-        shell: bash
-        run: |
-          set +e
-          python -m pytest tests/easychart_v0 -q > pytest.log 2>&1
-          status=$?
-          cat pytest.log
-          exit "$status"
-
-      - name: Upload pytest log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-log-${{ github.run_id }}
-          path: pytest.log
-          if-no-files-found: error
-          retention-days: 7
-
-  wave19-quarter-hour-events:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+  build-events:
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         symbol: [BTCUSDT, ETHUSDT]
         year: [2021, 2022, 2023, 2024, 2025]
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-
-      - name: Install aggregation dependencies
+      - name: Install dependencies
         run: python -m pip install "numpy>=2.0" "pandas>=2.2"
-
       - name: Build checksum-verified quarter-hour event panel
         shell: bash
         run: |
@@ -81,7 +57,6 @@ jobs:
             --output-dir wave19_output \
             --cache-dir wave19_cache \
             --chunk-size 1000000
-
       - name: Upload compact verified event panel
         uses: actions/upload-artifact@v4
         with:
@@ -91,4 +66,4 @@ jobs:
             wave19_output/${{ matrix.symbol }}_quarter_hour_${{ matrix.year }}_manifest.json
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 14
