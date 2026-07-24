@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "research_id": "BINANCE_USDM_STATE_FIRST_RAW_PROVENANCE_PROBE_20260724",
+  "status": "PREREGISTERED_BEFORE_NETWORK_ACCESS",
+  "purpose": "Determine availability, integrity, native schema and timestamp representation of official Binance USD-M raw inputs needed to reconstruct state-first depth, flow, VPIN, Hawkes and open-interest features.",
+  "fixed_inputs": {
+    "market": "futures/um",
+    "symbol": "BTCUSDT",
+    "date": "2023-07-03",
+    "data_types": ["bookDepth", "bookTicker", "aggTrades", "metrics", "klines/5m"],
+    "max_archive_download_bytes": 167772160
+  },
+  "causality_and_safety": {
+    "strategy_executed": false,
+    "candidate_pnl_observed": false,
+    "2024_opened": false,
+    "2025_opened": false,
+    "2026_opened": false,
+    "orders_submitted": false,
+    "credentials_used": false,
+    "raw_archives_uploaded": false
+  },
+  "success_condition": "Every downloaded archive matches its adjacent official CHECKSUM and its native CSV schema and timestamp fields are recorded. Oversized archives may be recorded by HEAD metadata without download in this probe.",
+  "next_gate": "A separate immutable builder must reconstruct features from checksum-verified raw archives and pass point-in-time equivalence tests before state-first model selection may open 2024."
+}

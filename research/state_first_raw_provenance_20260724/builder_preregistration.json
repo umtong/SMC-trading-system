@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "research_id": "BINANCE_USDM_RAW_STATE_BUILDER_AUDIT_20260724",
+  "status": "PREREGISTERED_BEFORE_BUILDER_NETWORK_ACCESS",
+  "symbol": "BTCUSDT",
+  "date": "2023-07-03",
+  "official_inputs": ["klines/1m", "klines/5m", "bookDepth", "aggTrades", "metrics"],
+  "feature_contract": {
+    "five_minute_decision_clock": "bar close",
+    "depth": "last official depth snapshot whose timestamp is <= completed five-minute close",
+    "metrics": "official five-minute observation delayed by one additional completed five-minute bar",
+    "aggTrades": "only transaction timestamps inside the completed half-open five-minute interval",
+    "one_minute_features": "only completed one-minute closes at or before five-minute close",
+    "flow_toxicity": "rolling 50 completed five-minute bars; no future volume buckets",
+    "decayed_intensity": "causal EWM of completed five-minute buyer/seller aggregate-trade row counts"
+  },
+  "required_audits": [
+    "all downloaded ZIPs match adjacent official CHECKSUM",
+    "exact 288-row five-minute grid",
+    "OHLC geometry",
+    "aggTrades quote and taker-buy quote reconcile to official klines",
+    "depth snapshots never occur after the feature availability time",
+    "metrics source time plus one full bar never exceeds feature availability time",
+    "prefix invariance: removing every raw row after 12:00 UTC cannot change any feature available before 12:00 UTC"
+  ],
+  "safety": {
+    "strategy_executed": false,
+    "candidate_pnl_observed": false,
+    "2024_opened": false,
+    "2025_opened": false,
+    "2026_opened": false,
+    "orders_submitted": false,
+    "paper_or_live_started": false,
+    "raw_archives_uploaded": false
+  }
+}

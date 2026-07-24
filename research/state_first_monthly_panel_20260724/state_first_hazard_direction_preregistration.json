@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "research_id": "OFFICIAL_STATE_FIRST_HAZARD_DIRECTION_MULTIARM_20260724",
+  "status": "PREREGISTERED_BEFORE_ANY_STATE_PANEL_STRATEGY_OR_PNL",
+  "objective": "Discover repeatable post-cost intraday alpha by separating move-size hazard from direction and by testing incompatible liquidity-run and liquidity-sweep mechanisms on checksum-verified official Binance state panels.",
+  "data_contract": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "official_inputs": ["klines/1m", "klines/5m", "aggTrades", "bookDepth", "metrics", "fundingRate"],
+    "decision_clock": "completed five-minute close",
+    "entry_clock": "next five-minute open after signal availability",
+    "depth": "last snapshot no later than decision close",
+    "metrics": "one additional completed five-minute bar delay",
+    "exact_flow_and_count_source": "official five-minute kline",
+    "aggregate_trade_policy": "exclude first and last aggregate row per bar; use interior rows only for size/concentration diagnostics",
+    "required_execution_columns": ["open", "high", "low", "close", "close_time"],
+    "forbidden_inputs": ["fwd", "forward", "future", "label", "target", "outcome", "mfe", "mae", "pnl"]
+  },
+  "time_splits": {
+    "development": ["2023-07-01", "2024-01-01"],
+    "selection": ["2024-01-01", "2025-01-01"],
+    "confirmation": ["2025-01-01", "2026-01-01"],
+    "final_2026": "sealed"
+  },
+  "feature_families": {
+    "price_volatility": ["log_ret_1m", "log_ret_5m", "log_ret_15m", "log_ret_60m", "realized_vol_30m", "rsi_14"],
+    "aggressive_flow": ["aggressive_flow_ratio", "flow_entropy", "flow_toxicity_50", "intensity_net", "interior_top5_quote_share", "interior_flow_ratio"],
+    "depth_state": ["depth_imbalance_1pct", "depth_imbalance_5pct", "depth_near_share", "depth_bid_slope", "depth_ask_slope", "depth_change_1pct", "depth_flow_alignment", "liquidity_vacuum_score", "absorption_score", "impact_per_flow"],
+    "derivatives_state": ["oi_change_1h", "count_toptrader_long_short_ratio", "sum_toptrader_long_short_ratio", "count_long_short_ratio", "sum_taker_long_short_vol_ratio"],
+    "calendar": ["hour_sin", "hour_cos", "day_of_week_sin", "day_of_week_cos"]
+  },
+  "independent_arms": {
+    "VACUUM_CONTINUATION": {
+      "mechanism": "A directional move accompanied by aligned aggressive flow and a contraction of near depth is a liquidity run rather than a sweep.",
+      "direction": "sign of completed-bar return and aggressive flow",
+      "state_requirements": ["negative depth_change_1pct", "positive depth_flow_alignment", "elevated liquidity_vacuum_score", "elevated flow_toxicity_50"]
+    },
+    "ABSORPTION_REVERSAL": {
+      "mechanism": "Extreme aggressive flow with low price impact and depth opposing the flow signals absorption and a sweep rather than a run.",
+      "direction": "opposite aggressive flow",
+      "state_requirements": ["elevated absorption_score", "low impact_per_flow", "depth imbalance opposite aggressive flow"]
+    },
+    "REPLENISHMENT_CONTINUATION": {
+      "mechanism": "After a vacuum, rapid same-side depth replenishment and retained flow alignment permits continuation after a shallow retracement.",
+      "direction": "original shock direction",
+      "state_requirements": ["prior liquidity_vacuum_score elevated", "current depth_change_1pct positive", "flow sign retained"]
+    },
+    "REPLENISHMENT_REVERSAL": {
+      "mechanism": "After a vacuum, opposing depth replenishment and a delta flip trap the initiating flow and reverse the move.",
+      "direction": "opposite original shock",
+      "state_requirements": ["prior liquidity_vacuum_score elevated", "current depth imbalance flips", "aggressive flow flips"]
+    },
+    "CROWDING_UNWIND": {
+      "mechanism": "OI expansion and positioning crowding followed by absorption or flow reversal creates forced unwind pressure.",
+      "direction": "opposite crowded price/flow direction",
+      "state_requirements": ["elevated oi_change_1h", "extreme account or position ratio", "absorption or flow reversal"]
+    },
+    "BREAKER_FIRST_RETEST": {
+      "mechanism": "A previously valid order-block region that closes through its invalidation and breaks structure becomes a trapped-position breaker; only the first causal retest is eligible.",
+      "direction": "direction of the structural break",
+      "state_requirements": ["first retest only", "old zone invalidated before retest", "state-first hazard gate", "flow/depth alignment with structural break"]
+    },
+    "TOUCH_DECAY_FILTER": {
+      "mechanism": "Repeated visits consume resting liquidity; the same zone is not assumed equally strong after multiple touches.",
+      "use": "filter or interaction term only, never a standalone direction signal",
+      "state_requirements": ["causal touch count", "depth_total_1pct change since first touch", "elapsed time since first touch"]
+    }
+  },
+  "model_contract": {
+    "hazard_label": "whether the future path over 6, 12 or 24 completed bars contains a move large enough to exceed the fixed stressed round-trip cost and a volatility-scaled safety margin; labels are training-only",
+    "direction_label": "sign of next-open to fixed-horizon return; labels are training-only",
+    "training": "monthly expanding walk-forward; every training label exit_time must be strictly before the test month begins",
+    "models": [
+      {"type": "logistic_regression", "C": [0.1, 0.5, 2.0], "class_weight": "balanced"},
+      {"type": "extra_trees", "n_estimators": 300, "max_depth": [4, 8], "min_samples_leaf": [50, 150], "random_state": 20260724},
+      {"type": "fixed_mechanism_arm", "models": "none"}
+    ],
+    "probability_thresholds": "0.80 and 0.90 train-only quantiles; one fitted model must serve both thresholds",
+    "horizons_5m_bars": [6, 12, 24],
+    "purge": "maximum label horizon plus one entry bar",
+    "target_return_not_used": true
+  },
+  "execution": {
+    "global_exposure_slots": 1,
+    "risk_fraction": 0.005,
+    "max_leverage": 3.0,
+    "capacity_fraction_of_prior_quote_volume": 0.001,
+    "stop_atr": [1.5, 2.5, 4.0],
+    "exit": "protective stop or fixed preregistered alpha horizon; stop has priority on an ambiguous bar",
+    "gap_stop": "actual adverse open",
+    "funding": "actual official settlements on quantity held before settlement",
+    "cost_per_side_bps": [6.0, 9.0, 12.0],
+    "no_reentry_on_exit_bar": true
+  },
+  "development_gate": {
+    "minimum_trades": 80,
+    "minimum_trades_per_half": 25,
+    "base_return": ">0",
+    "stress_1p5_return": ">0",
+    "stress_2x_return": ">0",
+    "profit_factor": ">=1.15",
+    "max_drawdown": "<=0.15",
+    "positive_month_fraction": ">=0.55",
+    "worst_month": ">=-0.05",
+    "top5_positive_trade_share": "<=0.40",
+    "representative_cap": 12,
+    "diversity": "preserve at least one representative per passing independent arm before filling the cap"
+  },
+  "selection_and_confirmation": {
+    "selection": "Only frozen development representatives may access 2024; no grid rerun.",
+    "confirmation": "Only one frozen 2024 primary may access 2025.",
+    "target_gate": "After all settings are fixed, base-cost geometric mean daily return must be >=0.01 and all stability gates must pass.",
+    "2026": "Never opened until the complete pre-live candidate, code, costs and risk settings are immutable."
+  },
+  "idea_sources": {
+    "youtube_and_subtitles": ["breaker after failed order block", "first retest", "liquidity sweep versus liquidity run", "absorption versus aggression", "repeated touches weaken a zone", "order block formed while consuming liquidity", "multi-timeframe order-block/FVG overlap"],
+    "translation_policy": "Ideas are treated only as hypotheses. Their claimed performance is not evidence and no discretionary narrative is used in the algorithm."
+  },
+  "safety": {
+    "orders_submitted": false,
+    "paper_or_live_started": false,
+    "2024_opened": false,
+    "2025_opened": false,
+    "2026_opened": false,
+    "deployment_bundle_allowed": false
+  }
+}

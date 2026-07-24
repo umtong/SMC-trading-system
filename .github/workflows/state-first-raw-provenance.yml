@@ -1,0 +1,102 @@
+name: State-first raw provenance probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/state_first_raw_provenance_20260724/**"
+      - ".github/workflows/state-first-raw-provenance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-raw-provenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-slim
+    timeout-minutes: 45
+    env:
+      ROOT: ${{ github.workspace }}/research_runs/state_first_raw_provenance_20260724
+      SCRIPT: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/probe.py
+      PREREG: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/preregistration.json
+      LOCAL_EXPECTED_SCRIPT_SHA256: 56a41de200d3bc426b6d50ad813d02a59b0ad51d578e21df8ef65b42b6cb7c6d
+      LOCAL_EXPECTED_PREREG_SHA256: 77ef980de309f4f0235551e38b043fe53e9b2b7ca5d415fdb6c676b7657c03e2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-raw-provenance-20260724
+          fetch-depth: 1
+
+      - name: Diagnose immutable input identity and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          items={
+            'script':(Path(os.environ['SCRIPT']),os.environ['LOCAL_EXPECTED_SCRIPT_SHA256']),
+            'preregistration':(Path(os.environ['PREREG']),os.environ['LOCAL_EXPECTED_PREREG_SHA256']),
+          }
+          report={}
+          for key,(path,expected) in items.items():
+            actual=hashlib.sha256(path.read_bytes()).hexdigest()
+            report[key]={'path':str(path),'bytes':path.stat().st_size,'actual_sha256':actual,'local_expected_sha256':expected,'matches_local_copy':actual==expected}
+          report['git_commit']=os.environ.get('GITHUB_SHA')
+          report['strategy_executed']=False
+          report['candidate_pnl_observed']=False
+          (root/'input_identity.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
+          python -m py_compile "$SCRIPT"
+          cp "$SCRIPT" "$ROOT/locked_probe.py"
+          cp "$PREREG" "$ROOT/preregistration.json"
+
+      - name: Install fixed probe dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "requests==2.32.4"
+          python - <<'PY'
+          import json,platform,requests,sys
+          from pathlib import Path
+          payload={
+            'python':sys.version,'platform':platform.platform(),'requests':requests.__version__,
+            'strategy_executed':False,'candidate_pnl_observed':False,
+            '2024_opened':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          root=Path('research_runs/state_first_raw_provenance_20260724')
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Probe official Binance archives without calculating PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$SCRIPT" --output "$ROOT" 2>&1 | tee "$ROOT/probe.log"
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload compact provenance evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-raw-provenance-${{ github.sha }}
+          path: research_runs/state_first_raw_provenance_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6

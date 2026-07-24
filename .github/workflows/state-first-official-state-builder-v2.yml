@@ -1,0 +1,125 @@
+name: State-first official raw feature builder V2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64"
+      - ".github/workflows/state-first-official-state-builder-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-official-builder-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-audit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      ROOT: ${{ github.workspace }}/research_runs/state_first_official_builder_v2_20260724
+      BUNDLE_B64: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64
+      EXPECTED_BUNDLE_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
+      EXPECTED_SCRIPT_SHA256: 0f8c3f1c463dec2f3dcd16117b4992405ff2332cf6a2860df40cb5be03ff3a9d
+      EXPECTED_TEST_SHA256: 44f095585bfbdead4aa3690084dce4f428c6417bf6aff507cc2dc4bf95695004
+      EXPECTED_PREREG_SHA256: 463b569f29169040efcc7137cea9bd5ad2a9325831f30e277194986f73a10ec3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-raw-provenance-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct and freeze exact source identity before network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/source"
+          # GitHub Contents API normalizes a trailing newline in text payloads.
+          # The canonical security identity is therefore the decoded gzip and each extracted source, not the transport text bytes.
+          sha256sum "$BUNDLE_B64" > "$ROOT/bundle_transport_sha256.txt"
+          base64 --decode "$BUNDLE_B64" > /tmp/official_builder_v2_bundle.tar.gz
+          printf '%s  %s\n' "$EXPECTED_BUNDLE_GZ_SHA256" /tmp/official_builder_v2_bundle.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/official_builder_v2_bundle.tar.gz -C "$ROOT/source"
+          SCRIPT="$ROOT/source/build_official_state_v2.py"
+          TEST_SCRIPT="$ROOT/source/test_official_state_v2.py"
+          PREREG="$ROOT/source/builder_v2_preregistration.json"
+          printf '%s  %s\n' "$EXPECTED_SCRIPT_SHA256" "$SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_TEST_SHA256" "$TEST_SCRIPT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREG" | sha256sum --check --strict
+          python -m py_compile "$SCRIPT" "$TEST_SCRIPT"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          files=[p for p in (root/'source').iterdir() if p.is_file()]
+          payload={
+            'git_commit':os.environ.get('GITHUB_SHA'),
+            'bundle_transport_sha256':hashlib.sha256(Path(os.environ['BUNDLE_B64']).read_bytes()).hexdigest(),
+            'bundle_gzip_sha256':os.environ['EXPECTED_BUNDLE_GZ_SHA256'],
+            'files':{p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files},
+            'strategy_executed':False,'candidate_pnl_observed':False,
+            '2024_opened':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          (root/'input_identity.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(payload,indent=2,sort_keys=True))
+          PY
+
+      - name: Install fixed builder environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "requests==2.32.4" \
+            "pytest==8.3.4"
+          python - <<'PY'
+          import json,platform,sys,numpy,pandas,pyarrow,requests,pytest
+          from pathlib import Path
+          payload={
+            'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),
+            'numpy':numpy.__version__,'pandas':pandas.__version__,'pyarrow':pyarrow.__version__,
+            'requests':requests.__version__,'pytest':pytest.__version__,
+            'strategy_executed':False,'candidate_pnl_observed':False,
+            '2024_opened':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,
+          }
+          root=Path('research_runs/state_first_official_builder_v2_20260724')
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Run synthetic boundary-transfer and prefix-causality tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q "$ROOT/source/test_official_state_v2.py" 2>&1 | tee "$ROOT/unit_tests.log"
+
+      - name: Reconstruct one official day and run point-in-time audits
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$ROOT/source/build_official_state_v2.py" --output "$ROOT" 2>&1 | tee "$ROOT/builder.log"
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload compact derived features and audits only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-first-official-builder-v2-${{ github.sha }}
+          path: research_runs/state_first_official_builder_v2_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
