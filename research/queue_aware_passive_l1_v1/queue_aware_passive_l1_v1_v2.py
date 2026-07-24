@@ -16,6 +16,7 @@ occupies the global slot.
 import importlib.util
 import math
 from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -24,6 +25,10 @@ spec = importlib.util.spec_from_file_location("queue_aware_passive_l1_frozen", S
 if spec is None or spec.loader is None:
     raise ImportError(f"cannot load {SOURCE}")
 module = importlib.util.module_from_spec(spec)
+# Dataclass resolves forward references through sys.modules while the frozen
+# module is executing.  Register the dynamically loaded module exactly as a
+# normal import would; this changes transport only, not any strategy contract.
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 MAX_EMERGENCY_EXIT_DELAY_MS = 2_000
