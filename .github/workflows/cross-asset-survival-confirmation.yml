@@ -111,7 +111,7 @@ jobs:
           rc=0
           python "$EXPERIMENT" \
             --base-script "$BASE_SCRIPT" \
-            --checkpoint "$CHECKPOINT" \
+            --development-checkpoint "$CHECKPOINT" \
             --preregistration "$PREREG" \
             --work-dir "$ROOT" \
             --cache-dir "$HF_HOME" \
