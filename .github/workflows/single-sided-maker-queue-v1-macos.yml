@@ -1,0 +1,110 @@
+name: Single-Sided Maker Queue V1 macOS Run2
+
+on:
+  push:
+    branches: [research/single-sided-maker-macos-run2-20260724]
+    paths:
+      - '.github/workflows/single-sided-maker-queue-v1-macos.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/single-sided-maker-queue-v1-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: single-sided-maker-v1-macos-run2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install and freeze source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+          python -m py_compile research_tools/single_sided_maker_queue_v1.py research_tools/test_single_sided_maker_queue_v1.py
+          python research_tools/test_single_sided_maker_queue_v1.py
+          mkdir -p maker-input maker-results maker-test-results evidence cache
+          shasum -a 256 research_tools/single_sided_maker_queue_v1.py research_tools/test_single_sided_maker_queue_v1.py research_tools/SINGLE_SIDED_MAKER_AMENDMENT_*.md > evidence/SOURCE_SHA256.txt
+      - name: Build BTC and ETH development outcomes sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          for symbol in BTCUSDT ETHUSDT; do
+            mkdir -p "maker-input/$symbol"
+            python research_tools/single_sided_maker_queue_v1.py build \
+              --symbol "$symbol" \
+              --days 2023-01-03 2023-04-20 2023-08-30 \
+              --cache "cache/$symbol" \
+              --output "maker-input/$symbol" \
+              2>&1 | tee "evidence/${symbol}_build.log"
+            rm -rf "cache/$symbol"
+            df -h .
+          done
+      - name: Evaluate frozen development and validation gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research_tools/single_sided_maker_queue_v1.py evaluate \
+            --input maker-input \
+            --output maker-results \
+            2>&1 | tee evidence/evaluate.log
+          python -m json.tool maker-results/summary.json
+      - name: Conditionally open preregistered December test
+        shell: bash
+        run: |
+          set -euo pipefail
+          authorized=$(python - <<'PY'
+          import json
+          print('true' if json.load(open('maker-results/summary.json')).get('test_authorized') else 'false')
+          PY
+          )
+          if [ "$authorized" = true ]; then
+            for symbol in BTCUSDT ETHUSDT; do
+              mkdir -p "maker-test-input/$symbol"
+              python research_tools/single_sided_maker_queue_v1.py build \
+                --symbol "$symbol" \
+                --days 2023-12-28 \
+                --cache "test-cache/$symbol" \
+                --output "maker-test-input/$symbol"
+            done
+            python research_tools/single_sided_maker_queue_v1.py test \
+              --input maker-test-input \
+              --selected maker-results/summary.json \
+              --output maker-test-results
+          else
+            printf '%s\n' '{"test_opened":false,"reason":"development_or_validation_gate_failed","promotion_allowed":false}' > maker-test-results/test_summary.json
+          fi
+          python -m json.tool maker-test-results/test_summary.json
+      - name: Audit outputs
+        if: always()
+        shell: bash
+        run: |
+          find maker-results maker-test-results evidence -type f -print0 | sort -z | xargs -0 shasum -a 256 > evidence/OUTPUT_SHA256.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: single-sided-maker-v1-macos-run2-${{ github.run_id }}
+          path: |
+            maker-results
+            maker-test-results
+            evidence
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+      - name: Publish run locator
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 158 --repo umtong/SMC-trading-system --body "maker macOS run2 id: \`${GITHUB_RUN_ID}\`; artifact: \`single-sided-maker-v1-macos-run2-${GITHUB_RUN_ID}\`"

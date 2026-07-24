@@ -1,0 +1,45 @@
+name: Export Single-Sided Maker V1 Source
+
+on:
+  push:
+    branches: [research/single-sided-maker-queue-v1-20260724]
+    paths:
+      - '.github/workflows/export-single-sided-maker-v1-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Freeze source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p maker-v1-source/research_tools maker-v1-source/.github/workflows
+          cp research_tools/single_sided_maker_queue_v1.py maker-v1-source/research_tools/
+          cp research_tools/test_single_sided_maker_queue_v1.py maker-v1-source/research_tools/
+          cp research_tools/SINGLE_SIDED_MAKER_AMENDMENT_*.md maker-v1-source/research_tools/
+          cp .github/workflows/single-sided-maker-queue-v1.yml maker-v1-source/.github/workflows/
+          cp .github/workflows/export-single-sided-maker-v1-source.yml maker-v1-source/.github/workflows/
+          find maker-v1-source -type f -print0 | sort -z | xargs -0 sha256sum > maker-v1-source/SHA256SUMS.txt
+          tar -czf maker-v1-source.tar.gz maker-v1-source
+          sha256sum maker-v1-source.tar.gz > maker-v1-source.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: single-sided-maker-v1-source-${{ github.run_id }}
+          path: |
+            maker-v1-source.tar.gz
+            maker-v1-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Publish artifact locator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 158 --repo umtong/SMC-trading-system --body "maker source export run_id: \`${GITHUB_RUN_ID}\`; artifact: \`single-sided-maker-v1-source-${GITHUB_RUN_ID}\`"
