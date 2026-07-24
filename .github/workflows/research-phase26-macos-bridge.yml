@@ -26,11 +26,13 @@ jobs:
       - name: Run unchanged causal liquidation-depth screen
         env:
           HF_HOME: ${{ runner.temp }}/hf
+        shell: bash
         run: |
+          set -euo pipefail
           rm -rf research/phase26_microbar/results
           python research/phase26_microbar/liquidation_depth_research.py \
             --out research/phase26_microbar/results \
-            | tee research/phase26_microbar/run-macos-bridge.log
+            2>&1 | tee research/phase26_microbar/run-macos-bridge.log
       - name: Upload frozen research outputs
         if: always()
         uses: actions/upload-artifact@v4
