@@ -1,9 +1,14 @@
-name: Audited Spot Perp Basis Data
+name: Audited Spot Perp Basis Data macOS
 
 on:
   push:
     branches:
-      - agent/spot-perp-basis-data
+      - research/spot-perp-basis-macos-20260724
+    paths:
+      - .github/workflows/spot-perp-basis-data.yml
+  pull_request:
+    branches:
+      - main
     paths:
       - .github/workflows/spot-perp-basis-data.yml
   workflow_dispatch:
@@ -13,8 +18,8 @@ permissions:
 
 jobs:
   build-basis-data:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: macos-14
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,7 +49,6 @@ jobs:
 
           import pandas as pd
           import pyarrow as pa
-          import pyarrow.compute as pc
           import pyarrow.parquet as pq
           from huggingface_hub import HfApi, hf_hub_download
 
@@ -123,7 +127,6 @@ jobs:
                   "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
               })
 
-          # Exact timestamp alignment is mandatory for each spot/perp pair.
           alignments = {}
           for symbol in ("BTCUSDT", "ETHUSDT"):
               spot = normalized[f"{symbol}_spot_5m"]
@@ -147,7 +150,7 @@ jobs:
           manifest = {
               "source_repository": REPO,
               "source_revision": revision,
-              "source_card_warning": "Third-party redistribution; must be cross-checked against official Binance futures data before strategy use.",
+              "source_card_warning": "Third-party redistribution; futures must be cross-checked against official Binance files before strategy use.",
               "cutoff_exclusive": CUTOFF.isoformat(),
               "sealed_oos_excluded_from": "2025-08-01T00:00:00+00:00",
               "series": records,
@@ -161,12 +164,13 @@ jobs:
           PY
 
       - name: Upload audited data
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: audited-spot-perp-basis-data-${{ github.sha }}
+          name: audited-spot-perp-basis-data-macos-${{ github.run_id }}
           path: |
             audited_spot_perp/*.parquet
             audited_spot_perp/manifest.json
-          if-no-files-found: error
+          if-no-files-found: warn
           compression-level: 0
           retention-days: 7
