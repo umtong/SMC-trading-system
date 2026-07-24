@@ -2,6 +2,18 @@
   "candidate_id": "cbasis_catchup_ensemble_v1",
   "status": "FROZEN_BEFORE_2025_ENSEMBLE_OOS",
   "frozen_at_utc": "2026-07-24T11:33:00Z",
+  "registration_correction": {
+    "corrected_at_utc": "2026-07-24T11:55:00Z",
+    "field": "components.price_flow_catchup_survival.model_threshold",
+    "old_transcription": 0.4982339079726308,
+    "correct_value": 0.6524528174063672,
+    "authority": "SHA-256-locked survival_model_frozen.json",
+    "authority_sha256": "0bf63d493e5aa8869b5a273519e20a0f4abde04cfea6214950b1c9f13577cbfa",
+    "model_sha256": "61c7ae34a15e1d4dc0a00030385613ed3d08f12800c51e7fe88dca897c4a7441",
+    "economic_change": false,
+    "2025_catchup_outcomes_opened_before_correction": false,
+    "note": "Clerical transcription repair only. The already frozen model, selected 2024 events, routing, risk, stops, targets and all evidence hashes are unchanged."
+  },
   "universe": [
     "BTCUSDT",
     "ETHUSDT"
@@ -38,7 +50,7 @@
     "price_flow_catchup_survival": {
       "candidate_id": "price_flow_catchup_h48_ridge0.25_l22",
       "model": "frozen 2022-2023 development representatives plus 2024 monthly-purged survival LogisticRegression",
-      "model_threshold": 0.4982339079726308,
+      "model_threshold": 0.6524528174063672,
       "prediction_horizon_5m_bars": 48,
       "maximum_holding_minutes": 240,
       "protective_stop_atr": 3.5,
