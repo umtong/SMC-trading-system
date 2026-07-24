@@ -54,7 +54,7 @@ jobs:
           import hashlib,json,os
           from pathlib import Path
           root=Path(os.environ['ROOT'])
-          files=list((root/'source').iterdir())
+          files=[p for p in (root/'source').iterdir() if p.is_file()]
           payload={
             'git_commit':os.environ.get('GITHUB_SHA'),
             'bundle_transport_sha256':hashlib.sha256(Path(os.environ['BUNDLE_B64']).read_bytes()).hexdigest(),
