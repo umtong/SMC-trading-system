@@ -33,7 +33,7 @@ jobs:
           ref: research/state-first-l2-20260724
           fetch-depth: 1
 
-      - name: Reconstruct immutable source without executing research
+      - name: Reconstruct and diagnose immutable source transport
         shell: bash
         run: |
           set -euo pipefail
@@ -46,15 +46,31 @@ jobs:
           cat research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} > /tmp/test_state_first_l2.py.gz.b64
           base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
           base64 --decode /tmp/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
-          printf '%s  %s\n' "$EXPECTED_SCRIPT_GZ_SHA256" /tmp/state_first_l2.py.gz | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_TEST_GZ_SHA256" /tmp/test_state_first_l2.py.gz | sha256sum --check --strict
           gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$root/state_first_l2.py"
           gzip --decompress --stdout /tmp/test_state_first_l2.py.gz > "$root/test_state_first_l2.py"
-          printf '%s  %s\n' "$EXPECTED_SCRIPT_SHA256" "$root/state_first_l2.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_TEST_SHA256" "$root/test_state_first_l2.py" | sha256sum --check --strict
-          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" research/state_first_l2_20260724/preregistration.json | sha256sum --check --strict
           cp research/state_first_l2_20260724/preregistration.json "$root/preregistration.json"
           python -m py_compile "$root/state_first_l2.py" "$root/test_state_first_l2.py"
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          root=Path('/tmp/state-first-l2-audit')
+          items={
+            'script_gzip':(Path('/tmp/state_first_l2.py.gz'),os.environ['EXPECTED_SCRIPT_GZ_SHA256']),
+            'script':(root/'state_first_l2.py',os.environ['EXPECTED_SCRIPT_SHA256']),
+            'test_gzip':(Path('/tmp/test_state_first_l2.py.gz'),os.environ['EXPECTED_TEST_GZ_SHA256']),
+            'test':(root/'test_state_first_l2.py',os.environ['EXPECTED_TEST_SHA256']),
+            'preregistration':(root/'preregistration.json',os.environ['EXPECTED_PREREG_SHA256']),
+          }
+          report={}
+          for name,(path,expected) in items.items():
+            actual=hashlib.sha256(path.read_bytes()).hexdigest()
+            report[name]={'path':str(path),'bytes':path.stat().st_size,'actual_sha256':actual,'expected_sha256':expected,'matches':actual==expected}
+          report['all_expected_hashes_match']=all(v['matches'] for v in report.values())
+          report['research_executed']=False
+          report['candidate_pnl_observed']=False
+          (root/'transport_identity.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(report,indent=2,sort_keys=True))
+          PY
 
       - name: Produce static causal and gating inventory
         shell: bash
@@ -63,14 +79,13 @@ jobs:
           python - <<'PY'
           import ast, hashlib, json, re
           from pathlib import Path
-
           root=Path('/tmp/state-first-l2-audit')
           source=(root/'state_first_l2.py').read_text(encoding='utf-8')
           test_source=(root/'test_state_first_l2.py').read_text(encoding='utf-8')
           prereg=json.loads((root/'preregistration.json').read_text(encoding='utf-8'))
+          identity=json.loads((root/'transport_identity.json').read_text(encoding='utf-8'))
           tree=ast.parse(source)
-          functions=[]
-          imports=[]
+          functions=[];imports=[]
           for node in ast.walk(tree):
               if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
                   functions.append({'name':node.name,'line':node.lineno,'args':[a.arg for a in node.args.args]})
@@ -87,31 +102,23 @@ jobs:
               'target_gate_mentions':r'(?i)geo.*daily|target_gate|0\.01',
               'data_load_mentions':r'(?i)hf_hub|parquet|download|2025|2026',
           }
-          lines=source.splitlines()
-          matches={}
+          lines=source.splitlines();matches={}
           for key,pattern in patterns.items():
               rx=re.compile(pattern)
               matches[key]=[{'line':i,'text':line[:500]} for i,line in enumerate(lines,1) if rx.search(line)]
           report={
-              'schema_version':2,
-              'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+              'schema_version':3,'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
               'test_sha256':hashlib.sha256(test_source.encode()).hexdigest(),
               'preregistration_sha256':hashlib.sha256((root/'preregistration.json').read_bytes()).hexdigest(),
-              'source_lines':len(lines),
-              'test_lines':len(test_source.splitlines()),
-              'functions':functions,
-              'imports':imports,
-              'matches':matches,
+              'transport_all_expected_hashes_match':identity['all_expected_hashes_match'],
+              'source_lines':len(lines),'test_lines':len(test_source.splitlines()),
+              'functions':functions,'imports':imports,'matches':matches,
               'preregistered_time_splits':prereg.get('time_splits'),
-              'research_executed':False,
-              'candidate_pnl_observed':False,
-              '2025_opened':False,
-              '2026_opened':False,
-              'orders_submitted':False,
-              'paper_or_live_started':False,
+              'research_executed':False,'candidate_pnl_observed':False,
+              '2025_opened':False,'2026_opened':False,'orders_submitted':False,'paper_or_live_started':False,
           }
           (root/'static_audit.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\n',encoding='utf-8')
-          print(json.dumps({k:report[k] for k in ('source_sha256','test_sha256','source_lines','test_lines','research_executed','candidate_pnl_observed')},indent=2))
+          print(json.dumps({k:report[k] for k in ('source_sha256','test_sha256','source_lines','test_lines','transport_all_expected_hashes_match','research_executed')},indent=2))
           PY
           find /tmp/state-first-l2-audit -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > /tmp/state-first-l2-audit/SHA256SUMS.txt
 
