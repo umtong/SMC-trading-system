@@ -103,3 +103,5 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           compression-level: 6
+
+# Second branch-scoped push records this workflow before execution.
