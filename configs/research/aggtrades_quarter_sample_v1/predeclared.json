@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-24T00:00:00Z",
+  "status": "PREDECLARED_BEFORE_LONG_SAMPLE_OUTCOME_INSPECTION",
+  "family": "BTC_ETH_FIVE_SECOND_AGGTRADES_PRICE_IMPACT_V1",
+  "purpose": "Test whether aggressive trade flow contains repeatable net forward information when observed in completed five-second buckets rather than one-minute averages. The daily-return target is excluded from rule selection.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "sampling": {
+    "rule": "mechanical first three UTC calendar days of every quarter",
+    "development": ["2021-01-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "retrospective_diagnostic": ["2024-01-01", "2026-07-01"],
+    "dates": [
+      "2021-01-01", "2021-01-02", "2021-01-03", "2021-04-01", "2021-04-02", "2021-04-03", "2021-07-01", "2021-07-02", "2021-07-03", "2021-10-01", "2021-10-02", "2021-10-03",
+      "2022-01-01", "2022-01-02", "2022-01-03", "2022-04-01", "2022-04-02", "2022-04-03", "2022-07-01", "2022-07-02", "2022-07-03", "2022-10-01", "2022-10-02", "2022-10-03",
+      "2023-01-01", "2023-01-02", "2023-01-03", "2023-04-01", "2023-04-02", "2023-04-03", "2023-07-01", "2023-07-02", "2023-07-03", "2023-10-01", "2023-10-02", "2023-10-03",
+      "2024-01-01", "2024-01-02", "2024-01-03", "2024-04-01", "2024-04-02", "2024-04-03", "2024-07-01", "2024-07-02", "2024-07-03", "2024-10-01", "2024-10-02", "2024-10-03",
+      "2025-01-01", "2025-01-02", "2025-01-03", "2025-04-01", "2025-04-02", "2025-04-03", "2025-07-01", "2025-07-02", "2025-07-03", "2025-10-01", "2025-10-02", "2025-10-03",
+      "2026-01-01", "2026-01-02", "2026-01-03", "2026-04-01", "2026-04-02", "2026-04-03"
+    ]
+  },
+  "raw_data": {
+    "source": "Binance USD-M public daily aggTrades archive",
+    "checksum_required": true,
+    "raw_archive_retention": false,
+    "base_bucket_seconds": 5
+  },
+  "research_clock": {
+    "features": "completed five-second buckets only",
+    "decision": "bucket close",
+    "entry": "first observable trade price of the next completed bucket with at least one full bucket latency",
+    "cross_day_state": "reset at each sampled UTC day",
+    "future_features": "forbidden"
+  },
+  "hypotheses": {
+    "continuation": "large normalized aggressive-flow imbalance with efficient same-direction price impact continues over 30 seconds to 30 minutes",
+    "absorption": "large aggressive-flow imbalance with low or opposite price impact reverses after the first completed confirmation bucket",
+    "quarter_hour": "the first completed five or ten seconds after each UTC quarter-hour contains incremental information not visible in one-minute bars",
+    "impact_decay": "flow-normalized price impact decays at a state-dependent rate and only the residual component is tradable"
+  },
+  "execution": {
+    "market_entry_only": true,
+    "entry_fee_bps": 6,
+    "exit_fee_bps": 6,
+    "entry_slippage_bps": [2, 5],
+    "exit_slippage_bps": [3, 8],
+    "minimum_one_bucket_latency": true,
+    "global_slot": 1,
+    "same_bucket_entry": false
+  },
+  "selection": {
+    "development_trades_min": 150,
+    "validation_trades_min": 60,
+    "pf_min_each": 1.10,
+    "after_top10_positive_development": true,
+    "after_top5_positive_validation": true,
+    "positive_day_ratio_min_each": 0.55,
+    "lb80_mean_r_positive_each": true,
+    "adjacent_threshold_pass_required": true,
+    "daily_return_target_used": false
+  },
+  "promotion": {
+    "sample_cannot_enable_live": true,
+    "full_history_or_prospective_shadow_required": true,
+    "live_risk": 0
+  }
+}
