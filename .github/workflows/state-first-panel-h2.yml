@@ -1,0 +1,149 @@
+name: State-first official 2023-H2 panels
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/state-first-panel-h2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-panel-h2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_COMMIT: d7a2dbc080a3cd7279f6caf342d703b3d7517087
+  DAILY_V2_B64_SHA256: f76ea333a13118a659c91eac6134402c7feac6b32d45152f1603ccc5d9a78176
+  DAILY_V2_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
+  DAILY_PATCH_V3_SHA256: 80d0d00e6944856e6a1509794691c15537997da528cce3f558ca5a4b058ff4a2
+  DAILY_PATCH_V4_SHA256: e1c35db1b9742775c177c4d585c57e8a8b5c58c5eb121c7dcc145a83aaf02186
+  DAILY_V4_SHA256: 92e5dd743d94c0e687a0b72d4b947ae4808ac58bda0ea7131a42498d46e656b4
+  DAILY_V4_TEST_SHA256: 29933d9166345c4337912aa35f8b666d20c596d241d81434bcfba1eae97449d5
+  MONTH_V3_B64_SHA256: 0b0c93d73458721a56f0f5593c98471cd8f5f45ff5dcf0771ac5494900d6131e
+  MONTH_V3_GZ_SHA256: d32b5281a23419a02a97d40a60d163380b9b9c01829f4bcf95681cb3628120bf
+  MONTH_PATCH_V4_SHA256: f93b4c142a9530efaffe7ebf4797149b017aa80ead62d8982de9b11d72e90ac4
+  MONTH_V4_SHA256: 996b581f64c3bf5358323cd59ebdb9e16a84f862fba3388d48ed308750af4cd9
+  MONTH_V4_TEST_SHA256: f9b9381908d087a8facb4a14421e9780e8ca9491d434592b4503f3792529bb58
+  MONTH_V4_PREREG_SHA256: 4ffc488eba1be1251f80b99f395cde7eb76c69cc745ab3610f9c5010c74e93c5
+  STRATEGY_PREREG_SHA256: cf7d626c6d71767013565500feb4a08c1cfbbbe3d8fe74022080245c15e75e37
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        month: ["2023-08", "2023-09", "2023-10", "2023-11", "2023-12"]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/state-first-panel-clean-20260724
+          fetch-depth: 1
+
+      - name: Extract and verify immutable official-panel sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_h2_20260724/$key"
+          src="$root/source"
+          mkdir -p "$src" "$root/output" /tmp/pinned
+          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64" > /tmp/pinned/daily_v2.tar.gz.b64
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/patch_official_builder_v3.py" > /tmp/pinned/patch_daily_v3.py
+          git show "$SOURCE_COMMIT:research/state_first_raw_provenance_20260724/patch_official_builder_v4.py" > /tmp/pinned/patch_daily_v4.py
+          git show "$SOURCE_COMMIT:research/state_first_monthly_panel_20260724/bundle.tar.gz.b64" > /tmp/pinned/month_v3.tar.gz.b64
+          git show "$SOURCE_COMMIT:research/state_first_monthly_panel_20260724/patch_monthly_v4.py" > /tmp/pinned/patch_month_v4.py
+          git show "$SOURCE_COMMIT:research/state_first_monthly_panel_20260724/state_first_hazard_direction_preregistration.json" > "$root/state_first_hazard_direction_preregistration.json"
+          printf '%s  %s\n' "$DAILY_V2_B64_SHA256" /tmp/pinned/daily_v2.tar.gz.b64 | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_PATCH_V3_SHA256" /tmp/pinned/patch_daily_v3.py | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_PATCH_V4_SHA256" /tmp/pinned/patch_daily_v4.py | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_V3_B64_SHA256" /tmp/pinned/month_v3.tar.gz.b64 | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_PATCH_V4_SHA256" /tmp/pinned/patch_month_v4.py | sha256sum --check --strict
+          printf '%s  %s\n' "$STRATEGY_PREREG_SHA256" "$root/state_first_hazard_direction_preregistration.json" | sha256sum --check --strict
+          base64 --decode /tmp/pinned/daily_v2.tar.gz.b64 > /tmp/pinned/daily_v2.tar.gz
+          printf '%s  %s\n' "$DAILY_V2_GZ_SHA256" /tmp/pinned/daily_v2.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/pinned/daily_v2.tar.gz -C "$src"
+          python /tmp/pinned/patch_daily_v3.py "$src"
+          python /tmp/pinned/patch_daily_v4.py "$src"
+          printf '%s  %s\n' "$DAILY_V4_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_V4_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
+          base64 --decode /tmp/pinned/month_v3.tar.gz.b64 > /tmp/pinned/month_v3.tar.gz
+          printf '%s  %s\n' "$MONTH_V3_GZ_SHA256" /tmp/pinned/month_v3.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/pinned/month_v3.tar.gz -C "$src"
+          python /tmp/pinned/patch_month_v4.py "$src"
+          printf '%s  %s\n' "$MONTH_V4_SHA256" "$src/build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_V4_TEST_SHA256" "$src/test_build_official_state_month.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$MONTH_V4_PREREG_SHA256" "$src/monthly_panel_preregistration_v4.json" | sha256sum --check --strict
+          python -m py_compile "$src"/*.py
+          find /tmp/pinned -type f -print0 | sort -z | xargs -0 sha256sum > "$root/input_sha256.txt"
+          cp "$src/monthly_panel_preregistration_v4.json" "$root/monthly_panel_preregistration.json"
+
+      - name: Install fixed data environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "pytest==8.3.4"
+
+      - name: Run all causal data tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_h2_20260724/$key"
+          PYTHONPATH="$root/source" pytest -q "$root/source/test_official_state_v4.py" "$root/source/test_build_official_state_month.py" 2>&1 | tee "$root/unit_tests.log"
+
+      - name: Build official monthly state panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_h2_20260724/$key"
+          python "$root/source/build_official_state_month.py" --symbol "${{ matrix.symbol }}" --month "${{ matrix.month }}" --warmup-days 7 --v4-source "$root/source/build_official_state_v4.py" --output "$root/output" 2>&1 | tee "$root/build.log"
+          manifest="$root/output/${{ matrix.symbol }}_${{ matrix.month }}_official_state_v4_manifest.json"
+          python - "$manifest" <<'PY'
+          import calendar,json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          year,month=map(int,obj['month'].split('-'))
+          expected=calendar.monthrange(year,month)[1]*288
+          assert obj['rows']==expected
+          assert obj['audits']['complete_5m_grid'] is True
+          assert obj['audits']['future_depth_rows']==0 and obj['audits']['future_metric_rows']==0
+          assert obj['audits']['forbidden_outcome_columns']==[]
+          assert obj['audits']['aggregate_daily_relative_tolerance']==1e-4
+          assert obj['audits']['aggregate_id_relative_tolerance']==5e-3
+          assert obj['audits']['max_daily_agg_quote_relative_error']<=1e-4
+          assert obj['audits']['max_daily_agg_buy_relative_error']<=1e-4
+          assert obj['audits']['max_aggregate_id_union_relative_difference']<=5e-3
+          assert obj['audits']['max_aggregate_id_gap_relative']<=5e-3
+          assert {'open','high','low','close','close_time'}.issubset(obj['columns'])
+          assert obj['strategy_executed'] is False and obj['candidate_pnl_observed'] is False
+          assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+          assert obj['orders_submitted'] is False and obj['paper_or_live_started'] is False
+          print(json.dumps({'symbol':obj['symbol'],'month':obj['month'],'rows':obj['rows'],'panel_sha256':obj['panel_sha256']},sort_keys=True))
+          PY
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="${{ matrix.symbol }}_${{ matrix.month }}"
+          root="$GITHUB_WORKSPACE/research_runs/state_first_panel_h2_20260724/$key"
+          find "$root" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-panel-${{ matrix.symbol }}-${{ matrix.month }}-${{ github.sha }}
+          path: research_runs/state_first_panel_h2_20260724/${{ matrix.symbol }}_${{ matrix.month }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
