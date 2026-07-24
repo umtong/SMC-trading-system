@@ -1,0 +1,307 @@
+name: LOB Replenishment Wave1 Development
+
+on:
+  push:
+    branches:
+      - research/lob-replenishment-wave1-20260724
+    paths:
+      - research/lob_replenishment_wave1/**
+      - .github/workflows/lob-replenishment-wave1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lob-replenishment-wave1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONHASHSEED: "0"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  RUNNER_SHA256: fa18c18a600e5ec21d7d240ab7e2f96b18652930d48aa74c1bb065dd458451e4
+  PREREG_SHA256: 59e1ea5eaad207d2abf4050998e8f7c26fa362b97236e5da01849142128b58d1
+
+jobs:
+  preprocess-fit:
+    name: fit-${{ matrix.date }}
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        date:
+          - 2026-03-05
+          - 2026-03-06
+          - 2026-03-09
+          - 2026-03-11
+          - 2026-03-13
+          - 2026-03-14
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fixed research environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "orjson==3.10.12" \
+            "numba==0.61.0" \
+            "huggingface_hub>=0.34,<2" \
+            "hf_xet>=1.1,<2"
+
+      - name: Reconstruct and verify immutable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/lob_replenishment_wave1/lob_wave1.py.b64.part* | base64 --decode > /tmp/lob_wave1.py
+          echo "${RUNNER_SHA256}  /tmp/lob_wave1.py" | sha256sum -c -
+          echo "${PREREG_SHA256}  research/lob_replenishment_wave1/preregistration.json" | sha256sum -c -
+          python -m py_compile /tmp/lob_wave1.py
+
+      - name: Build checksum-pinned causal event panel
+        run: |
+          python /tmp/lob_wave1.py preprocess \
+            --date "${{ matrix.date }}" \
+            --output "research-output/${{ matrix.date }}" \
+            --cache "$RUNNER_TEMP/hf-cache"
+
+      - name: Hash compact outputs
+        run: |
+          find "research-output/${{ matrix.date }}" -type f -print0 | sort -z | xargs -0 sha256sum > "research-output/${{ matrix.date }}/SHA256SUMS.txt"
+
+      - name: Upload fit-date research panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: lob-wave1-fit-${{ matrix.date }}-${{ github.sha }}
+          path: research-output/${{ matrix.date }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  fit-screen:
+    name: frozen-fit-screen
+    needs: preprocess-fit
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      eligible: ${{ steps.gate.outputs.eligible }}
+      eligible_count: ${{ steps.gate.outputs.eligible_count }}
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fixed evaluation environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "orjson==3.10.12" \
+            "numba==0.61.0"
+
+      - name: Reconstruct and verify immutable runner
+        run: |
+          cat research/lob_replenishment_wave1/lob_wave1.py.b64.part* | base64 --decode > /tmp/lob_wave1.py
+          echo "${RUNNER_SHA256}  /tmp/lob_wave1.py" | sha256sum -c -
+          echo "${PREREG_SHA256}  research/lob_replenishment_wave1/preregistration.json" | sha256sum -c -
+          python -m py_compile /tmp/lob_wave1.py
+
+      - name: Download only fit-date panels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lob-wave1-fit-*
+          path: fit-inputs
+          merge-multiple: true
+
+      - name: Evaluate fit gate without reading later dates
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fit-screen
+          python - <<'PY'
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location("lob_wave1", "/tmp/lob_wave1.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          events = module.load_event_dates(Path("fit-inputs"), module.FIT_DATES)
+          results = module.evaluate_candidate_set(events, len(module.FIT_DATES))
+          results.to_csv("fit-screen/fit_all.csv", index=False)
+          eligible = results.loc[module.fit_gate(results)].copy() if len(results) else results.copy()
+          if len(eligible):
+              eligible = eligible.sort_values(
+                  ["stress_mean", "stress_profit_factor"], ascending=False
+              )
+          eligible.to_csv("fit-screen/fit_eligible.csv", index=False)
+          manifest = {
+              "study_id": "lob_depletion_replenishment_state_wave1_20260724",
+              "runner_sha256": os.environ["RUNNER_SHA256"],
+              "preregistration_sha256": os.environ["PREREG_SHA256"],
+              "fit_event_rows": int(len(events)),
+              "fit_candidates": int(len(results)),
+              "fit_eligible": int(len(eligible)),
+              "development_test_download_authorized": bool(len(eligible)),
+              "development_test_dates_read": False,
+          }
+          Path("fit-screen/fit_manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"eligible={'true' if len(eligible) else 'false'}\n")
+              handle.write(f"eligible_count={len(eligible)}\n")
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+          find fit-screen -type f -print0 | sort -z | xargs -0 sha256sum > fit-screen/SHA256SUMS.txt
+
+      - name: Upload immutable fit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: lob-wave1-fit-screen-${{ github.sha }}
+          path: |
+            fit-screen
+            research/lob_replenishment_wave1/preregistration.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  preprocess-test:
+    name: test-${{ matrix.date }}
+    needs: fit-screen
+    if: needs.fit-screen.outputs.eligible == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        date:
+          - 2026-03-15
+          - 2026-03-16
+          - 2026-03-18
+          - 2026-03-19
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fixed research environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "orjson==3.10.12" \
+            "numba==0.61.0" \
+            "huggingface_hub>=0.34,<2" \
+            "hf_xet>=1.1,<2"
+
+      - name: Reconstruct and verify immutable runner
+        run: |
+          cat research/lob_replenishment_wave1/lob_wave1.py.b64.part* | base64 --decode > /tmp/lob_wave1.py
+          echo "${RUNNER_SHA256}  /tmp/lob_wave1.py" | sha256sum -c -
+          echo "${PREREG_SHA256}  research/lob_replenishment_wave1/preregistration.json" | sha256sum -c -
+          python -m py_compile /tmp/lob_wave1.py
+
+      - name: Build causally authorized test panel
+        run: |
+          python /tmp/lob_wave1.py preprocess \
+            --date "${{ matrix.date }}" \
+            --output "research-output/${{ matrix.date }}" \
+            --cache "$RUNNER_TEMP/hf-cache"
+
+      - name: Hash compact outputs
+        run: |
+          find "research-output/${{ matrix.date }}" -type f -print0 | sort -z | xargs -0 sha256sum > "research-output/${{ matrix.date }}/SHA256SUMS.txt"
+
+      - name: Upload test-date research panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: lob-wave1-test-${{ matrix.date }}-${{ github.sha }}
+          path: research-output/${{ matrix.date }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  development-screen:
+    name: frozen-development-screen
+    needs:
+      - fit-screen
+      - preprocess-test
+    if: needs.fit-screen.outputs.eligible == 'true' && needs.preprocess-test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fixed evaluation environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "orjson==3.10.12" \
+            "numba==0.61.0"
+
+      - name: Reconstruct and verify immutable runner
+        run: |
+          cat research/lob_replenishment_wave1/lob_wave1.py.b64.part* | base64 --decode > /tmp/lob_wave1.py
+          echo "${RUNNER_SHA256}  /tmp/lob_wave1.py" | sha256sum -c -
+          echo "${PREREG_SHA256}  research/lob_replenishment_wave1/preregistration.json" | sha256sum -c -
+          python -m py_compile /tmp/lob_wave1.py
+
+      - name: Download authorized fit and test panels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lob-wave1-*-2026-03-*-${{ github.sha }}
+          path: development-inputs
+          merge-multiple: true
+
+      - name: Run frozen full development gate
+        run: |
+          python /tmp/lob_wave1.py screen \
+            --input-root development-inputs \
+            --output development-screen
+          cp research/lob_replenishment_wave1/preregistration.json development-screen/preregistration.json
+          find development-screen -type f -print0 | sort -z | xargs -0 sha256sum > development-screen/SHA256SUMS.txt
+
+      - name: Upload complete development evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: lob-wave1-development-screen-${{ github.sha }}
+          path: development-screen
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
