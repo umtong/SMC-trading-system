@@ -1,0 +1,78 @@
+name: research-tick-archive-probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/research-tick-archive-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe public tick archives without downloading datasets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          urls=[]
+          for symbol in ('BTCUSDT','ETHUSDT'):
+              for month in ('2022-01','2023-01'):
+                  urls.append({
+                    'venue':'binance','symbol':symbol,'period':month,
+                    'url':f'https://data.binance.vision/data/futures/um/monthly/aggTrades/{symbol}/{symbol}-aggTrades-{month}.zip'
+                  })
+              for day in ('2022-01-01','2023-01-01'):
+                  urls.append({
+                    'venue':'bybit','symbol':symbol,'period':day,
+                    'url':f'https://public.bybit.com/trading/{symbol}/{symbol}{day}.csv.gz'
+                  })
+
+          rows=[]
+          for spec in urls:
+              row=dict(spec)
+              request=urllib.request.Request(spec['url'], method='HEAD', headers={'User-Agent':'SMC-ICT-research-probe/1.0'})
+              try:
+                  with urllib.request.urlopen(request,timeout=60) as response:
+                      row.update({
+                        'status':response.status,
+                        'content_length':int(response.headers.get('Content-Length','0') or 0),
+                        'last_modified':response.headers.get('Last-Modified'),
+                        'etag':response.headers.get('ETag'),
+                        'content_type':response.headers.get('Content-Type'),
+                        'accept_ranges':response.headers.get('Accept-Ranges'),
+                      })
+              except Exception as exc:
+                  row.update({'status':'ERROR','error':repr(exc)})
+              rows.append(row)
+              print(json.dumps(row),flush=True)
+
+          payload={
+            'created_at_utc':datetime.now(timezone.utc).isoformat(),
+            'credentials_used':False,
+            'orders_submitted':False,
+            'rows':rows,
+          }
+          out=Path('research_data/tick_archive_probe')
+          out.mkdir(parents=True,exist_ok=True)
+          (out/'probe.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tick-archive-probe-${{ github.run_id }}
+          path: research_data/tick_archive_probe
+          retention-days: 7
