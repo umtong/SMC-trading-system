@@ -12,60 +12,94 @@ permissions:
 jobs:
   audit:
     runs-on: macos-14
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - name: Checkout frozen V24 base
+      - name: Checkout frozen V24 base with history
         uses: actions/checkout@v4
         with:
           ref: research/v24-base-20260723
-          fetch-depth: 1
-      - name: Locate immutable candidate and evaluator sources
+          fetch-depth: 0
+      - name: Locate immutable candidate and evaluator sources across all refs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p research_artifact/matches research_artifact/context
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          mkdir -p research_artifact/current research_artifact/history
           candidate=117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68
           evaluator=9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1
-          find . -type f -not -path './.git/*' -print0 | sort -z | xargs -0 shasum -a 256 > research_artifact/all_files.sha256
-          awk -v c="$candidate" -v e="$evaluator" '$1==c || $1==e {print}' research_artifact/all_files.sha256 | tee research_artifact/hash_matches.txt
-          while read -r digest path; do
-            [ -n "$path" ] || continue
-            clean=${path#./}
-            mkdir -p "research_artifact/matches/$(dirname "$clean")"
-            cp "$path" "research_artifact/matches/$clean"
-          done < research_artifact/hash_matches.txt
+          find . -type f -not -path './.git/*' -print0 | sort -z | xargs -0 shasum -a 256 > research_artifact/current/all_files.sha256
+          awk -v c="$candidate" -v e="$evaluator" '$1==c || $1==e {print}' research_artifact/current/all_files.sha256 > research_artifact/current/hash_matches.txt
           grep -RIl --exclude-dir=.git -E 'C_basis|v24_cross_market_ensemble_v1|basis reversion|basis_z|117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68|9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1' . \
-            | sort | tee research_artifact/context_paths.txt || true
-          while read -r path; do
-            [ -n "$path" ] || continue
-            clean=${path#./}
-            case "$clean" in
-              *.py|*.json|*.md|*.yml|*.yaml|*.txt)
-                mkdir -p "research_artifact/context/$(dirname "$clean")"
-                cp "$path" "research_artifact/context/$clean" ;;
-            esac
-          done < research_artifact/context_paths.txt
-          find . -type f -not -path './.git/*' -maxdepth 4 | sort > research_artifact/file_paths.txt
+            | sort > research_artifact/current/context_paths.txt || true
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json, re, subprocess
+          from pathlib import Path
+
+          out=Path('research_artifact/history')
+          out.mkdir(parents=True,exist_ok=True)
+          patterns=re.compile(rb'C_basis|v24_cross_market_ensemble_v1|basis reversion|basis_z|117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68|9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1',re.I)
+          allowed=('.py','.json','.md','.yml','.yaml','.txt','.sh')
+          commits=subprocess.check_output(['git','rev-list','--all'],text=True).splitlines()
+          seen_blobs={}
+          matches=[]
+          for commit in commits:
+              rows=subprocess.check_output(['git','ls-tree','-r',commit],text=True,errors='replace').splitlines()
+              for row in rows:
+                  try:
+                      meta,path=row.split('\t',1)
+                      mode,kind,blob=meta.split()
+                  except ValueError:
+                      continue
+                  if kind!='blob' or not path.lower().endswith(allowed):
+                      continue
+                  if blob in seen_blobs:
+                      if seen_blobs[blob] is not None:
+                          seen_blobs[blob]['commits'].append(commit)
+                          seen_blobs[blob]['paths'].append(path)
+                      continue
+                  try:
+                      data=subprocess.check_output(['git','cat-file','blob',blob])
+                  except subprocess.CalledProcessError:
+                      seen_blobs[blob]=None
+                      continue
+                  if not patterns.search(data):
+                      seen_blobs[blob]=None
+                      continue
+                  digest=hashlib.sha256(data).hexdigest()
+                  rec={'blob':blob,'sha256':digest,'bytes':len(data),'commits':[commit],'paths':[path]}
+                  seen_blobs[blob]=rec;matches.append(rec)
+                  suffix=Path(path).suffix or '.txt'
+                  (out/f'{blob}{suffix}').write_bytes(data)
+          # De-duplicate repeated commit/path references and record immutable provenance.
+          for rec in matches:
+              rec['commits']=sorted(set(rec['commits']))
+              rec['paths']=sorted(set(rec['paths']))
+          (out/'manifest.json').write_text(json.dumps({'commit_count':len(commits),'matches':matches},indent=2)+'\n')
+          print(json.dumps({'commit_count':len(commits),'matched_blobs':len(matches),'paths':sorted({p for r in matches for p in r['paths']})},indent=2))
+          PY
           git rev-parse HEAD > research_artifact/checked_out_commit.txt
+          git show-ref > research_artifact/all_refs.txt
           python - <<'PY'
           import json
           from pathlib import Path
-          out=Path('research_artifact')
+          root=Path('research_artifact')
+          hist=json.loads((root/'history/manifest.json').read_text())
           record={
-            'direct_file_hash_matches':len((out/'hash_matches.txt').read_text().splitlines()),
-            'context_files':len((out/'context_paths.txt').read_text().splitlines()),
+            'direct_current_file_hash_matches':len((root/'current/hash_matches.txt').read_text().splitlines()),
+            'current_context_files':len((root/'current/context_paths.txt').read_text().splitlines()),
+            'historical_matching_blobs':len(hist['matches']),
             'candidate_hash':'117a8c8d3ab465785dac0c715531618d9b75f8c597d86a57d98d50aedb293c68',
             'evaluator_hash':'9cb80ea1fe72aad8710d553408763c313ae9e0fb4cead00a1f2a13c3c764f2d1',
-            'note':'A zero direct-file match means the registered digest applies to canonical or transported content; context evidence is still preserved without modifying it.',
           }
-          (out/'summary.json').write_text(json.dumps(record,indent=2)+'\n')
+          (root/'summary.json').write_text(json.dumps(record,indent=2)+'\n')
           print(json.dumps(record,indent=2))
           PY
       - name: Upload immutable source evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v24-frozen-source-audit-${{ github.run_id }}
+          name: v24-frozen-source-history-${{ github.run_id }}
           path: research_artifact
           if-no-files-found: error
           retention-days: 14
