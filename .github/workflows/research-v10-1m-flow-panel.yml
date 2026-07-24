@@ -1,53 +1,20 @@
-name: Research CI
+name: V0.10 Multi-Year One-Minute Taker Flow
+# Outcome-blind data contract: no strategy outcome is used to select archive shards.
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: v10-1m-flow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install
-        run: python -m pip install -e ".[dev]"
-
-      - name: Run strategy tests
-        id: pytest
-        shell: bash
-        run: |
-          set +e
-          python -m pytest tests/easychart_v0 -q > pytest.log 2>&1
-          status=$?
-          cat pytest.log
-          exit "$status"
-
-      - name: Upload pytest log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-log-${{ github.run_id }}
-          path: pytest.log
-          if-no-files-found: error
-          retention-days: 7
-
-  v10-taker-flow:
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'agent/v10-taker-flow-data')
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
