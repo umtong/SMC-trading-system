@@ -1,0 +1,83 @@
+name: Phase21 BTC Feature Bridge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/phase21_btc_feature_bridge.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  HF_HUB_ENABLE_HF_TRANSFER: '1'
+
+jobs:
+  download-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install downloader
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'huggingface_hub[hf_xet]>=0.33'
+
+      - name: Download immutable feature subset
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(
+              repo_id='ibrahimdaud/binance-btcusdt',
+              repo_type='dataset',
+              revision='main',
+              allow_patterns=['features/BTCUSDT/*.parquet', 'README.md'],
+              local_dir='hfdata',
+              max_workers=16,
+          )
+          print(p)
+          PY
+
+      - name: Audit and package
+        run: |
+          set -euo pipefail
+          find hfdata/features/BTCUSDT -type f -name '*.parquet' -print0 | sort -z | xargs -0 sha256sum > FEATURE_FILES.sha256
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = sorted(Path('hfdata/features/BTCUSDT').glob('*.parquet'))
+          if len(files) < 2000:
+              raise SystemExit(f'expected >=2000 daily feature files, got {len(files)}')
+          sizes = [p.stat().st_size for p in files]
+          manifest = {
+              'repo_id': 'ibrahimdaud/binance-btcusdt',
+              'revision': 'main',
+              'path': 'features/BTCUSDT',
+              'file_count': len(files),
+              'total_bytes': sum(sizes),
+              'first_file': files[0].name,
+              'last_file': files[-1].name,
+          }
+          Path('FEATURE_MANIFEST.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(manifest, indent=2))
+          PY
+          tar -czf phase21-btc-features.tar.gz hfdata/features/BTCUSDT FEATURE_FILES.sha256 FEATURE_MANIFEST.json
+          sha256sum phase21-btc-features.tar.gz > phase21-btc-features.tar.gz.sha256
+
+      - name: Upload feature artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase21-btc-features
+          path: |
+            phase21-btc-features.tar.gz
+            phase21-btc-features.tar.gz.sha256
+            FEATURE_MANIFEST.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
