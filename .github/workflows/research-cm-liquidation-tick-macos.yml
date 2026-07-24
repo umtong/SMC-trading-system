@@ -1,0 +1,62 @@
+name: Research COIN-M liquidation to USD-M tick windows macOS
+
+on:
+  push:
+    branches: [agent/cm-liquidation-tick-data-20260724]
+    paths:
+      - '.github/workflows/research-cm-liquidation-tick-macos.yml'
+      - 'research_tools/cm_liquidation_tick/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-cm-liquidation-tick-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-symbol:
+    runs-on: macos-14
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct and verify frozen event windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research_tools/cm_liquidation_tick/windows.part* > /tmp/merged_windows_2023.csv.gz.b64
+          printf '\n' >> /tmp/merged_windows_2023.csv.gz.b64
+          echo 'e8db31f2abe9758b09181da74af76a59c164f4a38b886ee3b48ae2265116a72e  /tmp/merged_windows_2023.csv.gz.b64' | shasum -a 256 -c -
+      - name: Extract checksum-verified event windows sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          for month in 2023-06 2023-07 2023-08 2023-09 2023-10 2023-11 2023-12; do
+            python research_tools/cm_liquidation_tick/extract_monthly_aggtrades.py \
+              --symbol '${{ matrix.symbol }}' \
+              --month "$month" \
+              --windows-b64 /tmp/merged_windows_2023.csv.gz.b64 \
+              --output-dir "research_artifact/${{ matrix.symbol }}/${month}"
+          done
+      - name: Audit extracted evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "research_artifact/${{ matrix.symbol }}" -type f -print0 | sort -z | xargs -0 shasum -a 256
+          du -sh "research_artifact/${{ matrix.symbol }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cm-liquidation-tick-macos-${{ matrix.symbol }}-${{ github.run_id }}
+          path: research_artifact/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
