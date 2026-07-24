@@ -1,0 +1,135 @@
+name: Official state-first V6 source audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/official_state_first_model_20260724/official_state_first_v6_bundle.tar.gz.b64.part*"
+      - ".github/workflows/official-state-first-v6-source-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-state-first-v6-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PART00_SHA256: 59a266a68cbbe8b3805d9031e0297a960a19389f957ae2c4a73b886fab8fd2a5
+  PART01_SHA256: 94ec54b4b9218a84e44374b4cf0440f964aa864493fa4d0672f3d8bf49392dd5
+  COMBINED_B64_SHA256: dae0278ad00250d5bbdf0c08314d3bd81e84aa370c1e6271a5a5d67b020dbca5
+  BUNDLE_GZ_SHA256: bae2437d3fb0140dc8f54f209dcb1c801f9a4cdf9ace920df252d4fe9315d2c9
+  SCRIPT_SHA256: 7a2401b0ca8738c8210467fc96d819c00c65118779eb401945d21ce9c2b2c126
+  TEST_SHA256: f78c69b639de732372668eaff1961768a55fc16b6362daafcc3d8521f6fe95c8
+  PREREG_SHA256: a751e733dc7f9b261cf5be120c2546afbeb11bdd5e467bbddab988d7191b78b9
+  MANIFEST_SHA256: 24ef4dd50d87500afff603ce9da1b6e55c75dabfd9f486844629340d94adba5a
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/official-state-first-model-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct and freeze immutable research source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v6_source_audit"
+          mkdir -p "$root"
+          pfx=research/official_state_first_model_20260724/official_state_first_v6_bundle.tar.gz.b64.part
+          printf '%s  %s\n' "$PART00_SHA256" "${pfx}00" | sha256sum --check --strict
+          printf '%s  %s\n' "$PART01_SHA256" "${pfx}01" | sha256sum --check --strict
+          cat "${pfx}00" "${pfx}01" > /tmp/official_state_first_v6.tar.gz.b64
+          printf '%s  %s\n' "$COMBINED_B64_SHA256" /tmp/official_state_first_v6.tar.gz.b64 | sha256sum --check --strict
+          base64 --decode /tmp/official_state_first_v6.tar.gz.b64 > /tmp/official_state_first_v6.tar.gz
+          printf '%s  %s\n' "$BUNDLE_GZ_SHA256" /tmp/official_state_first_v6.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/official_state_first_v6.tar.gz -C "$root"
+          src="$root/official_state_first_model_v6_bundle"
+          printf '%s  %s\n' "$SCRIPT_SHA256" "$src/official_state_first.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$TEST_SHA256" "$src/test_official_state_first.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$PREREG_SHA256" "$src/state_first_hazard_direction_preregistration_v2.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$src/SOURCE_MANIFEST.json" | sha256sum --check --strict
+          python -m py_compile "$src/official_state_first.py" "$src/test_official_state_first.py"
+          sha256sum "${pfx}00" "${pfx}01" > "$root/input_part_sha256.txt"
+
+      - name: Install fixed research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "requests==2.32.4" \
+            "scikit-learn==1.6.1" \
+            "pytest==8.3.4"
+
+      - name: Run causal, accounting, source-health and preregistration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v6_source_audit"
+          src="$root/official_state_first_model_v6_bundle"
+          cd "$src"
+          pytest -q test_official_state_first.py 2>&1 | tee "$root/unit_tests.log"
+
+      - name: Enforce research-only and missingness safety contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v6_source_audit"
+          src="$root/official_state_first_model_v6_bundle"
+          python - "$src" "$root/source_contract.json" <<'PY'
+          import ast,hashlib,json,sys
+          from pathlib import Path
+          src=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          script=(src/'official_state_first.py').read_text(encoding='utf-8')
+          prereg=json.loads((src/'state_first_hazard_direction_preregistration_v2.json').read_text(encoding='utf-8'))
+          tree=ast.parse(script)
+          assert 'PREREGISTERED_BEFORE_ANY_V6_STATE_PANEL_STRATEGY_OR_PNL' in script
+          assert 'add_indicator=False' in script
+          assert 'official_state_v6_monthly_masked_source_health' in script
+          for quality in ('one_minute_price_reconciled','one_minute_flow_reconciled','aggregate_interior_reconciled'):
+              assert quality in script
+          assert prereg['model_contract']['missingness_policy']['add_indicator'] is False
+          assert prereg['model_contract']['missingness_policy']['source_health_flags_in_features'] is False
+          assert prereg['amendment']['target_return_used_for_change'] is False
+          assert prereg['amendment']['later_period_outcomes_observed_for_change'] is False
+          payload={
+              'ast_valid':isinstance(tree,ast.Module),
+              'script_sha256':hashlib.sha256(script.encode()).hexdigest(),
+              'preregistration_sha256':hashlib.sha256((src/'state_first_hazard_direction_preregistration_v2.json').read_bytes()).hexdigest(),
+              'quality_flags_predictors':False,
+              'missingness_indicators_enabled':False,
+              'strategy_executed':False,'candidate_pnl_observed':False,
+              '2024_opened':False,'2025_opened':False,'2026_opened':False,
+              'orders_submitted':False,'paper_or_live_started':False,
+              'deployment_bundle':False,
+          }
+          out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v6_source_audit"
+          find "$root" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$root/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-state-first-v6-source-audit-${{ github.sha }}
+          path: research_runs/official_state_first_v6_source_audit
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
