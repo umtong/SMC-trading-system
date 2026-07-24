@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "research/state_first_panel_clean_20260724/patch_daily_v5.py"
       - ".github/workflows/state-first-panel-h2.yml"
   workflow_dispatch:
 
@@ -22,6 +23,9 @@ env:
   DAILY_PATCH_V4_SHA256: e1c35db1b9742775c177c4d585c57e8a8b5c58c5eb121c7dcc145a83aaf02186
   DAILY_V4_SHA256: 92e5dd743d94c0e687a0b72d4b947ae4808ac58bda0ea7131a42498d46e656b4
   DAILY_V4_TEST_SHA256: 29933d9166345c4337912aa35f8b666d20c596d241d81434bcfba1eae97449d5
+  DAILY_PATCH_V5_SHA256: 098473ae7b145684aa0168695e3918245c45ee7572e0296462f292bb740a9558
+  DAILY_V5_SHA256: beabb74b9c0ff70487961c9ca1b4006486d303601da1656f3040d9dd33c96338
+  DAILY_V5_TEST_SHA256: baa0ee899a96c1a1482e35f9ed7e1341ba2f2507e47488dec043ce10f503446d
   MONTH_V3_B64_SHA256: 0b0c93d73458721a56f0f5593c98471cd8f5f45ff5dcf0771ac5494900d6131e
   MONTH_V3_GZ_SHA256: d32b5281a23419a02a97d40a60d163380b9b9c01829f4bcf95681cb3628120bf
   MONTH_PATCH_V4_SHA256: f93b4c142a9530efaffe7ebf4797149b017aa80ead62d8982de9b11d72e90ac4
@@ -64,6 +68,7 @@ jobs:
           printf '%s  %s\n' "$DAILY_V2_B64_SHA256" /tmp/pinned/daily_v2.tar.gz.b64 | sha256sum --check --strict
           printf '%s  %s\n' "$DAILY_PATCH_V3_SHA256" /tmp/pinned/patch_daily_v3.py | sha256sum --check --strict
           printf '%s  %s\n' "$DAILY_PATCH_V4_SHA256" /tmp/pinned/patch_daily_v4.py | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_PATCH_V5_SHA256" research/state_first_panel_clean_20260724/patch_daily_v5.py | sha256sum --check --strict
           printf '%s  %s\n' "$MONTH_V3_B64_SHA256" /tmp/pinned/month_v3.tar.gz.b64 | sha256sum --check --strict
           printf '%s  %s\n' "$MONTH_PATCH_V4_SHA256" /tmp/pinned/patch_month_v4.py | sha256sum --check --strict
           printf '%s  %s\n' "$STRATEGY_PREREG_SHA256" "$root/state_first_hazard_direction_preregistration.json" | sha256sum --check --strict
@@ -74,6 +79,9 @@ jobs:
           python /tmp/pinned/patch_daily_v4.py "$src"
           printf '%s  %s\n' "$DAILY_V4_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
           printf '%s  %s\n' "$DAILY_V4_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
+          python research/state_first_panel_clean_20260724/patch_daily_v5.py "$src"
+          printf '%s  %s\n' "$DAILY_V5_SHA256" "$src/build_official_state_v4.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$DAILY_V5_TEST_SHA256" "$src/test_official_state_v4.py" | sha256sum --check --strict
           base64 --decode /tmp/pinned/month_v3.tar.gz.b64 > /tmp/pinned/month_v3.tar.gz
           printf '%s  %s\n' "$MONTH_V3_GZ_SHA256" /tmp/pinned/month_v3.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/pinned/month_v3.tar.gz -C "$src"
@@ -83,6 +91,7 @@ jobs:
           printf '%s  %s\n' "$MONTH_V4_PREREG_SHA256" "$src/monthly_panel_preregistration_v4.json" | sha256sum --check --strict
           python -m py_compile "$src"/*.py
           find /tmp/pinned -type f -print0 | sort -z | xargs -0 sha256sum > "$root/input_sha256.txt"
+          sha256sum research/state_first_panel_clean_20260724/patch_daily_v5.py >> "$root/input_sha256.txt"
           cp "$src/monthly_panel_preregistration_v4.json" "$root/monthly_panel_preregistration.json"
 
       - name: Install fixed data environment
