@@ -1,0 +1,238 @@
+name: Wave39 gap-safe frozen development 2022
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-development-gap-safe-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave39-frozen-orchestrator-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Wait for checksum-verified exact-flow and gap-preserving support panels
+        id: await
+        shell: bash
+        run: |
+          set -euo pipefail
+          select_run() {
+            local name="$1"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; r=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(x["id"]) for x in r if x.get("name")==n and x.get("status")=="completed" and x.get("conclusion")=="success"),""))' "$name"
+          }
+          for attempt in $(seq 1 270); do
+            exact_id="$(select_run 'Wave39 exact quarter-hour aggTrades 2022 v2')"
+            support_id="$(select_run 'Wave39 official 1m support 2022 v3')"
+            echo "attempt=${attempt} exact=${exact_id:-none} support=${support_id:-none}"
+            if [[ -n "${exact_id}" && -n "${support_id}" ]]; then
+              echo "exact_run_id=${exact_id}" >> "$GITHUB_OUTPUT"
+              echo "support_run_id=${support_id}" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 60
+          done
+          grep -q '^exact_run_id=' "$GITHUB_OUTPUT"
+          grep -q '^support_run_id=' "$GITHUB_OUTPUT"
+
+      - name: Download immutable data artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exact support data2022/support
+          gh run download "${{ steps.await.outputs.exact_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v2-${{ steps.await.outputs.exact_run_id }}" \
+            --dir exact
+          gh run download "${{ steps.await.outputs.support_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${{ steps.await.outputs.support_run_id }}" \
+            --dir support
+          python - <<'PY'
+          from __future__ import annotations
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              matches=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: matches.append(path)
+              if len(matches)!=1: raise RuntimeError(f'{schema}: {matches}')
+              return matches[0]
+          exact=locate('exact','wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate('support','wave39-official-support-combined-v3')
+          target=Path('data2022')
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Lock dependencies and run causal/gap regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade \
+            "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest \
+            research/wave39/test_wave39_engine.py \
+            research/wave39/test_wave39_engine_v3.py -q
+          python -m compileall -q research/wave39
+
+      - name: Run registered 2022 screen with no synthetic market values
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf output
+          mkdir -p output/development output/frozen
+          python -m research.wave39.run_wave39_development_v3 \
+            --data-root data2022 \
+            --output-dir output/development \
+            --registration research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json \
+            2>&1 | tee output/development/run.log
+
+      - name: Freeze one candidate or block the registered family before 2023
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          from research.wave39.wave39_engine import sha256_file,stable_candidate_id
+          root=Path('output/development')
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          candidate_path=root/'wave39_selected_candidate_2022.json'
+          present=manifest.get('development_gate_count',0)>0 and candidate_path.exists()
+          if not present:
+              blocked={
+                  'schema':'wave39-development-block-v2-gap-safe',
+                  'registration_sha256':sha256_file(Path('research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json')),
+                  'development_manifest_sha256':sha256_file(root/'manifest.json'),
+                  'candidate_count':manifest['candidate_count'],
+                  'development_gate_count':manifest['development_gate_count'],
+                  'official_gap_manifest_sha256':sha256_file(Path('data2022/support/manifest.json')),
+                  '2023_opened':False,'2024_opened':False,'sealed_terminal_oos_opened':False,
+                  'next_action':'block this registered family and rotate to a distinct exact-trade mechanism',
+              }
+              (root/'BLOCKED.json').write_text(json.dumps(blocked,indent=2,sort_keys=True),encoding='utf-8')
+              return
+          selected=json.loads(candidate_path.read_text(encoding='utf-8'))
+          candidate=selected['candidate']
+          identity={key:candidate[key] for key in (
+              'source_symbol','trade_symbol','family','window_seconds','imbalance_quantile',
+              'volume_quantile','trend_mode','clock_mode','horizon_minutes','stop_atr','base_latency_minutes',
+          )}
+          if stable_candidate_id(identity)!=candidate['candidate_id']:
+              raise RuntimeError('candidate identity mismatch')
+          files=[
+              Path('research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json'),
+              Path('research/wave39/wave39_engine.py'),
+              Path('research/wave39/wave39_engine_v3.py'),
+              Path('research/wave39/run_wave39_development.py'),
+              Path('research/wave39/run_wave39_development_v2.py'),
+              Path('research/wave39/run_wave39_development_v3.py'),
+              root/'manifest.json',root/'wave39_all_candidates_2022.csv.gz',
+              root/'wave39_gated_candidates_2022.csv',candidate_path,
+              root/'wave39_selected_ledger_2022.csv',Path('data2022/manifest.json'),
+              Path('data2022/support/manifest.json'),
+          ]
+          freeze={
+              'schema':'wave39-candidate-freeze-before-2023-v1',
+              'engine_revision':'explicit-gap-safe-v3',
+              'candidate':candidate,'selected_audit':selected['audit'],
+              'frozen_files':{str(path):{'bytes':path.stat().st_size,'sha256':sha256_file(path)} for path in files},
+              '2023_outcome_opened_before_freeze':False,'2024_opened':False,
+              'sealed_terminal_oos_opened':False,'risk_or_leverage_optimized':False,
+              'missing_data_policy':'No imputation; any feature history or holding path intersecting source_present=0 is invalid.',
+              'validation_contract':'research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json:frozen_2023_gate',
+          }
+          (Path('output/frozen')/'WAVE39_CANDIDATE_BEFORE_2023.json').write_text(
+              json.dumps(freeze,indent=2,sort_keys=True),encoding='utf-8'
+          )
+          PY
+
+      - name: Independently verify result registry and immutable hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          import pandas as pd
+          root=Path('output/development')
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          frame=pd.read_csv(root/'wave39_all_candidates_2022.csv.gz')
+          if len(frame)!=manifest['candidate_count']: raise RuntimeError('candidate count mismatch')
+          if frame['candidate_id'].duplicated().any(): raise RuntimeError('duplicate candidate ID')
+          if int(frame['development_gate'].astype(bool).sum())!=manifest['development_gate_count']:
+              raise RuntimeError('gate count mismatch')
+          if manifest['2023_opened'] or manifest['2024_opened'] or manifest['sealed_terminal_oos_opened']:
+              raise RuntimeError('future split access violation')
+          for name,record in manifest['results'].items():
+              path=root/name
+              if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                  raise RuntimeError(f'hash mismatch {name}')
+          PY
+
+      - name: Commit permanent checkpoint with conflict-safe push
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="${HEAD_BRANCH}"
+          destination="research/wave39/results/development_2022_gap_safe"
+          rm -rf "${destination}" research/wave39/frozen
+          mkdir -p "${destination}"
+          cp -a output/development/. "${destination}/"
+          if [[ -f output/frozen/WAVE39_CANDIDATE_BEFORE_2023.json ]]; then
+            mkdir -p research/wave39/frozen
+            cp output/frozen/WAVE39_CANDIDATE_BEFORE_2023.json research/wave39/frozen/
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}" research/wave39/frozen || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record gap-safe Wave39 2022 development checkpoint"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${branch}"; then exit 0; fi
+            git fetch origin "${branch}"
+            git rebase "origin/${branch}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-gap-safe-development-2022-${{ github.run_id }}
+          path: |
+            output/**
+            data2022/manifest.json
+            data2022/support/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

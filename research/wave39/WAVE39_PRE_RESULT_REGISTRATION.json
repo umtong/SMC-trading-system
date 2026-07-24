@@ -1,0 +1,123 @@
+{
+  "registration_id": "wave39-quarterhour-exact-aggtrades-v1",
+  "registered_utc": "2026-07-23T12:45:00Z",
+  "research_status": "DATA_AND_HYPOTHESIS_REGISTRATION_ONLY",
+  "data_separation": {
+    "development_year": 2022,
+    "first_sequential_validation_year": 2023,
+    "locked_next_walkforward_year": 2024,
+    "sealed_terminal_oos": "2025 and later according to the existing sealed manifest",
+    "rule": "No 2023 strategy outcome is opened until one candidate_key, execution contract, costs and gates are frozen from 2022 only. No 2024 outcome is opened after a 2023 failure for the same family."
+  },
+  "official_data": {
+    "source": "Binance USD-M public monthly aggTrades archives with adjacent SHA-256 CHECKSUM",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "boundary_interval_seconds": 900,
+    "causal_flow_windows_seconds": [10, 30, 60],
+    "decision_rule": "Only aggregate trades whose exchange timestamp is strictly before the selected flow-window end may enter the signal.",
+    "outcome_fields_in_feature_panel": false
+  },
+  "economic_families": [
+    {
+      "family": "WITHIN_ASSET_BOUNDARY_CONTINUATION",
+      "mechanism": "A large first boundary imbalance with same-direction price efficiency and elevated dollar participation represents institutional schedule flow that continues over the following activity horizon.",
+      "trade_direction": "sign of causal boundary imbalance"
+    },
+    {
+      "family": "WITHIN_ASSET_BOUNDARY_ABSORPTION",
+      "mechanism": "Large aggressive imbalance with weak or opposite price response indicates passive absorption and is faded only after the flow window is complete.",
+      "trade_direction": "opposite sign of causal boundary imbalance"
+    },
+    {
+      "family": "BOUNDARY_FLOW_FLIP",
+      "mechanism": "The first 10-second imbalance is rejected when the incremental 10-to-60-second flow reverses and price accepts the reversal.",
+      "trade_direction": "sign of the incremental 10-to-60-second flow"
+    },
+    {
+      "family": "BTC_BOUNDARY_LEAD_LAG",
+      "mechanism": "An extreme BTC boundary flow shock can propagate to ETH, SOL or XRP after the BTC flow is observable; target-asset entry never precedes the BTC decision clock.",
+      "trade_direction": "registered follow or absorption interpretation selected on 2022 only"
+    }
+  ],
+  "candidate_dimensions": {
+    "flow_window_seconds": [10, 30, 60],
+    "absolute_imbalance_prior_quantile": [0.95, 0.975, 0.99],
+    "dollar_volume_prior_quantile": [0.9, 0.95],
+    "price_efficiency_state": ["aligned", "absorbed"],
+    "prior_trend_minutes": [15, 60, 240],
+    "holding_minutes": [60, 120, 240, 480, 720],
+    "catastrophe_stop_atr": [3.0, 4.0],
+    "clock_condition": ["all_boundaries", "hour_boundary", "quarter_past", "half_past", "quarter_to"],
+    "forbidden_search": [
+      "target daily return",
+      "risk fraction",
+      "leverage",
+      "2023 or later outcomes",
+      "individual calendar dates",
+      "news-event labels",
+      "post-entry MFE or MAE as an entry input"
+    ]
+  },
+  "rolling_state": {
+    "quantile_estimation": "expanding or trailing 60 calendar days using completed prior boundaries only",
+    "minimum_prior_boundaries": 2880,
+    "same_clock_normalization_diagnostic": true,
+    "missing_data": "segment boundary; never zero-filled",
+    "cross_asset_alignment": "exact completed decision timestamp only"
+  },
+  "execution_contract": {
+    "base_entry": "first official one-minute open at or after the flow-window completion, never a price before the decision clock",
+    "latency_stress_minutes": [1, 2, 5],
+    "global_pending_plus_open_slots": 1,
+    "same_timestamp_conflict": "highest absolute prior-standardized flow score; exact ties BTC, ETH, SOL, XRP",
+    "same_minute_reentry": false,
+    "intrabar_ambiguity": "stop first",
+    "catastrophe_stop": "based only on ATR available before entry",
+    "funding": "actual historical settlement rate and position sign",
+    "alpha_selection_notional": "1x equity; no risk or leverage optimization"
+  },
+  "cost_grid_round_trip_bp": {
+    "base": 18,
+    "stress": 24,
+    "severe": 32,
+    "adversarial": 40,
+    "note": "Includes taker commissions plus spread, latency slippage and small-order impact. Account-specific live commission is re-read before deployment."
+  },
+  "development_folds_2022": [
+    ["2022-01-01T00:00:00Z", "2022-05-01T00:00:00Z"],
+    ["2022-05-01T00:00:00Z", "2022-09-01T00:00:00Z"],
+    ["2022-09-01T00:00:00Z", "2023-01-01T00:00:00Z"]
+  ],
+  "development_promotion_gate": {
+    "minimum_completed_trades": 90,
+    "positive_net_log_growth_at_24bp": true,
+    "positive_net_log_growth_at_32bp": true,
+    "positive_24bp_fold_count_minimum": 3,
+    "positive_24bp_month_count_minimum": 9,
+    "profit_factor_24bp_minimum": 1.15,
+    "top_10_winner_share_maximum": 0.4,
+    "net_growth_after_removing_top_10_winners_positive": true,
+    "latency_2min_net_growth_positive": true,
+    "parameter_neighborhood_positive_fraction_minimum": 0.6,
+    "selection_score": "minimum fold log growth, then 32bp total log growth, then lower concentration; not target daily return"
+  },
+  "frozen_2023_gate": {
+    "minimum_completed_trades": 80,
+    "positive_net_log_growth_at_24bp": true,
+    "positive_net_log_growth_at_32bp": true,
+    "positive_quarter_count_24bp_minimum": 3,
+    "positive_month_count_24bp_minimum": 8,
+    "profit_factor_32bp_minimum": 1.1,
+    "top_10_winner_share_maximum": 0.5,
+    "net_growth_after_removing_top_5_winners_positive": true,
+    "latency_2min_net_growth_positive": true,
+    "opposite_direction_control_net_growth_negative": true
+  },
+  "risk_and_target_policy": {
+    "daily_return_target_used_for_selection": false,
+    "risk_fraction_optimization_allowed_before_alpha_gate": false,
+    "leverage_optimization_allowed_before_alpha_gate": false,
+    "2024_access_allowed_before_2023_gate": false,
+    "terminal_oos_access_allowed_before_full_freeze": false
+  }
+}

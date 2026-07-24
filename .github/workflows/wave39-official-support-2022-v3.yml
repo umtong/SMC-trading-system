@@ -1,0 +1,121 @@
+name: Wave39 official 1m support 2022 v3
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-official-support-2022-v3.yml"
+      - "research/wave39/build_support_year_v3.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-symbol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build support stream without imputing official gaps
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python research/wave39/build_support_year_v3.py \
+            --symbol "${{ matrix.symbol }}" --year 2022 --output-dir output --retries 8 \
+            2>&1 | tee "output/${{ matrix.symbol }}_support_build.log"
+      - name: Verify immutable outputs
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          symbol=os.environ['SYMBOL']; root=Path('output')
+          manifest=json.loads((root/f'{symbol}_support_manifest.json').read_text(encoding='utf-8'))
+          if manifest['schema']!='wave39-official-support-v3' or manifest['year']!=2022:
+              raise RuntimeError('identity mismatch')
+          if manifest['future_outcomes_included'] or manifest['strategy_results_included']:
+              raise RuntimeError('data isolation failure')
+          if manifest['expected_contract_minutes']!=365*1440:
+              raise RuntimeError('expected clock mismatch')
+          for name,record in manifest['outputs'].items():
+              path=root/name
+              if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                  raise RuntimeError(f'hash mismatch {name}')
+          print(json.dumps({
+              'symbol':symbol,
+              'observed':manifest['observed_contract_minutes'],
+              'missing':manifest['missing_contract_minutes'],
+              'gap_runs':manifest['gap_run_count'],
+          },sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-support-v3-2022-${{ matrix.symbol }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  combine:
+    needs: build-symbol
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-support-v3-2022-*
+          path: support
+          merge-multiple: true
+      - name: Cross-check four symbols and build combined manifest
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib,json
+          from pathlib import Path
+          root=Path('support'); symbols=('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT')
+          combined={
+              'schema':'wave39-official-support-combined-v3','year':2022,'symbols':{},
+              'future_outcomes_included':False,'strategy_results_included':False,
+              'gap_policy':'No imputation; downstream invalidates every history or holding path intersecting source_present=0.',
+          }
+          for symbol in symbols:
+              manifest_path=root/f'{symbol}_support_manifest.json'
+              manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+              if manifest['schema']!='wave39-official-support-v3': raise RuntimeError('schema mismatch')
+              for name,record in manifest['outputs'].items():
+                  path=root/name
+                  if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                      raise RuntimeError(f'{symbol}: output changed')
+              combined['symbols'][symbol]={
+                  'manifest_sha256':hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                  'expected_contract_minutes':manifest['expected_contract_minutes'],
+                  'observed_contract_minutes':manifest['observed_contract_minutes'],
+                  'missing_contract_minutes':manifest['missing_contract_minutes'],
+                  'gap_run_count':manifest['gap_run_count'],
+                  'largest_gap_minutes':manifest['largest_gap_minutes'],
+                  'funding_rows':manifest['funding_rows'],
+                  'outputs':manifest['outputs'],
+              }
+          (root/'manifest.json').write_text(json.dumps(combined,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(combined,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-official-support-2022-v3-${{ github.run_id }}
+          path: support/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

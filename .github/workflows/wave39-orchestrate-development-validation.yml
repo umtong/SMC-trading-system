@@ -1,0 +1,544 @@
+name: Wave39 frozen development and 2023 validation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-orchestrate-development-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave39-frozen-orchestrator-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  develop-freeze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    outputs:
+      candidate_present: ${{ steps.develop.outputs.candidate_present }}
+      exact_run_id: ${{ steps.await.outputs.exact_run_id }}
+      support_run_id: ${{ steps.await.outputs.support_run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Await successful immutable 2022 feature and support builds
+        id: await
+        shell: bash
+        run: |
+          set -euo pipefail
+          select_run() {
+            local workflow_name="$1"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; name=sys.argv[1]; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((f"{r[chr(105)+chr(100)]} {r.get(chr(104)+chr(101)+chr(97)+chr(100)+chr(95)+chr(115)+chr(104)+chr(97),chr(39)+chr(39))}" for r in runs if r.get(chr(110)+chr(97)+chr(109)+chr(101))==name and r.get(chr(115)+chr(116)+chr(97)+chr(116)+chr(117)+chr(115))==chr(99)+chr(111)+chr(109)+chr(112)+chr(108)+chr(101)+chr(116)+chr(101)+chr(100) and r.get(chr(99)+chr(111)+chr(110)+chr(99)+chr(108)+chr(117)+chr(115)+chr(105)+chr(111)+chr(110))==chr(115)+chr(117)+chr(99)+chr(99)+chr(101)+chr(115)+chr(115)), chr(39)+chr(39)))' "$workflow_name"
+          }
+          exact=""
+          support=""
+          for attempt in $(seq 1 240); do
+            exact="$(select_run 'Wave39 exact quarter-hour aggTrades 2022 v2')"
+            support="$(select_run 'Wave39 official 1m support 2022 v2')"
+            exact_id="${exact%% *}"; exact_sha="${exact#* }"
+            support_id="${support%% *}"; support_sha="${support#* }"
+            exact_ok=false; support_ok=false
+            if [[ -n "${exact_id}" && "${exact_id}" != "${exact}" ]]; then
+              git merge-base --is-ancestor "${exact_sha}" HEAD && exact_ok=true || true
+            fi
+            if [[ -n "${support_id}" && "${support_id}" != "${support}" ]]; then
+              git merge-base --is-ancestor "${support_sha}" HEAD && support_ok=true || true
+            fi
+            echo "attempt=${attempt} exact=${exact_id:-none}/${exact_ok} support=${support_id:-none}/${support_ok}"
+            if [[ "${exact_ok}" == true && "${support_ok}" == true ]]; then
+              echo "exact_run_id=${exact_id}" >> "$GITHUB_OUTPUT"
+              echo "support_run_id=${support_id}" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 60
+          done
+          grep -q '^exact_run_id=' "$GITHUB_OUTPUT"
+          grep -q '^support_run_id=' "$GITHUB_OUTPUT"
+
+      - name: Download and independently reconstruct 2022 data root
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exact-artifact support-artifact data2022/support
+          gh run download "${{ steps.await.outputs.exact_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v2-${{ steps.await.outputs.exact_run_id }}" \
+            --dir exact-artifact
+          gh run download "${{ steps.await.outputs.support_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v2-${{ steps.await.outputs.support_run_id }}" \
+            --dir support-artifact
+          python - <<'PY'
+          from __future__ import annotations
+          import json, shutil
+          from pathlib import Path
+
+          def locate(root: Path, schema: str) -> Path:
+              found=[]
+              for path in root.rglob('manifest.json'):
+                  try:
+                      data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception:
+                      continue
+                  if data.get('schema')==schema:
+                      found.append(path)
+              if len(found)!=1:
+                  raise RuntimeError(f'{schema}: expected one manifest, found {found}')
+              return found[0]
+
+          exact=locate(Path('exact-artifact'),'wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate(Path('support-artifact'),'wave39-official-support-combined-v2')
+          target=Path('data2022'); target.mkdir(exist_ok=True)
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          support_target=target/'support'; support_target.mkdir(exist_ok=True)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,support_target/path.name)
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install locked research environment and run causal regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade \
+            "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest research/wave39/test_wave39_engine.py -q
+          python -m compileall -q research/wave39 research/wave39v2
+
+      - name: Run registered 2022 screen and freeze before any 2023 outcome
+        id: develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf orchestrated/development_2022 orchestrated/frozen
+          mkdir -p orchestrated/development_2022 orchestrated/frozen
+          python -m research.wave39.run_wave39_development_v2 \
+            --data-root data2022 \
+            --output-dir orchestrated/development_2022 \
+            --registration research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json \
+            2>&1 | tee orchestrated/development_2022/run.log
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, json
+          from pathlib import Path
+          from research.wave39.wave39_engine import sha256_file, stable_candidate_id
+
+          result=Path('orchestrated/development_2022')
+          manifest=json.loads((result/'manifest.json').read_text(encoding='utf-8'))
+          candidate_path=result/'wave39_selected_candidate_2022.json'
+          present=bool(manifest.get('development_gate_count',0)>0 and candidate_path.exists())
+          Path('orchestrated/candidate-present.txt').write_text('true' if present else 'false',encoding='utf-8')
+          if not present:
+              blocked={
+                  'schema':'wave39-development-block-v1',
+                  'registration_sha256':sha256_file(Path('research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json')),
+                  'development_manifest_sha256':sha256_file(result/'manifest.json'),
+                  'candidate_count':manifest['candidate_count'],
+                  'development_gate_count':manifest['development_gate_count'],
+                  '2023_opened':False,
+                  '2024_opened':False,
+                  'sealed_terminal_oos_opened':False,
+                  'next_action':'rotate to a distinct exact-aggTrade mechanism; do not tune this registered grid',
+              }
+              (result/'BLOCKED.json').write_text(json.dumps(blocked,indent=2,sort_keys=True),encoding='utf-8')
+              raise SystemExit(0)
+          selected=json.loads(candidate_path.read_text(encoding='utf-8'))
+          candidate=selected['candidate']
+          identity={key:candidate[key] for key in (
+              'source_symbol','trade_symbol','family','window_seconds','imbalance_quantile',
+              'volume_quantile','trend_mode','clock_mode','horizon_minutes','stop_atr',
+              'base_latency_minutes',
+          )}
+          if stable_candidate_id(identity)!=candidate['candidate_id']:
+              raise RuntimeError('candidate identity mismatch at freeze')
+          files=[
+              Path('research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json'),
+              Path('research/wave39/wave39_engine.py'),
+              Path('research/wave39/run_wave39_development.py'),
+              Path('research/wave39/run_wave39_development_v2.py'),
+              result/'manifest.json',
+              result/'wave39_all_candidates_2022.csv.gz',
+              result/'wave39_gated_candidates_2022.csv',
+              candidate_path,
+              result/'wave39_selected_ledger_2022.csv',
+              Path('data2022/manifest.json'),
+              Path('data2022/support/manifest.json'),
+          ]
+          freeze={
+              'schema':'wave39-candidate-freeze-before-2023-v1',
+              'candidate':candidate,
+              'selected_audit':selected['audit'],
+              'frozen_files':{str(path):{'bytes':path.stat().st_size,'sha256':sha256_file(path)} for path in files},
+              '2023_outcome_opened_before_freeze':False,
+              '2024_opened':False,
+              'sealed_terminal_oos_opened':False,
+              'risk_or_leverage_optimized':False,
+              'validation_contract':'research/wave39/WAVE39_PRE_RESULT_REGISTRATION.json:frozen_2023_gate',
+          }
+          output=Path('orchestrated/frozen/WAVE39_CANDIDATE_BEFORE_2023.json')
+          output.write_text(json.dumps(freeze,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          echo "candidate_present=$(cat orchestrated/candidate-present.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit immutable development evidence and optional freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/wave39-quarterhour-exact-aggtrades-20260723"
+          mkdir -p research/wave39/results
+          rm -rf research/wave39/results/development_2022_orchestrated research/wave39/frozen
+          cp -a orchestrated/development_2022 research/wave39/results/development_2022_orchestrated
+          if [[ -d orchestrated/frozen && -n "$(find orchestrated/frozen -type f -print -quit)" ]]; then
+            cp -a orchestrated/frozen research/wave39/frozen
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/wave39/results/development_2022_orchestrated research/wave39/frozen || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record frozen Wave39 2022 development evidence"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${branch}"; then exit 0; fi
+            git fetch origin "${branch}"
+            git rebase "origin/${branch}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-frozen-development-2022-${{ github.run_id }}
+          path: |
+            orchestrated/development_2022/**
+            orchestrated/frozen/**
+            orchestrated/candidate-present.txt
+            data2022/manifest.json
+            data2022/support/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  extract-2023-month:
+    needs: develop-freeze
+    if: needs.develop-freeze.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month:
+          - "2023-01"
+          - "2023-02"
+          - "2023-03"
+          - "2023-04"
+          - "2023-05"
+          - "2023-06"
+          - "2023-07"
+          - "2023-08"
+          - "2023-09"
+          - "2023-10"
+          - "2023-11"
+          - "2023-12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+
+      - name: Compile exact streaming extractor
+        run: |
+          set -euo pipefail
+          mkdir -p build output
+          g++ -O3 -std=gnu++20 -D_GNU_SOURCE -Wall -Wextra \
+            research/wave39/extract_boundary_aggtrades.cpp \
+            -o build/extract_boundary_aggtrades
+
+      - name: Verify official source and extract 2023 boundary flow
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${SYMBOL}-aggTrades-${MONTH}.zip"
+          root="https://data.binance.vision/data/futures/um/monthly/aggTrades/${SYMBOL}"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}.CHECKSUM" "${root}/${file}.CHECKSUM"
+          expected="$(awk 'NR==1{print tolower($1)}' "${file}.CHECKSUM")"
+          curl -L --fail --retry 8 --retry-all-errors --connect-timeout 30 \
+            -o "${file}" "${root}/${file}"
+          printf '%s  %s\n' "${expected}" "${file}" | sha256sum -c -
+          csv="output/${SYMBOL}_${MONTH}_quarterhour_exact.csv"
+          build/extract_boundary_aggtrades "${SYMBOL}" "${MONTH}" "${file}" "${csv}" \
+            2>&1 | tee "output/${SYMBOL}_${MONTH}_extract.log"
+          gzip -9 "${csv}"
+          python - <<'PY'
+          from __future__ import annotations
+          from calendar import monthrange
+          import csv,gzip,hashlib,json,os
+          from pathlib import Path
+          symbol=os.environ['SYMBOL']; month=os.environ['MONTH']
+          year,number=map(int,month.split('-'))
+          panel=Path(f'output/{symbol}_{month}_quarterhour_exact.csv.gz')
+          source=Path(f'{symbol}-aggTrades-{month}.zip')
+          expected=Path(str(source)+'.CHECKSUM').read_text(encoding='utf-8-sig').split()[0].lower()
+          actual=hashlib.sha256(source.read_bytes()).hexdigest()
+          if actual!=expected: raise RuntimeError('source hash changed')
+          rows=0; nonzero10=0; previous=None; columns=None
+          with gzip.open(panel,'rt',newline='') as handle:
+              reader=csv.DictReader(handle); columns=list(reader.fieldnames or [])
+              for row in reader:
+                  ts=int(row['boundary_time_ms'])
+                  if previous is not None and ts-previous!=900000: raise RuntimeError('clock gap')
+                  previous=ts; rows+=1; nonzero10+=int(int(row['post10s_trades'])>0)
+          if rows!=monthrange(year,number)[1]*96: raise RuntimeError('row count mismatch')
+          if nonzero10<int(rows*.95): raise RuntimeError('10-second coverage failure')
+          manifest={
+              'schema':'wave39-quarterhour-exact-month-v1','symbol':symbol,'month':month,
+              'source_sha256':actual,'source_bytes':source.stat().st_size,'rows':rows,
+              'nonzero_post10s_rows':nonzero10,'columns':columns,'output_path':panel.name,
+              'output_bytes':panel.stat().st_size,
+              'output_sha256':hashlib.sha256(panel.read_bytes()).hexdigest(),
+              'future_outcomes_included':False,'strategy_results_included':False,
+          }
+          Path(f'output/{symbol}_{month}_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          rm -f "${file}" "${file}.CHECKSUM"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-orchestrated-2023-${{ matrix.symbol }}-${{ matrix.month }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  support-2023-symbol:
+    needs: develop-freeze
+    if: needs.develop-freeze.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build official 2023 contract and funding support
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python research/wave39v2/build_support_year.py \
+            --symbol "${{ matrix.symbol }}" --year 2023 --output-dir output --retries 8 \
+            2>&1 | tee "output/${{ matrix.symbol }}_support_build.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wave39-orchestrated-support-2023-${{ matrix.symbol }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  validate-2023:
+    needs: [develop-freeze, extract-2023-month, support-2023-symbol]
+    if: needs.develop-freeze.outputs.candidate_present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Download frozen candidate and all 2023 inputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-frozen-development-2022-*
+          path: frozen-download
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-orchestrated-2023-*
+          path: monthly-2023
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-orchestrated-support-2023-*
+          path: support-2023-download
+          merge-multiple: true
+
+      - name: Reconstruct exact 2022 inputs from immutable source runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exact2022 support2022 data2022/support
+          gh run download "${{ needs.develop-freeze.outputs.exact_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v2-${{ needs.develop-freeze.outputs.exact_run_id }}" \
+            --dir exact2022
+          gh run download "${{ needs.develop-freeze.outputs.support_run_id }}" \
+            --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v2-${{ needs.develop-freeze.outputs.support_run_id }}" \
+            --dir support2022
+          python - <<'PY'
+          from __future__ import annotations
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              matches=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: matches.append(path)
+              if len(matches)!=1: raise RuntimeError(f'{schema}: {matches}')
+              return matches[0]
+          exact=locate('exact2022','wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate('support2022','wave39-official-support-combined-v2')
+          target=Path('data2022')
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - name: Combine and verify 2023 feature and support panels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data2023/support
+          python research/wave39v2/combine_panels.py \
+            --input-dir monthly-2023 --output-dir data2023 --year 2023
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib,json,shutil
+          from pathlib import Path
+          source=Path('support-2023-download'); target=Path('data2023/support')
+          symbols=('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT')
+          combined={'schema':'wave39-official-support-combined-v2','year':2023,'symbols':{},'future_outcomes_included':False,'strategy_results_included':False}
+          for symbol in symbols:
+              manifest_path=source/f'{symbol}_support_manifest.json'
+              manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+              if manifest['schema']!='wave39-official-support-v2' or manifest['year']!=2023:
+                  raise RuntimeError(f'{symbol}: support identity mismatch')
+              records={}
+              for name,record in manifest['outputs'].items():
+                  path=source/name
+                  digest=hashlib.sha256(path.read_bytes()).hexdigest()
+                  if digest!=record['sha256']: raise RuntimeError(f'{symbol}: {name} hash mismatch')
+                  shutil.copy2(path,target/name)
+                  records[name]=record
+              shutil.copy2(manifest_path,target/manifest_path.name)
+              combined['symbols'][symbol]={'outputs':records,'contract_rows':manifest['contract_rows'],'funding_rows':manifest['funding_rows']}
+          (target/'manifest.json').write_text(json.dumps(combined,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Resolve exactly one pre-2023 freeze and run it unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2"
+          freeze="$(find frozen-download -name WAVE39_CANDIDATE_BEFORE_2023.json -type f | head -n1)"
+          test -n "${freeze}"
+          test "$(find frozen-download -name WAVE39_CANDIDATE_BEFORE_2023.json -type f | wc -l)" -eq 1
+          rm -rf validation-output
+          mkdir -p validation-output
+          python -m research.wave39.run_wave39_validation_2023 \
+            --data-2022 data2022 \
+            --data-2023 data2023 \
+            --freeze "${freeze}" \
+            --output-dir validation-output \
+            2>&1 | tee validation-output/run.log
+
+      - name: Independently verify result identity and preserve evidence
+        id: verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib,json
+          from pathlib import Path
+          root=Path('validation-output')
+          result=json.loads((root/'wave39_validation_2023.json').read_text(encoding='utf-8'))
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          if result['candidate_id']!=manifest['candidate_id']:
+              raise RuntimeError('candidate mismatch')
+          if result['2024_opened'] or result['sealed_terminal_oos_opened']:
+              raise RuntimeError('future split access violation')
+          if result['risk_or_leverage_optimized']:
+              raise RuntimeError('risk/leverage selection violation')
+          if hashlib.sha256((root/'wave39_validation_2023.json').read_bytes()).hexdigest()!=manifest['result_sha256']:
+              raise RuntimeError('result hash mismatch')
+          if hashlib.sha256((root/'wave39_validation_2023_ledger.csv').read_bytes()).hexdigest()!=manifest['ledger_sha256']:
+              raise RuntimeError('ledger hash mismatch')
+          Path('validation-output/gate-passed.txt').write_text('true' if manifest['gate_passed'] else 'false',encoding='utf-8')
+          print(json.dumps(manifest,indent=2,sort_keys=True))
+          PY
+          echo "gate_passed=$(cat validation-output/gate-passed.txt)" >> "$GITHUB_OUTPUT"
+          mkdir -p validation-output/data-manifests
+          cp data2023/manifest.json validation-output/data-manifests/exact-boundary-2023.json
+          cp data2023/support/manifest.json validation-output/data-manifests/support-2023.json
+
+      - name: Commit immutable 2023 verdict without modifying the frozen candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/wave39-quarterhour-exact-aggtrades-20260723"
+          destination="research/wave39/results/validation_2023"
+          rm -rf "${destination}"
+          mkdir -p "${destination}"
+          cp -a validation-output/. "${destination}/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}"
+          git commit -m "Record frozen Wave39 2023 sequential verdict"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${branch}"; then exit 0; fi
+            git fetch origin "${branch}"
+            git rebase "origin/${branch}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-frozen-validation-2023-${{ github.run_id }}
+          path: validation-output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

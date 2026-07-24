@@ -1,0 +1,18 @@
+name: Wave39 v4 audit superseded by final validator
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-v4-audit-superseded.yml"
+
+concurrency:
+  group: wave39-v4-replay-audit-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  superseded:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "The preliminary v3-to-v4 replay is superseded."
+          echo "The final validator now uses the corrected v4 engine directly and independently cross-checks 2023 aggTrades against official one-minute klines before PnL."

@@ -1,0 +1,239 @@
+name: Wave39 corrected gap chronology 2023 audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-validation-v4-replay-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: wave39-v4-replay-audit-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  await-v3-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      replay: ${{ steps.await.outputs.replay }}
+      validation_run_id: ${{ steps.await.outputs.validation_run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+      - name: Await development block or completed v3 validation evidence
+        id: await
+        shell: bash
+        run: |
+          set -euo pipefail
+          blocked="research/wave39/results/development_2022_gap_safe/BLOCKED.json"
+          verdict="research/wave39/results/validation_2023_gap_safe/manifest.json"
+          for attempt in $(seq 1 340); do
+            git fetch origin "${HEAD_BRANCH}" --quiet
+            if git cat-file -e "origin/${HEAD_BRANCH}:${blocked}" 2>/dev/null; then
+              echo "replay=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if git cat-file -e "origin/${HEAD_BRANCH}:${verdict}" 2>/dev/null; then
+              run_id="$(gh api -H 'Accept: application/vnd.github+json' \
+                "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+                | python -c 'import json,sys; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if r.get("name")=="Wave39 gap-safe frozen validation 2023" and r.get("status")=="completed" and r.get("conclusion")=="success"),""))')"
+              if [[ -n "${run_id}" ]]; then
+                echo "replay=true" >> "$GITHUB_OUTPUT"
+                echo "validation_run_id=${run_id}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            echo "attempt=${attempt}: waiting for v3 verdict"
+            sleep 60
+          done
+          exit 1
+
+  replay-v4:
+    needs: await-v3-verdict
+    if: needs.await-v3-verdict.outputs.replay == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      HEAD_BRANCH: research/wave39-quarterhour-exact-aggtrades-20260723
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Download exact 2023 inputs from the completed frozen-validation run
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="${{ needs.await-v3-verdict.outputs.validation_run_id }}"
+          mkdir -p monthly2023 support2023
+          gh run download "${run_id}" --repo "${REPOSITORY}" \
+            --pattern 'wave39-gap-safe-2023-*' --dir monthly2023
+          gh run download "${run_id}" --repo "${REPOSITORY}" \
+            --pattern 'wave39-gap-safe-support-2023-*' --dir support2023
+
+      - name: Reconstruct immutable 2022 source data
+        shell: bash
+        run: |
+          set -euo pipefail
+          select_run() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPOSITORY}/actions/runs?branch=${HEAD_BRANCH}&per_page=100" \
+            | python -c 'import json,sys; n=sys.argv[1]; runs=json.load(sys.stdin).get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if r.get("name")==n and r.get("status")=="completed" and r.get("conclusion")=="success"),""))' "$1"
+          }
+          exact_id="$(select_run 'Wave39 exact quarter-hour aggTrades 2022 v2')"
+          support_id="$(select_run 'Wave39 official 1m support 2022 v3')"
+          test -n "${exact_id}"; test -n "${support_id}"
+          mkdir -p exact2022 support2022 data2022/support
+          gh run download "${exact_id}" --repo "${REPOSITORY}" \
+            --name "wave39-exact-boundary-2022-v2-${exact_id}" --dir exact2022
+          gh run download "${support_id}" --repo "${REPOSITORY}" \
+            --name "wave39-official-support-2022-v3-${support_id}" --dir support2022
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          def locate(root,schema):
+              found=[]
+              for path in Path(root).rglob('manifest.json'):
+                  try: data=json.loads(path.read_text(encoding='utf-8'))
+                  except Exception: continue
+                  if data.get('schema')==schema: found.append(path)
+              if len(found)!=1: raise RuntimeError(f'{schema}: {found}')
+              return found[0]
+          exact=locate('exact2022','wave39-quarterhour-exact-aggtrades-year-v1')
+          support=locate('support2022','wave39-official-support-combined-v3')
+          target=Path('data2022')
+          for path in exact.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/path.name)
+          for path in support.parent.glob('*'):
+              if path.is_file(): shutil.copy2(path,target/'support'/path.name)
+          PY
+
+      - name: Reassemble identical 2023 data root
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data2023/support
+          python research/wave39v2/combine_panels.py \
+            --input-dir monthly2023 --output-dir data2023 --year 2023
+          python - <<'PY'
+          import hashlib,json,shutil
+          from pathlib import Path
+          source=Path('support2023'); target=Path('data2023/support')
+          manifests=list(source.rglob('*_support_manifest.json'))
+          combined={
+              'schema':'wave39-official-support-combined-v3','year':2023,'symbols':{},
+              'future_outcomes_included':False,'strategy_results_included':False,
+              'gap_policy':'No imputation; open paths cannot cross absent official minutes.',
+          }
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              matches=[p for p in manifests if p.name==f'{symbol}_support_manifest.json']
+              if len(matches)!=1: raise RuntimeError(f'{symbol}: {matches}')
+              manifest_path=matches[0]; manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+              if manifest['schema']!='wave39-official-support-v3': raise RuntimeError('schema mismatch')
+              for name,record in manifest['outputs'].items():
+                  candidates=list(source.rglob(name))
+                  if len(candidates)!=1: raise RuntimeError(f'{name}: {candidates}')
+                  path=candidates[0]
+                  if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                      raise RuntimeError(f'{name}: hash mismatch')
+                  shutil.copy2(path,target/name)
+              shutil.copy2(manifest_path,target/manifest_path.name)
+              combined['symbols'][symbol]={
+                  'observed_contract_minutes':manifest['observed_contract_minutes'],
+                  'missing_contract_minutes':manifest['missing_contract_minutes'],
+                  'gap_run_count':manifest['gap_run_count'],'largest_gap_minutes':manifest['largest_gap_minutes'],
+                  'funding_rows':manifest['funding_rows'],'outputs':manifest['outputs'],
+              }
+          (target/'manifest.json').write_text(json.dumps(combined,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Run corrected v4 replay against the unchanged pre-2023 freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "numpy==2.1.3" "pandas==2.2.3" "numba==0.61.2" "pytest==8.3.5"
+          python -m pytest research/wave39/test_wave39_engine_v3.py research/wave39/test_wave39_engine_v4.py -q
+          git fetch origin "${HEAD_BRANCH}"
+          git show "origin/${HEAD_BRANCH}:research/wave39/frozen/WAVE39_CANDIDATE_BEFORE_2023.json" > freeze.json
+          git show "origin/${HEAD_BRANCH}:research/wave39/results/validation_2023_gap_safe/wave39_validation_2023.json" > v3_result.json
+          rm -rf output; mkdir -p output
+          python -m research.wave39.run_wave39_validation_2023_v4 \
+            --data-2022 data2022 --data-2023 data2023 --freeze freeze.json --output-dir output \
+            2>&1 | tee output/run.log
+          cp v3_result.json output/v3_result_for_comparison.json
+
+      - name: Compare v3 and v4 economic results and verify all hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('output')
+          old=json.loads((root/'v3_result_for_comparison.json').read_text(encoding='utf-8'))
+          new=json.loads((root/'wave39_validation_2023.json').read_text(encoding='utf-8'))
+          manifest=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
+          if old['candidate_id']!=new['candidate_id']: raise RuntimeError('candidate changed')
+          if new['2024_opened'] or new['sealed_terminal_oos_opened'] or new['risk_or_leverage_optimized']:
+              raise RuntimeError('lock violation')
+          if hashlib.sha256((root/'wave39_validation_2023.json').read_bytes()).hexdigest()!=manifest['result_sha256']:
+              raise RuntimeError('result hash mismatch')
+          comparison={
+              'schema':'wave39-gap-chronology-v3-v4-comparison',
+              'candidate_id':new['candidate_id'],
+              'v3_gate_passed':old['frozen_2023_gate_passed'],
+              'v4_gate_passed':new['frozen_2023_gate_passed'],
+              'v3_24bp':old['cost_metrics']['24'],
+              'v4_24bp':new['cost_metrics']['24'],
+              'v3_32bp':old['cost_metrics']['32'],
+              'v4_32bp':new['cost_metrics']['32'],
+              'interpretation':'Only trades resolved by a stop before a later official source gap may differ.',
+          }
+          (root/'v3_v4_comparison.json').write_text(json.dumps(comparison,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(comparison,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit corrected independent audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="research/wave39/results/validation_2023_gap_safe_v4"
+          rm -rf "${destination}"; mkdir -p "${destination}"
+          cp -a output/. "${destination}/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${destination}"
+          git commit -m "Audit Wave39 2023 with corrected gap chronology"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${HEAD_BRANCH}"; then exit 0; fi
+            git fetch origin "${HEAD_BRANCH}"
+            git rebase "origin/${HEAD_BRANCH}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-v4-gap-chronology-audit-${{ github.run_id }}
+          path: output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

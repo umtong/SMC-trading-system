@@ -1,0 +1,217 @@
+name: Wave39-41 research director 2023 gates
+
+on:
+  push:
+    branches:
+      - research/wave39-quarterhour-exact-aggtrades-20260723
+    paths:
+      - "research/wave39/results/**"
+      - "research/wave40/results/**"
+      - "research/wave41/results/**"
+      - "research/wave39/frozen/**"
+      - "research/wave40/frozen/**"
+      - "research/wave41/frozen/**"
+  pull_request:
+    paths:
+      - ".github/workflows/wave-director-2023-gates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wave39-41-research-director-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/wave39-quarterhour-exact-aggtrades-20260723
+          fetch-depth: 0
+
+      - name: Await terminal 2023 status for all independent paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/wave39-quarterhour-exact-aggtrades-20260723"
+          mkdir -p director-inputs
+          for attempt in $(seq 1 340); do
+            git fetch origin "${branch}" --quiet
+            rm -rf director-inputs/current
+            mkdir -p director-inputs/current
+            all_done=true
+            for wave in 39 40 41; do
+              case "${wave}" in
+                39)
+                  blocked="research/wave39/results/development_2022_gap_safe/BLOCKED.json"
+                  validation="research/wave39/results/validation_2023_final/manifest.json"
+                  result="research/wave39/results/validation_2023_final/wave39_validation_2023.json"
+                  freeze="research/wave39/frozen/WAVE39_CANDIDATE_BEFORE_2023.json"
+                  ;;
+                40)
+                  blocked="research/wave40/results/development_2022/BLOCKED.json"
+                  validation="research/wave40/results/validation_2023/manifest.json"
+                  result="research/wave40/results/validation_2023/wave40_validation_2023.json"
+                  freeze="research/wave40/frozen/WAVE40_CANDIDATE_BEFORE_2023.json"
+                  ;;
+                41)
+                  blocked="research/wave41/results/development_2022/BLOCKED.json"
+                  validation="research/wave41/results/validation_2023/manifest.json"
+                  result="research/wave41/results/validation_2023/wave41_validation_2023.json"
+                  freeze="research/wave41/frozen/WAVE41_CANDIDATE_BEFORE_2023.json"
+                  ;;
+              esac
+              if git cat-file -e "origin/${branch}:${blocked}" 2>/dev/null; then
+                git show "origin/${branch}:${blocked}" > "director-inputs/current/wave${wave}_blocked.json"
+              elif git cat-file -e "origin/${branch}:${validation}" 2>/dev/null \
+                && git cat-file -e "origin/${branch}:${result}" 2>/dev/null \
+                && git cat-file -e "origin/${branch}:${freeze}" 2>/dev/null; then
+                git show "origin/${branch}:${validation}" > "director-inputs/current/wave${wave}_manifest.json"
+                git show "origin/${branch}:${result}" > "director-inputs/current/wave${wave}_result.json"
+                git show "origin/${branch}:${freeze}" > "director-inputs/current/wave${wave}_freeze.json"
+              else
+                all_done=false
+              fi
+            done
+            echo "attempt=${attempt} all_done=${all_done} files=$(find director-inputs/current -type f | wc -l)"
+            if [[ "${all_done}" == true ]]; then
+              mv director-inputs/current director-inputs/complete
+              break
+            fi
+            sleep 60
+          done
+          test -d director-inputs/complete
+
+      - name: Adversarially aggregate statuses and pre-register every eligible 2024 test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/director
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib,json
+          from pathlib import Path
+
+          source=Path('director-inputs/complete')
+          statuses={}; eligible=[]
+          for wave in (39,40,41):
+              blocked=source/f'wave{wave}_blocked.json'
+              if blocked.exists():
+                  data=json.loads(blocked.read_text(encoding='utf-8'))
+                  if data.get('2023_opened') is not False:
+                      raise RuntimeError(f'Wave{wave}: block chronology violated')
+                  statuses[str(wave)]={
+                      'status':'DEVELOPMENT_BLOCKED',
+                      'block_sha256':hashlib.sha256(blocked.read_bytes()).hexdigest(),
+                      'candidate_id':None,
+                      '2024_access_allowed':False,
+                  }
+                  continue
+              manifest_path=source/f'wave{wave}_manifest.json'
+              result_path=source/f'wave{wave}_result.json'
+              freeze_path=source/f'wave{wave}_freeze.json'
+              manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+              result=json.loads(result_path.read_text(encoding='utf-8'))
+              freeze=json.loads(freeze_path.read_text(encoding='utf-8'))
+              if manifest.get('candidate_id')!=result.get('candidate_id'):
+                  raise RuntimeError(f'Wave{wave}: result candidate mismatch')
+              if freeze.get('candidate',{}).get('candidate_id')!=result.get('candidate_id'):
+                  raise RuntimeError(f'Wave{wave}: freeze candidate mismatch')
+              if result.get('2024_opened') or result.get('sealed_terminal_oos_opened'):
+                  raise RuntimeError(f'Wave{wave}: future split already opened')
+              if result.get('risk_or_leverage_optimized'):
+                  raise RuntimeError(f'Wave{wave}: risk/leverage optimization detected')
+              passed=bool(manifest.get('gate_passed')) and bool(result.get('frozen_2023_gate_passed'))
+              status='VALIDATION_2023_PASSED' if passed else 'VALIDATION_2023_BLOCKED'
+              entry={
+                  'status':status,
+                  'candidate_id':result['candidate_id'],
+                  'manifest_sha256':hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                  'result_sha256':hashlib.sha256(result_path.read_bytes()).hexdigest(),
+                  'freeze_sha256':hashlib.sha256(freeze_path.read_bytes()).hexdigest(),
+                  '2024_access_allowed':passed,
+                  'cost_metrics':result['cost_metrics'],
+                  'latency2_24bp':result['latency2_24bp'],
+                  'opposite_direction_24bp':result['opposite_direction_24bp'],
+              }
+              statuses[str(wave)]=entry
+              if passed:
+                  eligible.append({
+                      'wave':wave,
+                      'candidate_id':result['candidate_id'],
+                      'freeze_sha256':entry['freeze_sha256'],
+                      'result_2023_sha256':entry['result_sha256'],
+                  })
+
+          status_document={
+              'schema':'wave39-41-research-director-status-v1',
+              'paths':statuses,
+              'eligible_2024_count':len(eligible),
+              'eligible_2024_candidates':eligible,
+              'risk_or_leverage_optimization_allowed':False,
+              'sealed_terminal_oos_opened':False,
+          }
+          Path('research/director/WAVE39_41_2023_STATUS.json').write_text(
+              json.dumps(status_document,indent=2,sort_keys=True),encoding='utf-8'
+          )
+          registration={
+              'schema':'wave39-41-2024-preaccess-registration-v1',
+              'registered_before_2024_strategy_outcomes':True,
+              'eligible_candidates':eligible,
+              'data_year':2024,
+              'execution':'unchanged frozen candidate, exact first legal one-minute entry, one global slot, actual funding, stop-first and explicit source-gap invalidation',
+              'costs_bp':[24,32,40],
+              'gate':{
+                  'minimum_completed_trades':80,
+                  'positive_net_log_growth_24bp':True,
+                  'positive_net_log_growth_32bp':True,
+                  'positive_quarters_24bp_minimum':3,
+                  'positive_months_24bp_minimum':8,
+                  'profit_factor_32bp_minimum':1.10,
+                  'net_after_top5_winners_positive':True,
+                  'latency2_net_growth_24bp_positive':True,
+                  'opposite_direction_control_negative':True,
+              },
+              'no_parameter_or_family_changes_after_2023':True,
+              'risk_or_leverage_optimization_allowed':False,
+              'sealed_terminal_oos_opened':False,
+          }
+          Path('research/director/WAVE39_41_2024_PREACCESS_REGISTRATION.json').write_text(
+              json.dumps(registration,indent=2,sort_keys=True),encoding='utf-8'
+          )
+          print(json.dumps(status_document,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit director checkpoint without triggering recursive evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/wave39-quarterhour-exact-aggtrades-20260723"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/director/WAVE39_41_2023_STATUS.json \
+            research/director/WAVE39_41_2024_PREACCESS_REGISTRATION.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record Wave39-41 director gates before 2024"
+          for attempt in 1 2 3 4 5 6; do
+            if git push origin "HEAD:${branch}"; then exit 0; fi
+            git fetch origin "${branch}"; git rebase "origin/${branch}"
+            sleep $((attempt*8))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wave39-41-director-2023-${{ github.run_id }}
+          path: |
+            research/director/WAVE39_41_2023_STATUS.json
+            research/director/WAVE39_41_2024_PREACCESS_REGISTRATION.json
+            director-inputs/complete/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

@@ -1,0 +1,302 @@
+name: Wave39 exact quarter-hour aggTrades 2022
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wave39-quarterhour-exact-aggtrades-2022.yml"
+      - "research/wave39/**"
+
+permissions:
+  contents: read
+
+jobs:
+  extract-month:
+    name: ${{ matrix.symbol }} ${{ matrix.month }} exact boundary flow
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        month:
+          - "2022-01"
+          - "2022-02"
+          - "2022-03"
+          - "2022-04"
+          - "2022-05"
+          - "2022-06"
+          - "2022-07"
+          - "2022-08"
+          - "2022-09"
+          - "2022-10"
+          - "2022-11"
+          - "2022-12"
+    steps:
+      - name: Checkout exact research commit
+        uses: actions/checkout@v4
+
+      - name: Compile streaming extractor
+        run: |
+          set -euo pipefail
+          mkdir -p build monthly-output
+          g++ -O3 -std=c++20 -Wall -Wextra -pedantic \
+            research/wave39/extract_boundary_aggtrades.cpp \
+            -o build/extract_boundary_aggtrades
+          build/extract_boundary_aggtrades 2>&1 | grep -q "usage:" || true
+
+      - name: Download checksum-verified official monthly aggTrades
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        run: |
+          set -euo pipefail
+          filename="${SYMBOL}-aggTrades-${MONTH}.zip"
+          base="https://data.binance.vision/data/futures/um/monthly/aggTrades/${SYMBOL}"
+          curl -L --fail --retry 6 --retry-all-errors --connect-timeout 30 \
+            -o "${filename}.CHECKSUM" "${base}/${filename}.CHECKSUM"
+          expected="$(awk 'NR==1 {print tolower($1)}' "${filename}.CHECKSUM")"
+          test "${#expected}" -eq 64
+          curl -L --fail --retry 6 --retry-all-errors --connect-timeout 30 \
+            -o "${filename}" "${base}/${filename}"
+          printf '%s  %s\n' "${expected}" "${filename}" | sha256sum -c -
+          sha256sum "${filename}" > source.sha256
+
+      - name: Stream exact first 10/30/60 seconds at every 15-minute boundary
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        run: |
+          set -euo pipefail
+          filename="${SYMBOL}-aggTrades-${MONTH}.zip"
+          csv="monthly-output/${SYMBOL}_${MONTH}_quarterhour_exact.csv"
+          build/extract_boundary_aggtrades "${SYMBOL}" "${MONTH}" "${filename}" "${csv}" \
+            2>&1 | tee "monthly-output/${SYMBOL}_${MONTH}_extract.log"
+          gzip -9 "${csv}"
+
+      - name: Audit monthly output and write immutable manifest
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import csv
+          import gzip
+          import hashlib
+          import json
+          import os
+          from calendar import monthrange
+          from pathlib import Path
+
+          symbol = os.environ["SYMBOL"]
+          month = os.environ["MONTH"]
+          year, month_number = map(int, month.split("-"))
+          csv_path = Path(f"monthly-output/{symbol}_{month}_quarterhour_exact.csv.gz")
+          checksum_path = Path(f"{symbol}-aggTrades-{month}.zip.CHECKSUM")
+          source_zip = Path(f"{symbol}-aggTrades-{month}.zip")
+
+          def digest(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          rows = 0
+          nonzero_10s = 0
+          nonzero_60s = 0
+          previous = None
+          with gzip.open(csv_path, "rt", newline="") as handle:
+              reader = csv.DictReader(handle)
+              required = {
+                  "symbol", "boundary_time_ms", "post10s_trades", "post10s_net_quote",
+                  "post30s_trades", "post60s_trades", "post60s_first_price",
+                  "post60s_last_price", "pre_clock_complete",
+              }
+              missing = sorted(required.difference(reader.fieldnames or []))
+              if missing:
+                  raise RuntimeError(f"missing columns: {missing}")
+              for row in reader:
+                  rows += 1
+                  if row["symbol"] != symbol:
+                      raise RuntimeError("symbol mismatch")
+                  timestamp = int(row["boundary_time_ms"])
+                  if previous is not None and timestamp - previous != 900_000:
+                      raise RuntimeError(f"non-contiguous boundary clock: {previous} -> {timestamp}")
+                  previous = timestamp
+                  nonzero_10s += int(int(row["post10s_trades"]) > 0)
+                  nonzero_60s += int(int(row["post60s_trades"]) > 0)
+
+          expected_rows = monthrange(year, month_number)[1] * 96
+          if rows != expected_rows:
+              raise RuntimeError(f"row count {rows} != expected {expected_rows}")
+          if nonzero_10s < int(rows * 0.95):
+              raise RuntimeError(f"insufficient first-10-second coverage: {nonzero_10s}/{rows}")
+          if nonzero_60s != rows:
+              raise RuntimeError(f"missing first-minute trades: {nonzero_60s}/{rows}")
+
+          expected_sha = checksum_path.read_text(encoding="utf-8-sig").split()[0].lower()
+          actual_sha = digest(source_zip)
+          if actual_sha != expected_sha:
+              raise RuntimeError("source checksum changed after extraction")
+
+          manifest = {
+              "schema": "wave39-quarterhour-exact-aggtrades-v1",
+              "repository_commit": os.environ["GITHUB_SHA_VALUE"],
+              "source": "official Binance USD-M monthly aggTrades",
+              "symbol": symbol,
+              "month": month,
+              "source_zip": source_zip.name,
+              "source_sha256": actual_sha,
+              "boundary_seconds": [10, 30, 60],
+              "boundary_interval_seconds": 900,
+              "rows": rows,
+              "nonzero_post10s_rows": nonzero_10s,
+              "nonzero_post60s_rows": nonzero_60s,
+              "output": {
+                  "path": csv_path.name,
+                  "bytes": csv_path.stat().st_size,
+                  "sha256": digest(csv_path),
+              },
+              "causality": {
+                  "features_use_only_trades_with_timestamp_before_window_end": True,
+                  "future_return_or_fill_fields_included": False,
+                  "first_boundary_pre_clock_complete": False,
+              },
+          }
+          manifest_path = Path(f"monthly-output/{symbol}_{month}_manifest.json")
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Remove raw archive before artifact upload
+        if: always()
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          MONTH: ${{ matrix.month }}
+        run: |
+          rm -f "${SYMBOL}-aggTrades-${MONTH}.zip" "${SYMBOL}-aggTrades-${MONTH}.zip.CHECKSUM" source.sha256
+
+      - name: Upload exact monthly boundary panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave39-2022-${{ matrix.symbol }}-${{ matrix.month }}
+          path: monthly-output/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  combine-year:
+    name: Combine and audit 2022 exact boundary panel
+    needs: extract-month
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Download all monthly panels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wave39-2022-*
+          path: monthly
+          merge-multiple: true
+
+      - name: Concatenate without changing registered rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p combined
+          python - <<'PY'
+          from __future__ import annotations
+          import csv
+          import gzip
+          import hashlib
+          import json
+          from pathlib import Path
+
+          def digest(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+          yearly = {}
+          source_manifests = []
+          for path in sorted(Path("monthly").glob("*_manifest.json")):
+              source_manifests.append(json.loads(path.read_text(encoding="utf-8")))
+          if len(source_manifests) != 48:
+              raise RuntimeError(f"expected 48 monthly manifests, found {len(source_manifests)}")
+
+          for symbol in symbols:
+              files = sorted(Path("monthly").glob(f"{symbol}_2022-*_quarterhour_exact.csv.gz"))
+              if len(files) != 12:
+                  raise RuntimeError(f"{symbol}: expected 12 files, found {len(files)}")
+              output = Path(f"combined/{symbol}_quarterhour_exact_2022.csv.gz")
+              header = None
+              count = 0
+              previous = None
+              nonzero = 0
+              with gzip.open(output, "wt", newline="") as destination:
+                  writer = None
+                  for path in files:
+                      with gzip.open(path, "rt", newline="") as source:
+                          reader = csv.DictReader(source)
+                          if header is None:
+                              header = list(reader.fieldnames or [])
+                              writer = csv.DictWriter(destination, fieldnames=header)
+                              writer.writeheader()
+                          elif list(reader.fieldnames or []) != header:
+                              raise RuntimeError(f"schema drift in {path}")
+                          assert writer is not None
+                          for row in reader:
+                              timestamp = int(row["boundary_time_ms"])
+                              if previous is not None and timestamp - previous != 900_000:
+                                  raise RuntimeError(f"{symbol}: clock gap {previous} -> {timestamp}")
+                              previous = timestamp
+                              count += 1
+                              nonzero += int(int(row["post10s_trades"]) > 0)
+                              writer.writerow(row)
+              if count != 365 * 96:
+                  raise RuntimeError(f"{symbol}: rows {count} != {365 * 96}")
+              yearly[symbol] = {
+                  "rows": count,
+                  "nonzero_post10s_rows": nonzero,
+                  "path": output.name,
+                  "bytes": output.stat().st_size,
+                  "sha256": digest(output),
+              }
+
+          manifest = {
+              "schema": "wave39-quarterhour-exact-aggtrades-year-v1",
+              "year": 2022,
+              "symbols": yearly,
+              "monthly_manifest_count": len(source_manifests),
+              "monthly_output_hashes": {
+                  f"{item['symbol']}-{item['month']}": item["output"]["sha256"]
+                  for item in source_manifests
+              },
+              "future_outcomes_included": False,
+              "strategy_results_included": False,
+          }
+          Path("combined/manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload immutable combined 2022 panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave39-quarterhour-exact-aggtrades-2022-${{ github.run_id }}
+          path: combined/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

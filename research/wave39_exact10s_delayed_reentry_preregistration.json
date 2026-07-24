@@ -1,0 +1,108 @@
+{
+  "stage": "wave39_exact10s_delayed_reentry_preregistration",
+  "status": "FROZEN_BEFORE_EXACT_2022_2023_PANEL_OUTCOME_INSPECTION",
+  "registered_at_utc": "2026-07-23T14:36:00Z",
+  "git_data_head": "913f7464ca00b4cd2ea25b0cf03cbaff28225273",
+  "data_scope": {
+    "venue": "Binance USD-M perpetual futures",
+    "symbols": ["BTCUSDT", "XRPUSDT"],
+    "source": "official monthly aggTrades ZIP plus adjacent SHA-256 CHECKSUM",
+    "included": "2022-01-01T00:00:00Z <= timestamp < 2024-01-01T00:00:00Z",
+    "2024_strategy_outcomes_opened": false,
+    "sealed_2025_opened": false,
+    "primary_measure": "base_imbalance_10s",
+    "secondary_placebo": "quote_weighted_imbalance_10s",
+    "buyer_maker_sign": "true is seller aggressor and negative; false is buyer aggressor and positive"
+  },
+  "economic_hypothesis": {
+    "mechanism": "The first ten seconds of each true quarter-hour boundary contain synchronized algorithmic order flow. The paper reports a short reversal over approximately the first thirty minutes followed by positive forecasting coefficients that peak around eight to twelve hours. A causal strategy therefore observes the completed ten-second imbalance, waits for the documented adverse/reversal phase, enters in the original imbalance direction only after the reversal is observable, and uses the reversal extreme as structural invalidation.",
+    "not_assumed": [
+      "instantaneous continuation",
+      "that regression significance implies executable profit",
+      "that the 1-minute proxy thresholds transfer to exact ten-second data",
+      "that contest returns validate this strategy"
+    ]
+  },
+  "splits": {
+    "distribution_calibration_only": ["2022-01-01", "2022-07-01"],
+    "development_and_candidate_selection": ["2022-07-01", "2023-01-01"],
+    "single_sequential_validation": ["2023-01-01", "2024-01-01"],
+    "future_walk_forward_unopened": ["2024-01-01", "2025-01-01"],
+    "terminal_holdout_unopened": "2025 sealed OOS"
+  },
+  "candidate_family": {
+    "direction": "same as sign(base_imbalance_10s)",
+    "absolute_imbalance_thresholds": [
+      "symbol-specific 2022H1 empirical q70",
+      "symbol-specific 2022H1 empirical q80",
+      "symbol-specific 2022H1 empirical q90"
+    ],
+    "activity_arms": [
+      "none",
+      "total_trade_quote_10s at or above symbol-specific 2022H1 q75"
+    ],
+    "reversal_confirmation_arms": [
+      "30-minute return has sign opposite the ten-second imbalance",
+      "same sign condition and absolute 30-minute return at least 0.25 times prior-only ATR60 divided by entry price"
+    ],
+    "primary_entry_clock": "first actual trade at the quarter-hour boundary exactly 30 minutes after the source boundary, after the preceding 30 minutes are complete",
+    "entry_delay_stress_minutes": [1, 3, 5],
+    "primary_time_exit": "first actual trade at source boundary plus 10 hours",
+    "time_exit_sensitivity_hours": [8, 12],
+    "structural_stop": "beyond the completed 30-minute reversal extreme by 0.10 prior-only ATR60",
+    "minimum_stop_fraction": 0.002,
+    "maximum_stop_fraction": 0.03,
+    "funding_opening_stress": "repeat after excluding source boundaries at 00:00, 08:00, and 16:00 UTC",
+    "top_of_hour_special_treatment": false
+  },
+  "execution": {
+    "global_pending_plus_open_slots": 1,
+    "same_timestamp_reentry": false,
+    "same_bar_stop_priority": true,
+    "data_gap_policy": "fail closed; no interpolation and no cross-gap rolling state",
+    "cost_roundtrip_bps": [30, 40, 60],
+    "stop_extra_bps": 5,
+    "funding": "actual historical funding at each settlement crossed",
+    "risk_fraction_for_strategy_comparison": 0.005,
+    "leverage_cap": 3.0,
+    "quantity": "risk budget divided by entry-to-stop distance plus entry/stop fees and adverse slippage; rounded down to venue step",
+    "marking": "UTC daily liquidation-value NAV including estimated closing cost"
+  },
+  "routing": {
+    "candidate_maturity": "source boundary plus 30 minutes",
+    "when_flat": "select the mature candidate with the largest symbol-specific 2022H1 empirical percentile of absolute base imbalance",
+    "exact_tie": "BTCUSDT before XRPUSDT because of greater execution liquidity",
+    "when_occupied": "reject all new entries until the global slot is flat"
+  },
+  "development_selection": {
+    "objective": "maximize the minimum net log-growth across 40/60bp costs, 8/10/12h exits, three chronological folds, and 0/3-minute entry delays; do not use the daily-return target",
+    "minimum_trades": 25,
+    "required": [
+      "net log-growth positive at 40bp and 60bp",
+      "all 8h, 10h, and 12h 40bp sensitivity results positive",
+      "all three chronological folds positive at 40bp and at least two positive at 60bp",
+      "40bp net log-growth remains positive after removing the five largest winning trades",
+      "top three winners contribute at most 50 percent of positive gross log-return",
+      "at least four of six calendar months positive at 40bp",
+      "3-minute entry delay remains positive at 40bp",
+      "cost results are monotone non-increasing"
+    ]
+  },
+  "validation_gate_2023": {
+    "minimum_trades": 30,
+    "required": [
+      "frozen candidate positive at 40bp and 60bp",
+      "at least three of four quarters positive at 40bp",
+      "40bp remains positive after removing five largest winners",
+      "3-minute delay remains positive at 40bp",
+      "8h and 12h sensitivity do not reverse the economic sign",
+      "no future information, gap crossing, overlap, or account reconciliation failure"
+    ],
+    "failure_action": "block the exact delayed-reentry family without reopening 2023; rotate to the separately registered rolling public-component model"
+  },
+  "next_independent_path_if_blocked": {
+    "name": "wave40 rolling public-component quarter-hour model",
+    "mechanism": "monthly prior-only model of exact ten-second imbalance using twelve quarter-hour lags and public price-volume/OI/basis state; trade only agreement between observed imbalance and the predicted public component after the 30-minute reversal phase",
+    "not_a_reopen_condition": "small changes to imbalance quantiles, stop buffers, or time exits"
+  }
+}
