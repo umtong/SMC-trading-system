@@ -1,0 +1,203 @@
+name: Audited BTC Microstructure Features
+
+on:
+  push:
+    branches:
+      - agent/hf-btc-microstructure-features
+    paths:
+      - .github/workflows/hf-btc-microstructure-features.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned research dependencies
+        run: |
+          python -m pip install \
+            "huggingface_hub==0.34.4" \
+            "pyarrow==20.0.0"
+
+      - name: Download only published feature parquet files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+
+          path = snapshot_download(
+              repo_id="ibrahimdaud/binance-btcusdt",
+              repo_type="dataset",
+              revision="39b19d4",
+              allow_patterns=["features/BTCUSDT/*.parquet", "README.md"],
+              local_dir="hf_snapshot",
+          )
+          print(path)
+          PY
+
+      - name: Remove labels, enforce time boundary, and audit the feature snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import pyarrow as pa
+          import pyarrow.compute as pc
+          import pyarrow.dataset as ds
+          import pyarrow.parquet as pq
+
+          source_root = Path("hf_snapshot/features/BTCUSDT")
+          files = sorted(source_root.glob("*.parquet"))
+          if not files:
+              raise RuntimeError("no BTCUSDT feature files were downloaded")
+
+          allowed = [
+              "bar_time_ms",
+              "symbol",
+              "close",
+              "log_ret_1m",
+              "log_ret_5m",
+              "log_ret_15m",
+              "log_ret_60m",
+              "realized_vol_30m",
+              "rsi_14",
+              "vol_5m",
+              "taker_buy_ratio_5m",
+              "trade_count_5m",
+              "avg_trade_size_5m",
+              "depth_imbalance_1pct",
+              "vpin_50",
+              "vpin_bucket_imbalance",
+              "hawkes_buy_intensity",
+              "hawkes_sell_intensity",
+              "hawkes_net",
+              "oi_btc",
+              "oi_change_1h",
+              "ls_count_ratio",
+              "taker_ls_vol_ratio",
+          ]
+          forbidden = {
+              "fwd_ret_5m",
+              "fwd_ret_15m",
+              "fwd_ret_60m",
+              "fwd_direction_5m",
+          }
+
+          dataset = ds.dataset([str(path) for path in files], format="parquet")
+          names = set(dataset.schema.names)
+          missing = sorted(set(allowed) - names)
+          if missing:
+              raise RuntimeError(f"required feature columns missing: {missing}")
+          if forbidden & set(allowed):
+              raise RuntimeError("forward labels entered the allowed feature contract")
+
+          cutoff_ms = 1754006400000  # 2025-08-01 00:00:00 UTC
+          table = dataset.to_table(
+              columns=allowed,
+              filter=pc.field("bar_time_ms") < pa.scalar(cutoff_ms, pa.int64()),
+          )
+          table = table.sort_by([("bar_time_ms", "ascending")])
+
+          ts = table.column("bar_time_ms").combine_chunks()
+          if len(ts) == 0:
+              raise RuntimeError("empty feature table")
+          if int(pc.max(ts).as_py()) >= cutoff_ms:
+              raise RuntimeError("sealed OOS timestamp entered feature snapshot")
+          if int(pc.min(ts).as_py()) < 1599696000000:
+              raise RuntimeError("unexpected feature start before published coverage")
+          if int(pc.count_distinct(ts).as_py()) != len(ts):
+              raise RuntimeError("duplicate feature timestamps")
+
+          diffs = pc.subtract(ts.slice(1), ts.slice(0, len(ts) - 1))
+          irregular = pc.sum(pc.cast(pc.not_equal(diffs, pa.scalar(300000, pa.int64())), pa.int64())).as_py()
+          if irregular:
+              raise RuntimeError(f"feature time grid has {irregular} irregular intervals")
+
+          symbols = pc.unique(table.column("symbol").combine_chunks()).to_pylist()
+          if symbols != ["BTCUSDT"]:
+              raise RuntimeError(f"unexpected symbols: {symbols}")
+
+          output = Path("audited_features")
+          output.mkdir(parents=True, exist_ok=True)
+          parquet_path = output / "BTCUSDT_microstructure_features_presealed.parquet"
+          pq.write_table(
+              table,
+              parquet_path,
+              compression="zstd",
+              compression_level=9,
+              use_dictionary=True,
+              write_statistics=True,
+          )
+
+          source_records = []
+          for path in files:
+              payload = path.read_bytes()
+              source_records.append({
+                  "path": str(path.relative_to(Path("hf_snapshot"))),
+                  "bytes": len(payload),
+                  "sha256": hashlib.sha256(payload).hexdigest(),
+              })
+
+          null_counts = {
+              name: int(table.column(name).null_count)
+              for name in allowed
+          }
+          manifest = {
+              "source_repository": "ibrahimdaud/binance-btcusdt",
+              "source_revision": "39b19d4",
+              "source_description": "published deterministic Binance USD-M BTCUSDT 5-minute feature files",
+              "source_files": source_records,
+              "source_file_count": len(files),
+              "sealed_oos_excluded_from_ms": cutoff_ms,
+              "forward_label_columns_removed": sorted(forbidden),
+              "columns": allowed,
+              "rows": len(table),
+              "first_bar_time_ms": int(ts[0].as_py()),
+              "last_bar_time_ms": int(ts[-1].as_py()),
+              "irregular_interval_count": int(irregular),
+              "null_counts": null_counts,
+              "output_file": parquet_path.name,
+              "output_bytes": parquet_path.stat().st_size,
+              "output_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest(),
+              "causality_status": "UNVERIFIED_EXTERNAL_FEATURE_IMPLEMENTATION__LABELS_REMOVED__REQUIRES_CODE_AND_OFFICIAL_PRICE_CROSSCHECK",
+          }
+          (output / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps({
+              "rows": manifest["rows"],
+              "first": manifest["first_bar_time_ms"],
+              "last": manifest["last_bar_time_ms"],
+              "output_sha256": manifest["output_sha256"],
+              "null_counts": null_counts,
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload audited pre-sealed feature snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: audited-btc-microstructure-features-${{ github.sha }}
+          path: |
+            audited_features/BTCUSDT_microstructure_features_presealed.parquet
+            audited_features/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
