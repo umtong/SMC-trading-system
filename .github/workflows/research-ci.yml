@@ -45,3 +45,117 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  v110-taker-flow:
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/v110-taker-flow-clean'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - shard: BTCUSDT-2022
+            symbol: BTCUSDT
+            start: 2022-01-01
+            end: 2023-01-01
+          - shard: BTCUSDT-2023
+            symbol: BTCUSDT
+            start: 2023-01-01
+            end: 2024-01-01
+          - shard: BTCUSDT-2024
+            symbol: BTCUSDT
+            start: 2024-01-01
+            end: 2025-01-01
+          - shard: BTCUSDT-2025
+            symbol: BTCUSDT
+            start: 2025-01-01
+            end: 2026-01-01
+          - shard: BTCUSDT-2026H1
+            symbol: BTCUSDT
+            start: 2026-01-01
+            end: 2026-07-01
+          - shard: ETHUSDT-2022
+            symbol: ETHUSDT
+            start: 2022-01-01
+            end: 2023-01-01
+          - shard: ETHUSDT-2023
+            symbol: ETHUSDT
+            start: 2023-01-01
+            end: 2024-01-01
+          - shard: ETHUSDT-2024
+            symbol: ETHUSDT
+            start: 2024-01-01
+            end: 2025-01-01
+          - shard: ETHUSDT-2025
+            symbol: ETHUSDT
+            start: 2025-01-01
+            end: 2026-01-01
+          - shard: ETHUSDT-2026H1
+            symbol: ETHUSDT
+            start: 2026-01-01
+            end: 2026-07-01
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download checksum-verified taker-flow shard
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.download_binance_um_1m_flow \
+            --symbol '${{ matrix.symbol }}' \
+            --start '${{ matrix.start }}' \
+            --end '${{ matrix.end }}' \
+            --output-dir 'data/v110_1m_flow/${{ matrix.shard }}' \
+            2>&1 | tee 'v110-flow-${{ matrix.shard }}.log'
+
+      - name: Validate output hash and row count
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          SYMBOL: ${{ matrix.symbol }}
+          START: ${{ matrix.start }}
+          END: ${{ matrix.end }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('data/v110_1m_flow') / os.environ['SHARD']
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          path = root / f"{os.environ['SYMBOL']}_1m_flow.csv.gz"
+          expected = int(
+              (pd.Timestamp(os.environ['END'], tz='UTC') - pd.Timestamp(os.environ['START'], tz='UTC'))
+              / pd.Timedelta(minutes=1)
+          )
+          if manifest['output']['rows'] != expected:
+              raise SystemExit(f"rows={manifest['output']['rows']} expected={expected}")
+          if hashlib.sha256(path.read_bytes()).hexdigest() != manifest['output']['sha256']:
+              raise SystemExit('normalized SHA-256 mismatch')
+          required = {'quote_volume','trade_count','taker_buy_quote','taker_sell_quote','signed_quote_volume','imbalance_fraction'}
+          if not required.issubset(set(manifest['output']['columns'])):
+              raise SystemExit('missing taker-flow columns')
+          print(os.environ['SHARD'], manifest['output'])
+          PY
+
+      - name: Upload immutable taker-flow shard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v110-1m-flow-${{ matrix.shard }}-${{ github.run_id }}
+          path: |
+            data/v110_1m_flow/${{ matrix.shard }}
+            v110-flow-${{ matrix.shard }}.log
+          if-no-files-found: error
+          retention-days: 14
