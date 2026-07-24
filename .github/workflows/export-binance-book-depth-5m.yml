@@ -1,0 +1,51 @@
+name: Export Binance book-depth features
+
+on:
+  push:
+    branches:
+      - agent/easychart-fresh-causal-rebuild
+    paths:
+      - "scripts/export_binance_book_depth_5m.py"
+      - ".github/workflows/export-binance-book-depth-5m.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        year: [2021, 2022, 2023, 2024]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, and aggregate official book depth
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/export_binance_book_depth_5m.py \
+            --symbol "${{ matrix.symbol }}" \
+            --year "${{ matrix.year }}" \
+            --output-dir book-depth-output \
+            --workers 8
+
+      - name: Upload causal five-minute book-depth features
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-depth-${{ matrix.symbol }}-${{ matrix.year }}
+          path: |
+            book-depth-output/${{ matrix.symbol }}_book_depth_5m_${{ matrix.year }}.csv.gz
+            book-depth-output/${{ matrix.symbol }}_book_depth_5m_${{ matrix.year }}.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

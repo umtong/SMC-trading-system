@@ -1,0 +1,45 @@
+name: Export reproducibility source tree
+
+on:
+  push:
+    branches:
+      - agent/export-repro-source-20260722
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact branch tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Record provenance and archive source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reproducibility-source
+          git rev-parse HEAD > reproducibility-source/GIT_COMMIT.txt
+          git status --short > reproducibility-source/GIT_STATUS.txt
+          git ls-files -s > reproducibility-source/GIT_INDEX.txt
+          find . -path './.git' -prune -o -type f -print | sort > reproducibility-source/FILE_LIST.txt
+          tar --exclude='./.git' --exclude='./reproducibility-source/source-tree.tar.gz' \
+            -czf reproducibility-source/source-tree.tar.gz .
+          sha256sum reproducibility-source/source-tree.tar.gz > reproducibility-source/source-tree.tar.gz.sha256
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-source-${{ github.run_id }}
+          path: reproducibility-source
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

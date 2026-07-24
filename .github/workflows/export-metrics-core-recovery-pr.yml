@@ -1,0 +1,147 @@
+name: Export core Binance positioning metrics for PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/export-metrics-core-recovery-pr.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        year: [2022, 2023, 2025]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download checksum-verified daily metrics
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import concurrent.futures, csv, gzip, hashlib, io, json, os, time
+          import urllib.error, urllib.request, zipfile
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          symbol = os.environ["SYMBOL"]
+          year = int(os.environ["YEAR"])
+          start = date(year, 1, 1)
+          end = date(year, 12, 31)
+          days = [start + timedelta(days=i) for i in range((end-start).days+1)]
+          base = "https://data.binance.vision/data/futures/um/daily/metrics"
+          headers = {"User-Agent": "easychart-metrics-recovery/1.0"}
+          output = Path("metrics-core")
+          output.mkdir(exist_ok=True)
+
+          def fetch(url: str, missing_ok: bool = False) -> bytes | None:
+              last = None
+              for attempt in range(10):
+                  try:
+                      request = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404 and missing_ok:
+                          return None
+                      last = exc
+                  except Exception as exc:  # noqa: BLE001
+                      last = exc
+                  time.sleep(min(60, 2**attempt))
+              raise RuntimeError(f"download failed: {url}: {last}")
+
+          def one(day: date):
+              stamp = day.isoformat()
+              name = f"{symbol}-metrics-{stamp}.zip"
+              url = f"{base}/{symbol}/{name}"
+              body = fetch(url, True)
+              if body is None:
+                  return day, None, None
+              checksum = fetch(url + ".CHECKSUM")
+              assert checksum is not None
+              expected = checksum.decode("utf-8").split()[0].lower()
+              actual = hashlib.sha256(body).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch: {url}")
+              return day, (body, actual), url
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+              downloaded = list(executor.map(one, days))
+
+          schema = None
+          rows = {}
+          missing = []
+          archives = []
+          for day, result, url in downloaded:
+              if result is None:
+                  missing.append(day.isoformat())
+                  continue
+              body, digest = result
+              with zipfile.ZipFile(io.BytesIO(body)) as archive:
+                  members = [name for name in archive.namelist() if not name.endswith("/")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected members: {url}: {members}")
+                  with archive.open(members[0]) as source:
+                      reader = csv.reader(io.TextIOWrapper(source, encoding="utf-8", newline=""))
+                      current = next(reader)
+                      if schema is None:
+                          schema = current
+                      elif current != schema:
+                          raise RuntimeError(f"schema drift: {url}")
+                      for row in reader:
+                          if len(row) != len(schema):
+                              raise RuntimeError(f"row width drift: {url}")
+                          rows[row[0]] = row
+              archives.append({"date": day.isoformat(), "url": url, "sha256": digest})
+
+          if schema is None or not rows:
+              raise RuntimeError(f"no metrics rows for {symbol} {year}")
+          ordered = sorted(rows)
+          path = output / f"{symbol}_metrics_{year}.csv.gz"
+          with gzip.open(path, "wt", encoding="utf-8", newline="") as target:
+              writer = csv.writer(target)
+              writer.writerow(schema)
+              for key in ordered:
+                  writer.writerow(rows[key])
+          manifest = {
+              "source": "Binance Public Data USD-M daily metrics",
+              "symbol": symbol,
+              "year": year,
+              "rows": len(ordered),
+              "columns": schema,
+              "first_create_time": ordered[0],
+              "last_create_time": ordered[-1],
+              "missing_dates": missing,
+              "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              "archives": archives,
+          }
+          (output / f"{symbol}_metrics_{year}.manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({key:value for key,value in manifest.items() if key != "archives"}, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metrics-core-${{ matrix.symbol }}-${{ matrix.year }}
+          path: |
+            metrics-core/${{ matrix.symbol }}_metrics_${{ matrix.year }}.csv.gz
+            metrics-core/${{ matrix.symbol }}_metrics_${{ matrix.year }}.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

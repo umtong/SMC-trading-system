@@ -1,0 +1,187 @@
+name: Export missing Binance positioning metrics
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/export-missing-positioning-metrics.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - symbol: BTCUSDT
+            year: 2021
+          - symbol: BTCUSDT
+            year: 2024
+          - symbol: ETHUSDT
+            year: 2024
+          - symbol: BTCUSDT
+            year: 2026
+          - symbol: ETHUSDT
+            year: 2026
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, sort, and deduplicate metrics
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import concurrent.futures
+          import csv
+          import gzip
+          import hashlib
+          import io
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          import zipfile
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          symbol = os.environ["SYMBOL"]
+          year = int(os.environ["YEAR"])
+          start = date(year, 1, 1)
+          end = date(2026, 6, 30) if year == 2026 else date(year, 12, 31)
+          days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+          base = "https://data.binance.vision/data/futures/um/daily/metrics"
+          headers = {"User-Agent": "easychart-causal-research/1.0"}
+          output = Path("missing-metrics")
+          output.mkdir(exist_ok=True)
+
+          def download(url: str, *, allow_missing: bool = False) -> bytes | None:
+              last_error: Exception | None = None
+              for attempt in range(10):
+                  try:
+                      request = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(request, timeout=120) as response:
+                          return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404 and allow_missing:
+                          return None
+                      last_error = exc
+                  except Exception as exc:  # noqa: BLE001
+                      last_error = exc
+                  time.sleep(min(60, 2**attempt))
+              raise RuntimeError(f"download failed after retries: {url}: {last_error}")
+
+          def one(day: date):
+              stamp = day.isoformat()
+              name = f"{symbol}-metrics-{stamp}.zip"
+              url = f"{base}/{symbol}/{name}"
+              payload = download(url, allow_missing=True)
+              if payload is None:
+                  return day, None, None
+              checksum = download(url + ".CHECKSUM")
+              assert checksum is not None
+              expected = checksum.decode("utf-8").split()[0].lower()
+              actual = hashlib.sha256(payload).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch for {url}: {expected} != {actual}")
+              return day, (payload, actual), url
+
+          archives: dict[date, tuple[tuple[bytes, str] | None, str | None]] = {}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+              for day, result, url in executor.map(one, days):
+                  archives[day] = (result, url)
+
+          schema: list[str] | None = None
+          rows_by_time: dict[str, list[str]] = {}
+          manifest_rows: list[dict[str, object]] = []
+          missing: list[str] = []
+          duplicate_rows = 0
+          for day in days:
+              result, url = archives[day]
+              if result is None:
+                  missing.append(day.isoformat())
+                  continue
+              payload, digest = result
+              assert url is not None
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  members = [name for name in archive.namelist() if not name.endswith("/")]
+                  if len(members) != 1:
+                      raise RuntimeError(f"unexpected members for {url}: {members}")
+                  with archive.open(members[0]) as source:
+                      reader = csv.reader(io.TextIOWrapper(source, encoding="utf-8", newline=""))
+                      current_schema = next(reader)
+                      if schema is None:
+                          schema = current_schema
+                      elif current_schema != schema:
+                          raise RuntimeError(f"schema drift for {url}: {current_schema}")
+                      for row in reader:
+                          if len(row) != len(schema):
+                              raise RuntimeError(f"row width drift for {url}: {row}")
+                          timestamp = row[0]
+                          if timestamp in rows_by_time:
+                              duplicate_rows += 1
+                          rows_by_time[timestamp] = row
+              manifest_rows.append({
+                  "symbol": symbol,
+                  "date": day.isoformat(),
+                  "url": url,
+                  "sha256": digest,
+              })
+
+          if schema is None or not rows_by_time:
+              raise RuntimeError(f"no metrics data available for {symbol} {year}")
+
+          def timestamp_key(value: str):
+              # ISO timestamps sort lexically, but explicit components make the invariant obvious.
+              return tuple(int(piece) for piece in value.replace("-", " ").replace(":", " ").split())
+
+          ordered_times = sorted(rows_by_time, key=timestamp_key)
+          path = output / f"{symbol}_metrics_{year}.csv.gz"
+          with gzip.open(path, "wt", encoding="utf-8", newline="") as target:
+              writer = csv.writer(target)
+              writer.writerow(schema)
+              for timestamp in ordered_times:
+                  writer.writerow(rows_by_time[timestamp])
+
+          metadata = {
+              "source": "Binance Public Data USD-M daily metrics",
+              "symbol": symbol,
+              "year": year,
+              "columns": schema,
+              "rows": len(ordered_times),
+              "first_create_time": ordered_times[0],
+              "last_create_time": ordered_times[-1],
+              "missing_dates": missing,
+              "duplicate_rows_replaced": duplicate_rows,
+              "normalized_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              "archives": manifest_rows,
+          }
+          manifest_path = output / f"{symbol}_metrics_{year}.manifest.json"
+          manifest_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+          print(json.dumps({key: value for key, value in metadata.items() if key != "archives"}, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metrics-missing-${{ matrix.symbol }}-${{ matrix.year }}
+          path: |
+            missing-metrics/${{ matrix.symbol }}_metrics_${{ matrix.year }}.csv.gz
+            missing-metrics/${{ matrix.symbol }}_metrics_${{ matrix.year }}.manifest.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
