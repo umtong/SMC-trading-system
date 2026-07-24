@@ -1,0 +1,187 @@
+name: V0.9.1 Dual-Clock Scene Sample
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v091-scene-sample-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download checksum-verified BTC and ETH 5m warm-up sample
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.download_binance_um_5m_range \
+            --symbols BTCUSDT ETHUSDT \
+            --start 2020-12-04 \
+            --end 2021-02-01 \
+            --output-dir data/v091_sample \
+            2>&1 | tee v091-sample-data.log
+
+      - name: Upload continuous 5m sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: v091-scene-sample-data-${{ github.run_id }}
+          path: |
+            data/v091_sample/BTCUSDT_5m.csv
+            data/v091_sample/ETHUSDT_5m.csv
+            data/v091_sample/v09_5m_data_manifest.json
+            v091-sample-data.log
+          if-no-files-found: error
+          retention-days: 14
+
+  prepare:
+    needs: data
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol:
+          - BTCUSDT
+          - ETHUSDT
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Download continuous 5m sample
+        uses: actions/download-artifact@v4
+        with:
+          name: v091-scene-sample-data-${{ github.run_id }}
+          path: sample-bundle
+
+      - name: Normalize data paths
+        shell: bash
+        run: |
+          mkdir -p data/v091_sample
+          find sample-bundle -type f -name 'BTCUSDT_5m.csv' -exec cp '{}' data/v091_sample/BTCUSDT_5m.csv \;
+          find sample-bundle -type f -name 'ETHUSDT_5m.csv' -exec cp '{}' data/v091_sample/ETHUSDT_5m.csv \;
+          test -s data/v091_sample/${{ matrix.symbol }}_5m.csv
+
+      - name: Build one outcome-blind January 2021 dual-clock checkpoint
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m scripts.prepare_easychart_v091_scene_month \
+            --symbol '${{ matrix.symbol }}' \
+            --month 2021-01 \
+            --data-dir data/v091_sample \
+            --output-dir prepared \
+            2>&1 | tee 'v091-scene-${{ matrix.symbol }}.log'
+
+      - name: Upload dual-clock checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v091-scene-sample-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            prepared/${{ matrix.symbol }}_2021-01.json
+            v091-scene-${{ matrix.symbol }}.log
+          if-no-files-found: error
+          retention-days: 14
+
+  summarize:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download both dual-clock checkpoints
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v091-scene-sample-*-${{ github.run_id }}
+          path: sample-checkpoints
+          merge-multiple: true
+
+      - name: Summarize outcome-blind dual-clock sample
+        shell: bash
+        run: |
+          python - <<'PY' 2>&1 | tee v091-scene-sample-summary.log
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          records = []
+          diagnostics = []
+          for path in sorted(Path('sample-checkpoints').rglob('*_2021-01.json')):
+              payload = json.loads(path.read_text(encoding='utf-8'))
+              if payload.get('schema_version') != 2:
+                  raise SystemExit(f'unexpected schema in {path}')
+              records.extend(payload['records'])
+              diagnostics.append({'symbol': payload['symbol'], **payload['diagnostics']})
+          if len(diagnostics) != 2:
+              raise SystemExit(f'expected two symbol checkpoints, found {len(diagnostics)}')
+          summary = {
+              'contract': 'v091_outcome_blind_january_2021_dual_clock_sample',
+              'scene_records': len(records),
+              'by_symbol': dict(Counter(row['symbol'] for row in records)),
+              'by_family': dict(Counter(row['source_scene_family'] for row in records)),
+              'by_kind': dict(Counter(row['kind'] for row in records)),
+              'by_side': dict(Counter(row['side'] for row in records)),
+              'required_archive_days': sum(
+                  len(set(day for row in records if row['symbol'] == symbol for day in row['required_utc_dates']))
+                  for symbol in ('BTCUSDT', 'ETHUSDT')
+              ),
+              'event_to_confirmation_minutes': {
+                  'minimum': min((
+                      ( __import__('pandas').Timestamp(row['confirmation_known_at'])
+                        - __import__('pandas').Timestamp(row['event_known_at'])
+                      ).total_seconds() / 60
+                      for row in records
+                  ), default=None),
+                  'maximum': max((
+                      ( __import__('pandas').Timestamp(row['confirmation_known_at'])
+                        - __import__('pandas').Timestamp(row['event_known_at'])
+                      ).total_seconds() / 60
+                      for row in records
+                  ), default=None),
+              },
+              'diagnostics': diagnostics,
+          }
+          Path('v091-scene-sample-summary.json').write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload dual-clock sample summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v091-scene-sample-summary-${{ github.run_id }}
+          path: |
+            v091-scene-sample-summary.json
+            v091-scene-sample-summary.log
+            sample-checkpoints
+          if-no-files-found: warn
+          retention-days: 14
