@@ -1,0 +1,91 @@
+name: Binance USD-M Metrics Data
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_metrics.py
+      - .github/workflows/binance-usdm-metrics-data.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_usdm_metrics.py
+      - .github/workflows/binance-usdm-metrics-data.yml
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-metrics-data:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      contains(github.event.head_commit.message, '[fetch-metrics-data]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install 'pandas>=2.2' 'requests>=2.32'
+
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_usdm_metrics.py
+
+      - name: Download and verify daily metrics
+        run: |
+          set -o pipefail
+          python scripts/download_binance_usdm_metrics.py \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --start 2020-09-01 \
+            --end 2026-07-21 \
+            --workers 32 \
+            --output artifacts/binance_usdm_metrics \
+            2>&1 | tee metrics-download.log
+
+      - name: Validate output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/binance_usdm_metrics')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          required = {'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'}
+          if set(manifest['datasets']) != required:
+              raise SystemExit(f"datasets={sorted(manifest['datasets'])}")
+          for symbol, info in manifest['datasets'].items():
+              path = root / info['path']
+              if not path.exists() or path.stat().st_size == 0 or info['rows'] < 100000:
+                  raise SystemExit(f'invalid dataset {symbol}: {info}')
+          print(json.dumps({
+              'archives': len(manifest['archives']),
+              'missing': len(manifest['missing_archives']),
+              'datasets': manifest['datasets'],
+          }, indent=2))
+          PY
+
+      - name: Upload metrics log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-metrics-log-${{ github.run_id }}
+          path: metrics-download.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload immutable metrics snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-metrics-${{ github.sha }}
+          path: artifacts/binance_usdm_metrics
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

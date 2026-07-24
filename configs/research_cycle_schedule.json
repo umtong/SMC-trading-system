@@ -1,0 +1,49 @@
+{
+  "timezone": "UTC",
+  "authoritative_runner": "persistent service with durable state volume",
+  "jobs": [
+    {
+      "name": "daily_ingest_and_integrity",
+      "schedule": "00:37 daily",
+      "actions": [
+        "download new public archives and checksums",
+        "append normalized partitions",
+        "verify old decision prefix hashes",
+        "run data quality and reconciliation",
+        "block new orders on critical failure"
+      ]
+    },
+    {
+      "name": "weekly_causality_and_drift",
+      "schedule": "Monday 02:37",
+      "actions": [
+        "prefix truncation invariance",
+        "future mutation invariance",
+        "cost and fill stress",
+        "feature, event-rate, spread and slippage drift",
+        "reproduce shadow ledger"
+      ]
+    },
+    {
+      "name": "monthly_champion_challenger",
+      "schedule": "first UTC day after prior month data is complete",
+      "actions": [
+        "mature labels only",
+        "freeze candidate artifacts",
+        "evaluate expanding and rolling challengers",
+        "apply predeclared gates",
+        "make decisions effective only for the next deployment window"
+      ]
+    },
+    {
+      "name": "quarterly_release_review",
+      "schedule": "quarter end plus data-finalization delay",
+      "actions": [
+        "shadow and execution parity gate",
+        "reconciliation audit",
+        "manual approval artifact",
+        "risk limit review without optimizing to daily return target"
+      ]
+    }
+  ]
+}

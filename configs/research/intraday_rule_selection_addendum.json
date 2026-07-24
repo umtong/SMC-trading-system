@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T01:35:00+09:00",
+  "status": "PREDECLARED_BEFORE_OUTCOME_INSPECTION",
+  "parent_contract_sha256": "baaff87365ecc7269adde78336604baa25a8945eeb9e8ab093d01c54ae7f5a23",
+  "rule_selection_universe": ["BTCUSDT", "ETHUSDT"],
+  "reason": "BTC and ETH are mandatory. Rule thresholds must be defensible on the mandatory core before SOL or XRP may contribute.",
+  "optional_asset_policy": "After a core-stable rule is frozen, apply the identical rule to SOL and XRP. Their admission is re-decided each WFO quarter from past expanding and recent evidence only.",
+  "exact_replay": {
+    "selection_metrics": "all development and validation gates are calculated after exact global one-slot replay on BTC and ETH",
+    "same_decision_tie_break": "highest threshold-normalized event strength, then BTC before ETH",
+    "pending_and_open": "decision reserves the slot; no other candidate can enter until slot_free_time",
+    "reset_between_periods": true
+  },
+  "stable_neighborhood": {
+    "passing_rule": "meets every deterministic development and validation gate",
+    "stable_rule": "passing rule with at least one passing adjacent predeclared threshold configuration",
+    "execution_geometry": "canonical geometry is used for threshold selection; the 27-point execution neighborhood is a post-selection robustness test and cannot rescue a failed threshold rule"
+  }
+}

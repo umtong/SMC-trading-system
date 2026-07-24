@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T01:20:00+09:00",
+  "status": "PREDECLARED_BEFORE_OUTCOME_INSPECTION",
+  "family": "OI_CONTRACTION_TWO_BAR_LIQUIDATION_REVERSAL_V1",
+  "purpose": "Test a distinct causal hypothesis: an impulsive 15m move with open-interest contraction and aggressive flow is a liquidation event only when the next completed 15m bar reclaims the shock midpoint. The daily return target is not a selector.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "optional": ["SOLUSDT", "XRPUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "chronology": {
+    "development": ["2022-01-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "diagnostic_wfo": ["2024-01-01", "2026-07-22"],
+    "true_unseen_shadow_begins_after": "2026-07-22"
+  },
+  "causal_clock": {
+    "shock_bar": "completed 15m bar t-1",
+    "confirmation_bar": "completed continuous 15m bar t",
+    "decision_time": "confirmation-bar close",
+    "entry": "actual next 5m open",
+    "metrics": "only snapshots causally available at each completed bar",
+    "gap_policy": "shock, confirmation and holding path must remain in one continuous segment",
+    "future_features": "forbidden"
+  },
+  "event": {
+    "shock_direction": "sign(shock close - shock open)",
+    "trade_direction": "opposite shock direction",
+    "reclaim": "confirmation close crosses the shock midpoint in trade direction",
+    "event_extreme": "far extreme of shock and confirmation bars",
+    "cooldown_bars_15m_per_symbol": 16
+  },
+  "fixed_threshold_grid": {
+    "shock_directional_body_atr15_min": [1.00, 1.50],
+    "shock_directional_clv_min": [0.70, 0.80],
+    "shock_oi_state_max": [-0.50, -1.00],
+    "shock_directional_flow_state_min": [0.10, 0.20],
+    "shock_directional_premium_z_min": [0.00, 0.75],
+    "confirmation_directional_body_atr15_min": [0.20, 0.40],
+    "confirmation_directional_clv_min": [0.55, 0.65],
+    "confirmation_directional_flow_state_min": [0.00, 0.10],
+    "core_4h_nonconflict": ["NONE", "REQUIRE_NOT_OPPOSITE"],
+    "clock_phase": ["ALL", "TOP_OF_HOUR", "NON_TOP_OF_HOUR"]
+  },
+  "execution": {
+    "canonical": {
+      "stop_buffer_atr15": 0.10,
+      "target_r": 1.25,
+      "max_hold_hours": 4
+    },
+    "sensitivity_after_rule_selection": {
+      "stop_buffer_atr15": [0.05, 0.10, 0.15],
+      "target_r": [1.00, 1.25, 1.50],
+      "max_hold_hours": [2, 4, 6]
+    },
+    "ambiguous_bar": "STOP_FIRST",
+    "fees_slippage_funding": "same conservative contract as the breakout family"
+  },
+  "selection": {
+    "development_trades_min": 80,
+    "validation_trades_min": 30,
+    "pf_min_each": 1.10,
+    "after_top5_positive_each": true,
+    "positive_month_ratio_min_each": 0.55,
+    "lb80_mean_r_positive_each": true,
+    "adjacent_threshold_passes_min": 1,
+    "score": "maximize the smaller development/validation lb80 mean R, then the smaller PF, then R per operating day",
+    "daily_return_target_used": false
+  },
+  "wfo": {
+    "frequency": "quarterly",
+    "optional_assets_and_cash_selected_from_past_only": true,
+    "historical_2024_plus_is_retrospective_diagnostic": true
+  },
+  "promotion": {
+    "historical_result_alone_cannot_enable_live": true,
+    "live_risk_until_shadow_gate": 0
+  }
+}

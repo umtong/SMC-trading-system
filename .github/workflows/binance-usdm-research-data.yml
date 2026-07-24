@@ -1,0 +1,168 @@
+name: Binance USD-M Research Data
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_usdm_research_data.py
+      - .github/workflows/binance-usdm-research-data.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_usdm_research_data.py
+      - .github/workflows/binance-usdm-research-data.yml
+  schedule:
+    - cron: "25 2 2 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-research-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data dependencies
+        run: python -m pip install "pandas>=2.2" "requests>=2.32" "pyarrow>=17"
+
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_usdm_research_data.py
+
+      - name: Resolve rolling archive range
+        id: range
+        shell: bash
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          import os
+
+          today = datetime.now(timezone.utc).date()
+          first = today.replace(day=1)
+          previous_month_last = first - timedelta(days=1)
+          yesterday = today - timedelta(days=1)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'end_month={previous_month_last:%Y-%m}\n')
+              output.write(f'daily_start={first:%Y-%m-%d}\n')
+              output.write(f'daily_end={yesterday:%Y-%m-%d}\n')
+          PY
+
+      - name: Download and freeze verified archives
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/download_binance_usdm_research_data.py \
+            --symbols BTCUSDT ETHUSDT SOLUSDT XRPUSDT \
+            --start-month 2020-01 \
+            --end-month "${{ steps.range.outputs.end_month }}" \
+            --daily-start "${{ steps.range.outputs.daily_start }}" \
+            --daily-end "${{ steps.range.outputs.daily_end }}" \
+            --workers 12 \
+            --output artifacts/binance_usdm_research_data \
+            2>&1 | tee market-data-download.log
+
+      - name: Validate manifest and package contents
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts/binance_usdm_research_data')
+          manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+          required = {
+              f'{symbol}_{kind}'
+              for symbol in ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+              for kind in ('klines', 'markPriceKlines', 'premiumIndexKlines', 'fundingRate')
+          }
+          missing = sorted(required - set(manifest['datasets']))
+          if missing:
+              raise SystemExit(f'missing datasets: {missing}')
+          for name, info in manifest['datasets'].items():
+              path = Path(info['path'])
+              if not path.exists() or path.stat().st_size <= 0:
+                  raise SystemExit(f'invalid dataset file: {name} {path}')
+          print(json.dumps({
+              'datasets': len(manifest['datasets']),
+              'archives': len(manifest['archives']),
+              'missing_archives': len(manifest['missing_archives']),
+          }, indent=2))
+          PY
+
+      - name: Export deterministic gzip CSV files
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import pandas as pd
+
+          source = Path('artifacts/binance_usdm_research_data')
+          output = Path('artifacts/binance_usdm_research_csv')
+          output.mkdir(parents=True, exist_ok=True)
+          source_manifest = source / 'manifest.json'
+          original = json.loads(source_manifest.read_text(encoding='utf-8'))
+          exported = {}
+          for parquet in sorted(source.glob('*.parquet')):
+              frame = pd.read_parquet(parquet)
+              target = output / f'{parquet.stem}.csv.gz'
+              frame.to_csv(
+                  target,
+                  index=False,
+                  compression={'method': 'gzip', 'compresslevel': 6, 'mtime': 0},
+                  float_format='%.12g',
+              )
+              exported[parquet.stem] = {
+                  'path': target.name,
+                  'rows': len(frame),
+                  'bytes': target.stat().st_size,
+                  'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+              }
+          if len(exported) != 16:
+              raise SystemExit(f'expected 16 datasets, exported {len(exported)}')
+          payload = {
+              'source_manifest_sha256': hashlib.sha256(source_manifest.read_bytes()).hexdigest(),
+              'source': original,
+              'exported': exported,
+          }
+          (output / 'portable_manifest.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Upload immutable Parquet snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-parquet-${{ github.sha }}
+          path: artifacts/binance_usdm_research_data
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload portable CSV snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-csv-${{ github.sha }}
+          path: artifacts/binance_usdm_research_csv
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload downloader log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-research-log-${{ github.run_id }}
+          path: market-data-download.log
+          if-no-files-found: warn
+          retention-days: 14

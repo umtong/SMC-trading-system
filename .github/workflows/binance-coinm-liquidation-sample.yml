@@ -1,0 +1,71 @@
+name: Binance COIN-M Liquidation Sample
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/download_binance_coinm_liquidation_sample.py
+      - .github/workflows/binance-coinm-liquidation-sample.yml
+  push:
+    branches:
+      - agent/long-lived-research-cycle
+    paths:
+      - scripts/download_binance_coinm_liquidation_sample.py
+      - .github/workflows/binance-coinm-liquidation-sample.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install "requests>=2.32"
+      - name: Compile downloader
+        run: python -m py_compile scripts/download_binance_coinm_liquidation_sample.py
+      - name: Download checksum-verified liquidation samples
+        run: |
+          python scripts/download_binance_coinm_liquidation_sample.py \
+            --symbols BTCUSD_PERP ETHUSD_PERP \
+            --dates \
+              2021-01-01 2021-04-01 2021-07-01 2021-10-01 \
+              2022-01-01 2022-04-01 2022-07-01 2022-10-01 \
+              2023-01-01 2023-04-01 2023-07-01 2023-10-01 \
+              2024-01-01 2024-04-01 2024-07-01 2024-10-01 \
+              2025-01-01 2025-04-01 2025-07-01 2025-10-01 \
+              2026-01-01 2026-04-01 2026-07-01 \
+            --output artifacts/binance_coinm_liquidation_sample
+      - name: Validate sample
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/binance_coinm_liquidation_sample')
+          m = json.loads((root / 'manifest.json').read_text())
+          print(json.dumps({
+              'datasets': len(m['datasets']),
+              'missing': len(m['missing_archives']),
+              'errors': m['errors'],
+              'schemas': {
+                  k: {'columns': v['column_count'], 'header': v['header_or_first_row']}
+                  for k, v in list(m['datasets'].items())[:4]
+              },
+          }, indent=2))
+          if m['errors'] or not m['datasets']:
+              raise SystemExit('sample invalid')
+          PY
+      - name: Upload immutable sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-coinm-liquidation-sample-${{ github.sha }}
+          path: artifacts/binance_coinm_liquidation_sample
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

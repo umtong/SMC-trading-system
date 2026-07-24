@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T01:50:00+09:00",
+  "status": "PREDECLARED_BEFORE_LABEL_OR_MODEL_OUTCOME_INSPECTION",
+  "family": "CAUSAL_15M_OI_STATE_SIDE_SELECTION_V1",
+  "purpose": "Abandon fixed event direction. At each broad completed-15m state, estimate the net-R outcome of LONG and SHORT under one fixed execution contract, choose at most one side/asset, and retain CASH when validation uncertainty is not positive. The 1-3% daily challenge target is not an optimization objective.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "optional": ["SOLUSDT", "XRPUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "chronology": {
+    "feature_and_label_start": "2021-12-01",
+    "initial_train": ["2022-01-01", "2023-01-01"],
+    "initial_validation": ["2023-01-01", "2024-01-01"],
+    "retrospective_quarterly_wfo": ["2024-01-01", "2026-07-22"],
+    "train_window": "up to 3 years ending six months before each test quarter",
+    "validation_window": "six months immediately before each test quarter",
+    "purge": "a row is eligible for training or validation only when its simulated exit_time is strictly before the cutoff",
+    "true_unseen_shadow_begins_after": "2026-07-22"
+  },
+  "candidate_clock": {
+    "decision": "completed continuous UTC-aligned 15m bar",
+    "entry": "actual next 5m open equal to decision_time",
+    "broad_trigger": "abs(body_atr15)>=0.25 OR abs(flow_state)>=0.10 OR abs(oi_state)>=0.50 OR close is within 0.25 ATR15 of a prior 4h or 12h rolling external boundary",
+    "metrics": "only create_time+5m <= decision_time and age<=6m",
+    "gaps": "no interpolation; label invalid when holding path crosses a gap"
+  },
+  "features": {
+    "directional_side_coded": [
+      "15m, 1h, 4h and 12h completed returns",
+      "body_atr15 and directional CLV",
+      "flow_state, oi_state, premium_z and funding crowd percentile",
+      "distance to prior 4h, 8h and 12h rolling highs/lows",
+      "BTC/ETH 4h consensus and asset return relative to the BTC/ETH mean"
+    ],
+    "non_directional": [
+      "absolute flow/OI/premium/body intensity",
+      "ATR as a fraction of price",
+      "top-of-hour, UTC hour sine/cosine and weekday sine/cosine",
+      "symbol one-hot"
+    ],
+    "future_trade_results_as_features": false,
+    "normalization": "causal rolling features already stored in the state cache; missing values remain missing for LightGBM and are filled with zero only for Ridge"
+  },
+  "models": {
+    "RIDGE": {
+      "alpha": 500,
+      "solver": "lsqr",
+      "reason": "stable linear benchmark"
+    },
+    "LGBM_SHALLOW": {
+      "objective": "huber",
+      "n_estimators_max": 700,
+      "learning_rate": 0.025,
+      "num_leaves": 15,
+      "max_depth": 4,
+      "min_child_samples": 1000,
+      "subsample": 0.8,
+      "colsample_bytree": 0.75,
+      "reg_alpha": 2,
+      "reg_lambda": 25,
+      "early_stopping_rounds": 60,
+      "reason": "bounded nonlinearity with large leaves"
+    },
+    "additional_models_allowed": false
+  },
+  "execution": {
+    "stop": "actual entry price plus/minus 1.00 ATR15 known at decision",
+    "target_r": 1.50,
+    "max_hold_hours": 4,
+    "ambiguous_bar": "STOP_FIRST",
+    "entry_fee_bps": 6,
+    "exit_fee_bps": 6,
+    "entry_slippage_bps": 2,
+    "target_slippage_bps": 3,
+    "stop_slippage_bps": 8,
+    "time_exit_slippage_bps": 5,
+    "historical_funding": true
+  },
+  "validation_selection": {
+    "score_quantiles": [0.95, 0.975, 0.99, 0.995],
+    "universe_candidates": ["BTC_ETH", "BTC_ETH_SOL", "BTC_ETH_XRP", "BTC_ETH_SOL_XRP"],
+    "minimum_trades": 150,
+    "minimum_pf": 1.10,
+    "after_top5_positive": true,
+    "positive_month_ratio_min": 0.55,
+    "lb80_mean_r_positive": true,
+    "selection_score": "maximize lb80 mean R, then PF, then trades per operating day",
+    "CASH_if_none_pass": true,
+    "daily_return_target_used": false
+  },
+  "wfo": {
+    "model_universe_threshold_selected_from_validation_only": true,
+    "model_is_not_retrained_on_validation_before_test": true,
+    "decision_applies_to_next_quarter_only": true,
+    "past_decisions_rewritten": false
+  },
+  "promotion": {
+    "historical_result_alone_cannot_enable_live": true,
+    "live_risk_until_shadow_gate": 0,
+    "shadow_days_min": 90,
+    "shadow_fills_min": 100
+  }
+}

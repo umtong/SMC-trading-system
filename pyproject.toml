@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ict-daytrader-v2"
 version = "0.9.0"
-description = "EasyChart-based BTC/ETH SMC strategy detector and historical replay engine"
+description = "Causal BTC/ETH/SOL/XRP SMC research, replay, and capital-risk engine"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0",

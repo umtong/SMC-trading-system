@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T01:20:00+09:00",
+  "status": "PREDECLARED_BEFORE_OUTCOME_INSPECTION",
+  "family": "OI_CONFIRMED_INTRADAY_EXTERNAL_RANGE_ACCEPTANCE_V1",
+  "purpose": "Test whether short-horizon external-liquidity acceptance becomes transferable when price displacement, lagged open-interest expansion and aggressive flow agree. The daily 1-3% challenge target is excluded from rule selection.",
+  "universe": {
+    "mandatory": ["BTCUSDT", "ETHUSDT"],
+    "optional": ["SOLUSDT", "XRPUSDT"],
+    "global_pending_plus_open_slots": 1
+  },
+  "chronology": {
+    "development": ["2022-01-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "diagnostic_wfo": ["2024-01-01", "2026-07-22"],
+    "true_unseen_shadow_begins_after": "2026-07-22"
+  },
+  "causal_clock": {
+    "decision_bar": "completed UTC-aligned 15m bar containing exactly three continuous 5m bars",
+    "metrics": "latest positioning row whose create_time plus five minutes is no later than decision_time; maximum age six minutes",
+    "entry": "actual next 5m open equal to decision_time",
+    "rolling_levels": "highest high and lowest low of prior completed 15m bars only, shifted one bar inside the current continuous segment",
+    "gap_policy": "never interpolate; invalidate events and holding paths crossing a 5m gap",
+    "future_features": "forbidden"
+  },
+  "event": {
+    "lookback_bars_15m": [16, 32, 48],
+    "long": "previous completed close <= prior rolling high and decision close > prior rolling high",
+    "short": "previous completed close >= prior rolling low and decision close < prior rolling low",
+    "cooldown_bars_15m_per_symbol_side": 8,
+    "event_extreme": "decision-bar opposite extreme"
+  },
+  "fixed_threshold_grid": {
+    "directional_body_atr15_min": [0.40, 0.60],
+    "directional_clv_min": [0.55, 0.65],
+    "oi_state_min": [0.00, 0.50, 1.00],
+    "directional_flow_state_min": [0.00, 0.10, 0.20],
+    "directional_premium_z_max": [1.50, 2.50],
+    "directional_funding_percentile_max": [0.80, 0.90],
+    "core_4h_consensus": ["NONE", "BTC_ETH_SAME_DIRECTION"],
+    "clock_phase": ["ALL", "TOP_OF_HOUR", "NON_TOP_OF_HOUR"]
+  },
+  "execution": {
+    "canonical": {
+      "stop_buffer_atr15": 0.15,
+      "target_r": 2.00,
+      "max_hold_hours": 12
+    },
+    "sensitivity_after_rule_selection": {
+      "stop_buffer_atr15": [0.10, 0.15, 0.20],
+      "target_r": [1.50, 2.00, 2.50],
+      "max_hold_hours": [8, 12, 24]
+    },
+    "ambiguous_bar": "STOP_FIRST",
+    "fees_slippage_funding": {
+      "entry_fee_bps": 6,
+      "exit_fee_bps": 6,
+      "entry_slippage_bps": 2,
+      "target_slippage_bps": 3,
+      "stop_slippage_bps": 8,
+      "time_exit_slippage_bps": 5,
+      "historical_funding": true
+    }
+  },
+  "selection": {
+    "development_trades_min": 120,
+    "validation_trades_min": 50,
+    "pf_min_each": 1.10,
+    "after_top5_positive_each": true,
+    "positive_month_ratio_min_each": 0.55,
+    "lb80_mean_r_positive_each": true,
+    "adjacent_threshold_passes_min": 1,
+    "score": "maximize the smaller development/validation lb80 mean R, then the smaller PF, then R per operating day",
+    "daily_return_target_used": false
+  },
+  "wfo": {
+    "frequency": "quarterly",
+    "universe_candidates": ["BTC_ETH", "BTC_ETH_SOL", "BTC_ETH_XRP", "BTC_ETH_SOL_XRP"],
+    "CASH_is_formal_candidate": true,
+    "optional_assets_admitted_from_past_only": true,
+    "historical_2024_plus_is_retrospective_diagnostic": true
+  },
+  "promotion": {
+    "historical_result_alone_cannot_enable_live": true,
+    "live_risk_until_shadow_gate": 0,
+    "shadow_days_min": 90,
+    "shadow_fills_min": 100
+  }
+}

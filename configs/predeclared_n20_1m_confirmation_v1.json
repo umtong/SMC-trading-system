@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T00:00:00+09:00",
+  "family": "N20_QUALITY_TIER_1M_CONFIRMATION_V1",
+  "base_strategy": "N20_QUALITY_TIER_EXIT_V1",
+  "purpose": "Test whether completed one-minute taker flow and acceptance persistence can improve the current N20 entry without changing its external-liquidity event, stop ownership, global slot or fixed quality-tier exits.",
+  "data": {
+    "source": "Binance USD-M official daily 1m kline archives",
+    "checksum_required": true,
+    "symbols": ["BTCUSDT", "ETHUSDT", "XRPUSDT"],
+    "event_window": "60 minutes before decision through tier-specific 24/36 hour hold horizon"
+  },
+  "causality": {
+    "confirmation_bars": "only fully completed 1m bars after the H1 decision",
+    "entry": "open of the next 1m bar after confirmation",
+    "features": ["directional_taker_imbalance", "confirmation_relative_volume", "final_close_outside_N20_level", "all_confirmation_closes_outside_N20_level", "confirmation_CLV"],
+    "same_trade_outcomes_as_inputs": false,
+    "future_MFE_MAE_as_inputs": false,
+    "intrabar_exit": "1m stop-first when both stop and target touch"
+  },
+  "grid": {
+    "completed_confirmation_minutes": [1, 3, 5],
+    "minimum_directional_taker_imbalance": [-0.05, 0.0, 0.05, 0.1],
+    "minimum_confirmation_relative_volume": [0.75, 1.0, 1.5],
+    "acceptance_mode": ["FINAL_CLOSE_OUTSIDE", "ALL_CLOSES_OUTSIDE"],
+    "minimum_confirmation_clv": [0.5, 0.65]
+  },
+  "selection": {
+    "development": ["2020-01-01", "2023-01-01"],
+    "internal_validation": ["2023-01-01", "2024-01-01"],
+    "diagnostic_only": ["2024-01-01", "2026-07-22"],
+    "daily_return_target_excluded": true,
+    "baseline_must_be_included": true,
+    "minimum_development_trades": 100,
+    "minimum_validation_trades": 35,
+    "minimum_development_pf": 1.5,
+    "minimum_validation_pf": 1.4,
+    "concentration": "development top10 removed R > 0 and validation top5 removed R > 0"
+  },
+  "promotion": "Historical improvement creates only a frozen research challenger. Live remains CASH until prospective shadow, fill, latency and reconciliation gates pass."
+}

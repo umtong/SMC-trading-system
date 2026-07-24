@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T00:00:00Z",
+  "status": "DATA_AVAILABILITY_AMENDMENT_BEFORE_STRATEGY_OUTCOME_INSPECTION",
+  "parent_strategy_sha256": "fd8f80b89f9e29e36b468786b91cf1a748bc7f8b8ef411d5b50228fa663854b2",
+  "reason": "The mechanical date list was retained, but Binance USD-M daily bookTicker archives exist simultaneously for BTCUSDT and ETHUSDT only for three sampled blocks in the produced immutable artifact. No strategy PnL, forward return or rule result was inspected before this amendment.",
+  "available_blocks": {
+    "development": ["2023-07-01", "2023-07-02", "2023-07-03"],
+    "internal_validation": ["2023-10-01", "2023-10-02", "2023-10-03"],
+    "retrospective_diagnostic": ["2024-01-01", "2024-01-02", "2024-01-03"]
+  },
+  "sample_gates": {
+    "minimum_trades_each_development_validation": 30,
+    "minimum_pf_each": 1.10,
+    "after_top5_net_bps_positive_each": true,
+    "positive_sampled_day_ratio_min_each": 0.6666666666666666,
+    "lb80_mean_net_bps_positive_each": true,
+    "stable_adjacent_configuration_required": true
+  },
+  "interpretation": {
+    "pass": "justifies acquiring or reconstructing a substantially longer top-of-book history and rerunning the frozen strategy",
+    "fail": "rejects this parameterized OFI family on the available Binance sample",
+    "sample_cannot_enable_paper_or_live": true,
+    "daily_return_target_used": false
+  }
+}

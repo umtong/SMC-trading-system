@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-23T01:30:00+09:00",
+  "status": "PREDECLARED_BEFORE_OUTCOME_INSPECTION",
+  "applies_to": [
+    "OI_CONFIRMED_INTRADAY_EXTERNAL_RANGE_ACCEPTANCE_V1",
+    "OI_CONTRACTION_TWO_BAR_LIQUIDATION_REVERSAL_V1"
+  ],
+  "exact_state_definitions": {
+    "atr15": "simple mean of true range over the latest 20 completed 15m bars within the current continuous price segment, including the decision bar",
+    "oi_state": "mean of shifted 30-day z scores of log open-interest changes over 15m and 1h, clipped to [-6,6], minimum seven continuous days",
+    "flow_state": "mean of completed 15m kline taker imbalance and latest causal metrics taker ratio transformed as (ratio-1)/(ratio+1), clipped to [-1,1]",
+    "premium_z": "latest completed 5m premium-index close standardized by a shifted 30-day rolling mean/std in its continuous segment",
+    "funding_percentile": "latest settled funding rate ranked against the previous 270 settled rates only; minimum 60 prior rates; long directional percentile is p and short directional percentile is 1-p",
+    "core_4h_direction": "sign shared by BTCUSDT and ETHUSDT completed 4h log returns at the same 15m decision_time; zero when signs disagree, either value is missing, or either return is zero",
+    "top_of_hour": "decision_time minute equals 00",
+    "non_top_of_hour": "decision_time minute is 15, 30, or 45"
+  },
+  "event_deduplication": {
+    "breakout": "raw rolling-level crossing events are identified before threshold filters; keep first event and suppress later events of the same symbol, side and lookback for eight completed 15m bars",
+    "shock": "raw two-bar midpoint-reclaim events are identified before threshold filters; keep first event and suppress later events of the same symbol for sixteen completed 15m bars"
+  },
+  "adjacency": {
+    "same_family_required": true,
+    "breakout": "same lookback; exactly one ordered threshold index differs by one step; categorical core/clock may differ only to an adjacent predeclared state",
+    "shock": "exactly one ordered threshold index differs by one step; categorical core/clock may differ only to an adjacent predeclared state"
+  },
+  "portfolio_tie_break": "highest threshold-normalized event strength, then BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT",
+  "slot_release": {
+    "stop_or_target": "five minutes after the touching 5m bar open, i.e. at that bar close",
+    "time_exit": "five minutes after the max-hold 5m open",
+    "same_timestamp_reentry": false
+  }
+}
