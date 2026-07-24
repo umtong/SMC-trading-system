@@ -1,0 +1,40 @@
+name: SOL XRP Official 5m Bundle
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/sol-xrp-5m-bundle.yml'
+      - 'research_tools/sol_xrp_5m_bundle.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sol-xrp-5m-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build checksum-verified public bundle
+        run: |
+          python research_tools/sol_xrp_5m_bundle.py \
+            --symbols SOLUSDT XRPUSDT \
+            --start 2022-04 --end 2025-12 \
+            --out research_artifact/sol_xrp_5m
+      - name: Audit outputs
+        run: |
+          python -m json.tool research_artifact/sol_xrp_5m/manifest.json | tail -n 220
+          shasum -a 256 research_artifact/sol_xrp_5m/*
+          du -h research_artifact/sol_xrp_5m/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sol-xrp-usdm-5m-2022-04_2025-12-${{ github.run_id }}
+          path: research_artifact/sol_xrp_5m
+          retention-days: 14
+          compression-level: 6
+          if-no-files-found: error
