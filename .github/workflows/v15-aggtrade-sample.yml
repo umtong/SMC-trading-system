@@ -1,0 +1,79 @@
+name: V15 official aggTrade replay sample
+
+on:
+  push:
+    branches:
+      - agent/v15-aggtrade-replay
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build selected-date manifest
+        shell: bash
+        run: |
+          cat > jobs.tsv <<'EOF'
+          BTCUSDT	2025-05-08
+          ETHUSDT	2025-05-08
+          BTCUSDT	2025-11-04
+          ETHUSDT	2025-11-04
+          BTCUSDT	2026-02-05
+          ETHUSDT	2026-02-05
+          BTCUSDT	2026-03-16
+          ETHUSDT	2026-03-16
+          BTCUSDT	2026-06-02
+          ETHUSDT	2026-06-05
+          BTCUSDT	2026-06-24
+          ETHUSDT	2026-06-25
+          EOF
+          cat jobs.tsv
+
+      - name: Download and checksum-verify USD-M aggTrades
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/daily/aggTrades"
+          mkdir -p official-aggtrades
+          while IFS=$'\t' read -r symbol stamp; do
+            dir="official-aggtrades/${symbol}"
+            mkdir -p "$dir"
+            name="${symbol}-aggTrades-${stamp}.zip"
+            url="${root}/${symbol}/${name}"
+            curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 "$url" -o "$dir/$name"
+            curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 --max-time 90 "$url.CHECKSUM" -o "$dir/$name.CHECKSUM"
+            expected="$(awk '{print tolower($1)}' "$dir/$name.CHECKSUM")"
+            actual="$(sha256sum "$dir/$name" | awk '{print tolower($1)}')"
+            test "$actual" = "$expected"
+          done < jobs.tsv
+          for symbol in BTCUSDT ETHUSDT; do
+            find "official-aggtrades/${symbol}" -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > "official-aggtrades/${symbol}/MANIFEST.sha256"
+          done
+          echo "verified: $(find official-aggtrades -type f -name '*.zip' | wc -l)"
+
+      - name: Upload BTC replay sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-btc-aggtrades-${{ github.run_id }}
+          path: official-aggtrades/BTCUSDT
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload ETH replay sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-eth-aggtrades-${{ github.run_id }}
+          path: official-aggtrades/ETHUSDT
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
