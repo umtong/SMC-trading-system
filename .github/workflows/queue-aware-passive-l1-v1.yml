@@ -32,19 +32,22 @@ jobs:
           cache: pip
       - name: Install fixed dependencies
         run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
-      - name: Verify frozen source
+      - name: Verify frozen source and execution-gap correction
         shell: bash
         run: |
-          python -m py_compile research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1.py
+          python -m py_compile \
+            research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1.py \
+            research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1_v2.py
           mkdir -p queue-passive-results
           shasum -a 256 \
             research/queue_aware_passive_l1_v1/PREREGISTRATION_KO.md \
             research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1.py \
+            research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1_v2.py \
             | tee queue-passive-results/SOURCE_SHA256.txt
       - name: Run train-only threshold, selection, validation, and conditional test
         shell: bash
         run: |
-          python research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1.py \
+          python research/queue_aware_passive_l1_v1/queue_aware_passive_l1_v1_v2.py \
             --cache queue-passive-cache \
             --out queue-passive-results \
             2>&1 | tee queue-passive-results/run.log
