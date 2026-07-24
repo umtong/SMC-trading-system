@@ -1,0 +1,72 @@
+name: V2.52 Multi-regime Maker Queue Inputs
+
+on:
+  push:
+    branches: [research/v252-maker-queue-multiregime]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/v252-maker-queue-multiregime.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        day: ['2023-05-16','2023-06-15','2023-08-15','2023-10-15','2024-01-15','2024-03-15']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download checksum-verified queue inputs when available
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          DAY: ${{ matrix.day }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import csv, hashlib, io, json, os, urllib.error, urllib.request, zipfile
+          symbol=os.environ['SYMBOL']; day=os.environ['DAY']
+          out=Path('v252')/symbol/day; out.mkdir(parents=True,exist_ok=True)
+          base='https://data.binance.vision/data/futures/um/daily'
+          report={'symbol':symbol,'day':day,'sources':{}}
+          for dtype in ('bookTicker','aggTrades'):
+              name=f'{symbol}-{dtype}-{day}.zip'; url=f'{base}/{dtype}/{symbol}/{name}'
+              req=lambda u: urllib.request.Request(u,headers={'User-Agent':'smc-v252-maker-queue/1.0'})
+              try:
+                  with urllib.request.urlopen(req(url+'.CHECKSUM'),timeout=180) as r:
+                      expected=r.read().decode('utf-8-sig').strip().split()[0].lower()
+                  with urllib.request.urlopen(req(url),timeout=900) as r: payload=r.read()
+              except urllib.error.HTTPError as exc:
+                  report['sources'][dtype]={'status':'not_available','url':url,'http':exc.code}; continue
+              actual=hashlib.sha256(payload).hexdigest()
+              if actual!=expected: raise SystemExit(f'{dtype} checksum mismatch')
+              (out/name).write_bytes(payload); (out/(name+'.CHECKSUM')).write_text(f'{actual}  {name}\n')
+              with zipfile.ZipFile(io.BytesIO(payload)) as z:
+                  members=[n for n in z.namelist() if n.lower().endswith('.csv')]
+                  if len(members)!=1: raise SystemExit(f'unexpected members {members}')
+                  info=z.getinfo(members[0]);
+                  with z.open(members[0]) as fh:
+                      reader=csv.reader(io.TextIOWrapper(fh,encoding='utf-8-sig',newline=''))
+                      first=next(reader,None); second=next(reader,None)
+              report['sources'][dtype]={'status':'verified','url':url,'sha256':actual,'archive_bytes':len(payload),'csv_member':members[0],'uncompressed_bytes':info.file_size,'first_row':first,'second_row':second}
+          (out/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v252-${{ matrix.symbol }}-${{ matrix.day }}-${{ github.run_id }}
+          path: v252/${{ matrix.symbol }}/${{ matrix.day }}
+          if-no-files-found: error
+          retention-days: 14
