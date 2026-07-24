@@ -1,0 +1,105 @@
+{
+  "2024_gate": {
+    "base_H1_and_H2_returns": ">0",
+    "base_max_drawdown": "<=0.10",
+    "base_positive_month_fraction": ">=0.50",
+    "base_profit_factor": ">=1.20",
+    "base_stress_1p5_stress_2x_returns": ">0",
+    "base_top5_positive_share": "<=0.55",
+    "base_worst_month": ">=-0.04",
+    "minimum_H1_trades": 15,
+    "minimum_H2_trades": 15,
+    "minimum_trades": 50
+  },
+  "2025_confirmation_gate": {
+    "base_max_drawdown": "<=0.20",
+    "base_profit_factor": ">=1.10",
+    "base_stress_1p5_stress_2x_returns": ">0",
+    "base_top5_positive_share": "<=0.60",
+    "minimum_trades": 40,
+    "positive_month_fraction": ">=0.50"
+  },
+  "development_evidence": {
+    "fixed_configuration": {
+      "C": 0.5,
+      "class_weight": "balanced",
+      "minimum_historical_probabilities": 25,
+      "minimum_train_events": 40,
+      "model": "logistic_regression",
+      "selection_quantile": 0.8
+    },
+    "label_purge": "training label exit_time must be strictly before each test month start",
+    "period": ["2024-01-01", "2025-01-01"],
+    "screen_only_warning": "The screen used normalized per-event returns. The sealed 2025 confirmation reruns the common risk-based portfolio engine with actual funding and fixed cost scenarios.",
+    "screen_result_base": {
+      "H1_return": 0.03022,
+      "H1_trades": 31,
+      "H2_return": 0.062319,
+      "H2_trades": 45,
+      "max_drawdown": 0.039359,
+      "positive_month_fraction": 0.666667,
+      "profit_factor": 1.570476,
+      "top5_positive_share": 0.392532,
+      "total_return": 0.094422,
+      "trades": 76,
+      "worst_month": -0.008553
+    }
+  },
+  "execution": {
+    "actual_funding": true,
+    "capacity_fraction_of_prior_quote_volume": 0.001,
+    "cost_per_side_bps": [6.0, 9.0, 12.0],
+    "gap_stop": "actual open",
+    "max_leverage": 3.0,
+    "next_5m_open": true,
+    "no_reentry_on_exit_bar": true,
+    "one_global_BTC_ETH_position": true,
+    "risk_fraction": 0.005,
+    "same_bar": "protective stop only; no target"
+  },
+  "fixed_base": {
+    "base_script_sha256": "66b08521a6136ce26fe1c586dcd915877e874228692b03e312fa834afe9554af",
+    "development_checkpoint_content_digest": "4dc1fe2cd4f23ff6bb2f878c0ce7df674488e0990cb21f70a9a8d4a5e22c9cfb",
+    "development_checkpoint_sha256": "884015977d01118526227447467960c098a7dae93dd16cfda65b388e7ecccc93",
+    "horizon_5m_bars": 48,
+    "representative_count": 12,
+    "source_manifest_digest": "7e29ab8b29e9632c2cc26c525f0ff7f3e57d8791828b22caf3501836de655e2d",
+    "source_revision": "0113be29cdcb7e977037d192c1055c01cf0d369e",
+    "stop_atr": 2.5
+  },
+  "hypothesis": "The symmetric catch-up signal has positive expectancy only when its path is likely to survive the fixed 2.5 ATR protective stop for the complete four-hour alpha horizon. A cost-independent survival classifier filters stop-prone routes; the original cross-asset signal still determines direction.",
+  "model": {
+    "C": 0.5,
+    "class_weight": "balanced",
+    "features": ["consensus_count", "rank_mean", "rank_min", "rank_max", "rank_std", "stop_distance_pct", "signal_hour", "signal_dow", "development_score_mean", "development_score_max", "development_return_12bps_mean", "development_return_24bps_mean", "oi_requirement_share", "follower_flow_requirement_share", "leader_return_threshold_mean", "lag_threshold_mean", "leader_ret3_z", "leader_flow3_z", "leader_oi3_z", "follower_ret3_z", "follower_flow3_z", "follower_oi3_z", "signed_response_gap_z", "route"],
+    "final_2025_threshold": "0.80 quantile of all finite purged 2024 monthly out-of-fold survival probabilities",
+    "label": "protective stop is not hit before the fixed four-hour horizon",
+    "minimum_historical_probabilities": 25,
+    "minimum_monthly_train_events": 40,
+    "monthly_oof_year": 2024,
+    "outcome_columns": "physically removed from 2024 and 2025 feature frames before candidate construction",
+    "purge": "training event exit_time strictly before the test month start",
+    "random_state": 20260724,
+    "selection_quantile": 0.8,
+    "type": "logistic_regression"
+  },
+  "research_id": "BTC_ETH_CROSS_ASSET_STOP_SURVIVAL_CONFIRMATION_V2_20260724",
+  "safety": {
+    "2025_event_selection_written_and_hashed_before_path_evaluation": true,
+    "2025_open_only_after_2024_gate": true,
+    "2026_opened": false,
+    "deployment_bundle_allowed": false,
+    "no_further_parameter_tuning_before_2025": true,
+    "orders_submitted": false,
+    "paper_or_live_started": false
+  },
+  "schema_version": 2,
+  "status": "PREREGISTERED_AFTER_2024_DEVELOPMENT_BEFORE_2025_ACCESS",
+  "target_gate": "base-cost geometric mean daily return >= 0.01 after all confirmation gates",
+  "time_splits": {
+    "2026": "sealed",
+    "base_strategy_development": ["2022-01-01", "2024-01-01"],
+    "confirmation": ["2025-01-01", "2026-01-01"],
+    "survival_model_development": ["2024-01-01", "2025-01-01"]
+  }
+}
