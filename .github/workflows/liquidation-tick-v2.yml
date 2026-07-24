@@ -44,6 +44,7 @@ jobs:
           encoded = path.read_text()
           compressed = base64.b64decode(encoded, validate=True)
           decoded = gzip.decompress(compressed)
+          pathlib.Path('/tmp/windows.csv').write_bytes(decoded)
           text = decoded.decode('utf-8-sig')
           reader = csv.DictReader(io.StringIO(text))
           required = {'symbol', 'start_ms', 'end_ms'}
@@ -94,6 +95,7 @@ jobs:
             --windows /tmp/windows.b64 \
             --out 'artifact/${{ matrix.symbol }}/${{ matrix.month }}'
           cp /tmp/windows_audit.json 'artifact/${{ matrix.symbol }}/${{ matrix.month }}/windows_audit.json'
+          cp /tmp/windows.csv 'artifact/${{ matrix.symbol }}/${{ matrix.month }}/frozen_windows.csv'
       - uses: actions/upload-artifact@v4
         with:
           name: liquidation-v2-${{ matrix.symbol }}-${{ matrix.month }}-${{ github.run_id }}
