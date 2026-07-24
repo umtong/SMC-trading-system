@@ -1,0 +1,188 @@
+name: State-First L1 Streaming V3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/state-first-l1-streaming-v3.yml'
+      - 'research_tools/state_first_l1_streaming_v3/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: state-first-l1-streaming-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUNNER_RAW_SHA256: 384dc2dd9752024837c1bb95152973415996f4856a035eb8474c3ceec7272103
+  RUNNER_GZIP_SHA256: 09b08b1c5bbdd7ee204fb177844a6b6bc32e8d0eee87628f2a13bf28afae81f2
+  RUNNER_B64_SHA256: 5348e8e7f207915f60de02cb1167809e2173e0759c794c01653b4dc7757df4c2
+  PYTHONUNBUFFERED: '1'
+  PYTHONHASHSEED: '0'
+  OMP_NUM_THREADS: '1'
+  OPENBLAS_NUM_THREADS: '1'
+  MKL_NUM_THREADS: '1'
+  NUMEXPR_NUM_THREADS: '1'
+
+jobs:
+  panel:
+    runs-on: macos-14
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install fixed research environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'scikit-learn==1.6.1'
+
+      - name: Reconstruct and verify sealed streaming runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/state-first-v3
+          python - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          source = Path('research_tools/state_first_l1_streaming_v3/runner.py.gz.b64')
+          encoded = b''.join(source.read_bytes().split())
+          assert hashlib.sha256(encoded).hexdigest() == os.environ['RUNNER_B64_SHA256']
+          compressed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(compressed).hexdigest() == os.environ['RUNNER_GZIP_SHA256']
+          raw = gzip.decompress(compressed)
+          assert hashlib.sha256(raw).hexdigest() == os.environ['RUNNER_RAW_SHA256']
+          Path('/tmp/state-first-v3/runner.py').write_bytes(raw)
+          PY
+          python -m py_compile /tmp/state-first-v3/runner.py
+          python /tmp/state-first-v3/runner.py synthetic-test
+          shasum -a 256 research_tools/state_first_l1_streaming_v3/STREAMING_AMENDMENT.md
+
+      - uses: actions/cache@v4
+        with:
+          path: .state-first-v3-cache/${{ matrix.symbol }}
+          key: state-first-l1-v3-${{ matrix.symbol }}-20230103-20230420-20230830-20231228
+
+      - name: Build checksum-verified causal streaming panel
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -l python /tmp/state-first-v3/runner.py panel \
+            --symbol '${{ matrix.symbol }}' \
+            --data-dir '.state-first-v3-cache/${{ matrix.symbol }}' \
+            --output-dir 'state-first-v3-panel/${{ matrix.symbol }}' \
+            2>&1 | tee 'state-first-v3-${{ matrix.symbol }}.log'
+
+      - name: Audit panel and unresolved execution references
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('state-first-v3-panel/${{ matrix.symbol }}')
+          manifest = json.loads((root / '${{ matrix.symbol }}_manifest.json').read_text())
+          assert manifest['contract'] == 'STATE_FIRST_L1_TRADE_FLOW_STREAMING_V3'
+          assert manifest['orders_submitted'] is False
+          assert manifest['credentials_used'] is False
+          assert len(manifest['day_audits']) == 4
+          for day in manifest['day_audits']:
+              assert day['candidate_seconds'] >= 85_000, day
+              assert day['unresolved_entry_ratio'] <= 0.01, day
+              assert all(int(v) >= 80_000 for v in day['valid_exit_rows'].values()), day
+          print(json.dumps(manifest, indent=2))
+          PY
+          cp 'state-first-v3-${{ matrix.symbol }}.log' 'state-first-v3-panel/${{ matrix.symbol }}/build.log'
+          printf '%s  %s\n' "$RUNNER_RAW_SHA256" runner.py > 'state-first-v3-panel/${{ matrix.symbol }}/RUNNER_SHA256.txt'
+          shasum -a 256 state-first-v3-panel/${{ matrix.symbol }}/*
+          du -h state-first-v3-panel/${{ matrix.symbol }}/*
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-l1-streaming-v3-${{ matrix.symbol }}-${{ github.run_id }}
+          path: |
+            state-first-v3-panel/${{ matrix.symbol }}
+            state-first-v3-${{ matrix.symbol }}.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
+
+  evaluate:
+    needs: panel
+    runs-on: macos-14
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install fixed research environment
+        run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3' 'scikit-learn==1.6.1'
+
+      - name: Reconstruct and verify identical sealed runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/state-first-v3
+          python - <<'PY'
+          import base64, gzip, hashlib, os
+          from pathlib import Path
+          encoded = b''.join(Path('research_tools/state_first_l1_streaming_v3/runner.py.gz.b64').read_bytes().split())
+          assert hashlib.sha256(encoded).hexdigest() == os.environ['RUNNER_B64_SHA256']
+          compressed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(compressed).hexdigest() == os.environ['RUNNER_GZIP_SHA256']
+          raw = gzip.decompress(compressed)
+          assert hashlib.sha256(raw).hexdigest() == os.environ['RUNNER_RAW_SHA256']
+          Path('/tmp/state-first-v3/runner.py').write_bytes(raw)
+          PY
+          python -m py_compile /tmp/state-first-v3/runner.py
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: state-first-l1-streaming-v3-*-${{ github.run_id }}
+          path: state-first-v3-input
+          merge-multiple: true
+
+      - name: Require both independently verified symbol panels
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find state-first-v3-input -name '*_state_first_l1_streaming_v3.csv.gz' -type f | wc -l | tr -d ' ')" -eq 2
+          test "$(find state-first-v3-input -name '*_manifest.json' -type f | wc -l | tr -d ' ')" -eq 2
+          grep -R "$RUNNER_RAW_SHA256" state-first-v3-input/*RUNNER_SHA256.txt
+
+      - name: Run gated selection, validation and conditional one-shot test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/state-first-v3/runner.py evaluate \
+            --input-dir state-first-v3-input \
+            --output-dir state-first-v3-results \
+            2>&1 | tee state-first-v3-results.log
+          cp state-first-v3-results.log state-first-v3-results/evaluation.log
+          cp research_tools/state_first_l1_streaming_v3/STREAMING_AMENDMENT.md state-first-v3-results/
+          printf '%s  %s\n' "$RUNNER_RAW_SHA256" runner.py > state-first-v3-results/RUNNER_SHA256.txt
+          python -m json.tool state-first-v3-results/summary.json
+          shasum -a 256 state-first-v3-results/*
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: state-first-l1-streaming-v3-results-${{ github.run_id }}
+          path: state-first-v3-results
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
