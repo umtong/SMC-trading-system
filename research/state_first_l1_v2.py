@@ -46,7 +46,8 @@ def book_seconds(path:Path):
     use=["best_bid_price","best_bid_qty","best_ask_price","best_ask_qty","event_time"]
     for c in pd.read_csv(path,compression="zip",usecols=use,chunksize=750_000):
         for col in use[:-1]:c[col]=pd.to_numeric(c[col],errors="raise")
-        c["event_time"]=pd.to_numeric(c.event_time,errors="raise").astype("int64")
+        raw_time=pd.to_numeric(c.event_time,errors="raise").to_numpy(np.int64)
+        c["event_time"]=np.where(np.abs(raw_time)>=10**15,raw_time//1000,raw_time).astype("int64")
         c=c.sort_values("event_time",kind="mergesort").reset_index(drop=True)
         ts.append(c.event_time.to_numpy(np.int64));bids.append(c.best_bid_price.to_numpy(float));asks.append(c.best_ask_price.to_numpy(float))
         c2=pd.concat([prev,c],ignore_index=True) if prev is not None else c
