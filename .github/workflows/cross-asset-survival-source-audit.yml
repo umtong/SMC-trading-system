@@ -12,9 +12,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cross-asset-survival-source-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit:
-    runs-on: ubuntu-slim
+    runs-on: macos-14
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -23,37 +27,41 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p source-audit
-          cat research/remote/cross_asset_survival_v2.py.gz.b64.part00 \
-              research/remote/cross_asset_survival_v2.py.gz.b64.part01 \
-            | tr -d '[:space:]' \
-            | base64 -d \
-            | gzip -dc > source-audit/cross_asset_survival_v2.py
-          python -m py_compile source-audit/cross_asset_survival_v2.py
-          cp research/cross_asset_survival_20260724/preregistration_v2.json source-audit/
-          cp research/cross_asset_survival_20260724/development_frozen.json.gz.b64 source-audit/
           python - <<'PY'
           import base64, gzip, hashlib, json
           from pathlib import Path
-          root=Path('source-audit')
-          encoded=(root/'development_frozen.json.gz.b64').read_text().strip()
-          raw=gzip.decompress(base64.b64decode(encoded))
-          (root/'development_frozen.json').write_bytes(raw)
-          p=json.loads((root/'preregistration_v2.json').read_text())
+          source_root=Path('research/remote')
+          out=Path('source-audit')
+          encoded=b''.join(
+              b''.join((source_root/f'cross_asset_survival_v2.py.gz.b64.part{i:02d}').read_bytes().split())
+              for i in range(2)
+          )
+          compressed=base64.b64decode(encoded,validate=True)
+          source=gzip.decompress(compressed)
+          (out/'cross_asset_survival_v2.py').write_bytes(source)
+          prereg=Path('research/cross_asset_survival_20260724/preregistration_v2.json')
+          checkpoint_transport=Path('research/cross_asset_survival_20260724/development_frozen.json.gz.b64')
+          (out/'preregistration_v2.json').write_bytes(prereg.read_bytes())
+          (out/'development_frozen.json.gz.b64').write_bytes(checkpoint_transport.read_bytes())
+          checkpoint=gzip.decompress(base64.b64decode(b''.join(checkpoint_transport.read_bytes().split())))
+          (out/'development_frozen.json').write_bytes(checkpoint)
+          p=json.loads(prereg.read_text())
           evidence={
-            'source_sha256':hashlib.sha256((root/'cross_asset_survival_v2.py').read_bytes()).hexdigest(),
-            'development_checkpoint_sha256':hashlib.sha256(raw).hexdigest(),
+            'source_sha256':hashlib.sha256(source).hexdigest(),
+            'development_checkpoint_sha256':hashlib.sha256(checkpoint).hexdigest(),
             'declared_development_checkpoint_sha256':p['fixed_base']['development_checkpoint_sha256'],
-            'checkpoint_match':hashlib.sha256(raw).hexdigest()==p['fixed_base']['development_checkpoint_sha256'],
+            'checkpoint_match':hashlib.sha256(checkpoint).hexdigest()==p['fixed_base']['development_checkpoint_sha256'],
             'candidate_pnl_observed_in_audit':False,
             'confirmation_2025_opened_in_audit':False,
             'sealed_2026_opened':False,
             'orders_submitted':False,
             'production_enabled':False,
           }
-          (root/'audit.json').write_text(json.dumps(evidence,sort_keys=True,indent=2)+'\n')
+          (out/'audit.json').write_text(json.dumps(evidence,sort_keys=True,indent=2)+'\n')
           print(json.dumps(evidence,sort_keys=True,indent=2))
           PY
-          sha256sum source-audit/* | tee source-audit/SHA256SUMS.txt
+          python -m py_compile source-audit/cross_asset_survival_v2.py
+          shasum -a 256 source-audit/* | tee source-audit/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: cross-asset-survival-source-audit-${{ github.run_id }}
