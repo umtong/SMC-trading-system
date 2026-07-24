@@ -1,0 +1,41 @@
+name: Wave7 Metrics Artifact
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/wave7_build_metrics.py
+      - .github/workflows/wave7-metrics-data-pr.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build checksum-verified metrics data
+        run: python scripts/wave7_build_metrics.py
+
+      - name: Upload verified metrics data
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave7-usdm-metrics-2021-01_2025-07-${{ github.sha }}
+          path: |
+            wave7_metrics/BTCUSDT_metrics_5m.csv.gz
+            wave7_metrics/ETHUSDT_metrics_5m.csv.gz
+            wave7_metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

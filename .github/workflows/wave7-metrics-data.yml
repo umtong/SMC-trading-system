@@ -1,0 +1,65 @@
+name: Wave7 Verified Futures Metrics
+
+on:
+  push:
+    branches:
+      - agent/wave7-metrics-data
+    paths:
+      - scripts/download_binance_metrics.py
+      - .github/workflows/wave7-metrics-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - scripts/download_binance_metrics.py
+      - .github/workflows/wave7-metrics-data.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download, checksum, normalize, and audit USD-M metrics
+        run: |
+          python scripts/download_binance_metrics.py \
+            --symbols BTCUSDT ETHUSDT \
+            --start 2021-01-01 \
+            --end 2025-07-31 \
+            --workers 12 \
+            --output-dir wave7_metrics
+
+      - name: Show audit summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("wave7_metrics/manifest.json").read_text())
+          print("coverage", payload["coverage_fraction"])
+          print("missing archives", len(payload["missing_archives"]))
+          for item in payload["series"]:
+              print(json.dumps(item, sort_keys=True))
+          PY
+
+      - name: Upload verified metrics data
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave7-usdm-metrics-2021-01_2025-07-${{ github.sha }}
+          path: |
+            wave7_metrics/BTCUSDT_metrics_5m.csv.gz
+            wave7_metrics/ETHUSDT_metrics_5m.csv.gz
+            wave7_metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

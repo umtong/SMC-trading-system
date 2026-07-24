@@ -45,3 +45,31 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  wave7-metrics:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build checksum-verified USD-M metrics
+        run: python scripts/wave7_build_metrics.py
+
+      - name: Upload verified metrics data
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave7-usdm-metrics-2021-01_2025-07-${{ github.sha }}
+          path: |
+            wave7_metrics/BTCUSDT_metrics_5m.csv.gz
+            wave7_metrics/ETHUSDT_metrics_5m.csv.gz
+            wave7_metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
