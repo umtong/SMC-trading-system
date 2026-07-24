@@ -1,0 +1,158 @@
+{
+  "candidate_id": "cbasis_catchup_ensemble_v1",
+  "status": "FROZEN_BEFORE_2025_ENSEMBLE_OOS",
+  "frozen_at_utc": "2026-07-24T11:33:00Z",
+  "registration_correction": {
+    "corrected_at_utc": "2026-07-24T11:55:00Z",
+    "field": "components.price_flow_catchup_survival.model_threshold",
+    "old_transcription": 0.4982339079726308,
+    "correct_value": 0.6524528174063672,
+    "authority": "SHA-256-locked survival_model_frozen.json",
+    "authority_sha256": "0bf63d493e5aa8869b5a273519e20a0f4abde04cfea6214950b1c9f13577cbfa",
+    "model_sha256": "61c7ae34a15e1d4dc0a00030385613ed3d08f12800c51e7fe88dca897c4a7441",
+    "economic_change": false,
+    "2025_catchup_outcomes_opened_before_correction": false,
+    "note": "Clerical transcription repair only. The already frozen model, selected 2024 events, routing, risk, stops, targets and all evidence hashes are unchanged."
+  },
+  "universe": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "venue": "Binance USD-M perpetual futures with Binance spot basis state",
+  "global_pending_plus_open_limit": 1,
+  "component_priority": [
+    "C_basis",
+    "price_flow_catchup_survival"
+  ],
+  "components": {
+    "C_basis": {
+      "signal": "abs(prior-only 1440-minute USD-M contract/spot basis z) >= 3 during 12-15 UTC inclusive",
+      "side": "opposite sign of the prior-only basis z-score",
+      "entry": "next actual available strategy entry after the completed decision interval",
+      "maximum_holding_minutes": 240,
+      "protective_stop_fraction": 0.02,
+      "profit_target_r": 2.0,
+      "risk_fraction": 0.01,
+      "selection_source": "frozen v24_cross_market_ensemble_v1 C_basis component",
+      "standalone_2023H2_2024_stress20": {
+        "trades": 62,
+        "geometric_daily_return": 0.000298,
+        "final_multiple": 1.177805,
+        "max_drawdown": 0.021069,
+        "profit_factor": 2.422822,
+        "top5_positive_share": 0.305866,
+        "positive_month_fraction": 0.666667,
+        "all_three_half_years_positive": true,
+        "BTCUSDT_positive": true,
+        "ETHUSDT_positive": true
+      }
+    },
+    "price_flow_catchup_survival": {
+      "candidate_id": "price_flow_catchup_h48_ridge0.25_l22",
+      "model": "frozen 2022-2023 development representatives plus 2024 monthly-purged survival LogisticRegression",
+      "model_threshold": 0.6524528174063672,
+      "prediction_horizon_5m_bars": 48,
+      "maximum_holding_minutes": 240,
+      "protective_stop_atr": 3.5,
+      "profit_target_r": 2.0,
+      "risk_fraction": 0.005,
+      "max_leverage": 3.0,
+      "capacity_fraction_of_prior_quote_volume": 0.001,
+      "selection_source_model_sha256": "61c7ae34a15e1d4dc0a00030385613ed3d08f12800c51e7fe88dca897c4a7441",
+      "selection_source_frozen_json_sha256": "0bf63d493e5aa8869b5a273519e20a0f4abde04cfea6214950b1c9f13577cbfa",
+      "standalone_2024_stress20": {
+        "cost_per_side_bps": 12.0,
+        "trades": 67,
+        "geometric_daily_return": 0.00010742462522128604,
+        "total_return": 0.039949730886179146,
+        "max_drawdown": 0.03674057560669808,
+        "profit_factor": 1.2550438364071232,
+        "top5_positive_share": 0.4190423135001479,
+        "positive_month_fraction": 0.4166666666666667,
+        "original_standalone_gate_passed": false
+      },
+      "admission_note": "This component failed its original standalone positive-month gate. It is admitted only as a separately frozen complementary component because the already-observed 2024 one-slot ensemble improved growth, frequency and winner concentration. No standalone promotion claim is made."
+    }
+  },
+  "routing": {
+    "one_global_position": true,
+    "same_timestamp_priority": [
+      "C_basis",
+      "price_flow_catchup_survival"
+    ],
+    "no_reentry_before_actual_exit": true,
+    "no_reentry_on_exit_bar": true,
+    "no_pyramiding": true,
+    "no_martingale": true,
+    "no_cost_dependent_signal_deletion": true,
+    "conservative_reconstruction": "C_basis stop/target/horizon exits are replayed from minute OHLC with stop-first ambiguity; catch-up uses its frozen actual exit ledger."
+  },
+  "selection_2024_evidence": {
+    "base_profile": {
+      "C_basis_all_in_cost_bps": 13.0,
+      "catchup_cost_per_side_bps": 6.0,
+      "trades": 105,
+      "C_basis_trades": 41,
+      "catchup_trades": 64,
+      "final_multiple": 1.269792,
+      "geometric_daily_return": 0.000653,
+      "max_drawdown": 0.030226,
+      "profit_factor": 2.143190,
+      "positive_month_fraction": 0.75,
+      "top5_positive_share": 0.257489
+    },
+    "stress_profile": {
+      "C_basis_all_in_cost_bps": 20.0,
+      "catchup_cost_per_side_bps": 12.0,
+      "trades": 105,
+      "C_basis_trades": 41,
+      "catchup_trades": 64,
+      "final_multiple": 1.196438,
+      "geometric_daily_return": 0.000490,
+      "max_drawdown": 0.033644,
+      "profit_factor": 1.838363,
+      "positive_month_fraction": 0.666667,
+      "worst_month": -0.011577,
+      "top5_positive_share": 0.256534
+    },
+    "evidence_hashes": {
+      "combination_replay_script_sha256": "d3bcddf767dd0f616e526dbc7955de61ca413a7131008ab915a20aabf59864a4",
+      "combination_summary_sha256": "f6f822f5de5d97669ecbe0dbe755380ac32a7adbe7b2a45d75740f2b68fe080a",
+      "C_basis_metrics_sha256": "92e8dd5723f178e70d58abcbdf4356b6e008fee78e467a3921d85f48de20b672"
+    },
+    "not_claimed": "The 2024 ensemble result is a selection result, not an unbiased future-performance estimate."
+  },
+  "confirmation_2025_contract": {
+    "period": [
+      "2025-01-01T00:00:00Z",
+      "2026-01-01T00:00:00Z"
+    ],
+    "data_requirements": [
+      "Checksum-verified official Binance USD-M execution data",
+      "Official Binance spot data or an independently hash-pinned spot series cross-checked against official archives before promotion",
+      "The exact frozen catch-up source revision and manifest",
+      "Actual funding settlements",
+      "Identical global slot and component priority"
+    ],
+    "no_parameter_changes_after_open": true,
+    "minimum_trades": 80,
+    "base_and_stress_returns_positive": true,
+    "profit_factor_at_least": 1.15,
+    "positive_month_fraction_at_least": 0.5,
+    "max_drawdown_at_most": 0.20,
+    "top5_positive_share_at_most": 0.50,
+    "both_components_net_positive": true,
+    "both_symbols_net_positive": true,
+    "target_gate": "Base-cost net geometric mean daily return >= 0.01.",
+    "result_if_failed": "Reject the ensemble without refitting on 2025.",
+    "result_if_passed": "Proceed to exact candidate-day trade/BBO replay, external-venue shadow replay and a later untouched holdout before Paper/Live authority."
+  },
+  "prohibitions": [
+    "No 2025-driven threshold, priority, risk, stop, target, cost or model changes.",
+    "No access to 2026 outcomes in this confirmation.",
+    "No Paper, testnet or live orders.",
+    "No complete deployment bundle unless the >=1% daily target and every pre-live audit pass."
+  ],
+  "orders_submitted": false,
+  "paper_or_live_authority": false
+}
