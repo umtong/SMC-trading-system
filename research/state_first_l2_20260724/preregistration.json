@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "research_id": "BINANCE_USDM_BTC_STATE_FIRST_L2_20260724",
+  "status": "PREREGISTERED_BEFORE_RUN",
+  "created_at_utc": "2026-07-24T00:00:00Z",
+  "economic_hypothesis": "Direction models are unreliable when the pre-trade liquidity state does not permit a move large enough to overcome costs. A separate hazard model should first identify high-information, high-impact states from L2 depth, VPIN, Hawkes intensities, aggressive flow and open interest. Conditional on that state, direction is estimated independently and filtered through continuation, absorption, or unrestricted routing.",
+  "data": {
+    "feature_repo": "ibrahimdaud/binance-btcusdt",
+    "feature_revision_policy": "Resolve and freeze one immutable repository SHA before downloading development data; all later stages must verify the same SHA and file hashes.",
+    "execution_repo": "linxy/USDT-M_Perpetual_Futures",
+    "execution_revision": "0113be29cdcb7e977037d192c1055c01cf0d369e",
+    "symbol": "BTCUSDT",
+    "feature_paths": "features/BTCUSDT/YYYY-MM-DD.parquet",
+    "execution_paths": ["raw/klines_5m/BTCUSDT/YYYY-MM-DD.parquet", "BTCUSDT/BTCUSDT_fundingRate.parquet"],
+    "forward_columns_are_labels_only": true,
+    "exclude_first_bars_each_utc_day": 18
+  },
+  "time_splits": {
+    "development_oos": ["2023-07-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+    "selection": ["2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    "confirmation": ["2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
+    "2026": "sealed"
+  },
+  "causality": {
+    "decision": "Feature values from completed five-minute bar t only.",
+    "entry": "First open of bar t+1.",
+    "normalization": "Model imputers and scalers are fit on training data only.",
+    "walkforward": "Monthly retraining; training labels are purged by the prediction horizon and calibration precedes the test month.",
+    "daily_boundary": "UTC 00:00; non-trading days remain in the equity path.",
+    "missing_bars": "Any feature, label or holding path crossing a missing five-minute bar is invalid.",
+    "day_boundary_state": "First 90 minutes of each UTC day are excluded to remove possible daily-file VPIN/Hawkes state-reset artifacts.",
+    "oi": "Dataset OI features are treated as available at bar close and therefore can affect only the next bar.",
+    "same_bar": "Protective stop has adverse priority; no favorable target is used.",
+    "2025_gate": "2025 files are not loaded unless a single primary passes all 2024 selection gates."
+  },
+  "models": {
+    "hazard": ["logistic", "hist_gradient_boosting"],
+    "direction": ["logistic", "hist_gradient_boosting"],
+    "horizons_5m_bars": [12, 24],
+    "hazard_labels_abs_move_bps": {"12": 30, "24": 45},
+    "hazard_probability_quantiles": [0.90, 0.95, 0.975],
+    "direction_probability_edges": [0.08, 0.12, 0.18],
+    "routing_filters": ["unrestricted", "flow_depth_aligned", "absorption_reversal"],
+    "vpin_minimum": [0.0, 0.40],
+    "stop_atr": [1.5, 2.5, 4.0]
+  },
+  "execution_and_risk": {
+    "initial_equity": 10000.0,
+    "risk_fraction": 0.005,
+    "max_leverage": 3.0,
+    "capacity_fraction_of_prior_quote_volume": 0.001,
+    "cost_per_side_bps": [6.0, 9.0, 12.0],
+    "funding": "Actual historical funding settlements.",
+    "one_global_position": true,
+    "no_reentry_on_exit_bar": true
+  },
+  "development_gate": {
+    "minimum_trades": 30,
+    "base_stress15_stress20_returns": ">0",
+    "profit_factor": ">=1.10",
+    "max_drawdown": "<=0.20",
+    "top5_positive_share": "<=0.50",
+    "positive_month_fraction": ">=0.50",
+    "representative_cap": 12,
+    "mandatory_diversity": "At most one representative per hazard-model, direction-model, horizon and routing-filter tuple before filling remaining slots."
+  },
+  "selection_gate": {
+    "minimum_trades": 40,
+    "base_stress15_stress20_returns": ">0",
+    "profit_factor": ">=1.05",
+    "max_drawdown": "<=0.20",
+    "top5_positive_share": "<=0.50",
+    "positive_month_fraction": ">=0.50"
+  },
+  "confirmation_gate": {
+    "minimum_trades": 40,
+    "base_stress15_stress20_returns": ">0",
+    "profit_factor": ">=1.05",
+    "max_drawdown": "<=0.20",
+    "top5_positive_share": "<=0.60"
+  },
+  "target_gate": "Base-cost geometric mean daily return >= 0.01.",
+  "prohibitions": [
+    "No 2025 access before a frozen 2024 primary exists.",
+    "No 2026 access.",
+    "No target-return, leverage or risk fitting.",
+    "No paper, testnet or live orders.",
+    "No complete deployment bundle unless the target gate and all pre-live audits pass."
+  ]
+}
