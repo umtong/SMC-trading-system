@@ -1,0 +1,17 @@
+name: Cross-asset WFV research archived
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archived:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive notice
+        run: |
+          echo "The original causally gated cross-asset experiment is preserved as research evidence."
+          echo "Automatic PR execution is disabled to avoid duplicate research jobs."
+          echo "No paper, testnet, or live orders are submitted."
