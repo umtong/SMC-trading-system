@@ -4,37 +4,38 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "research/remote/state_first_l2_v2.py.gz.b64.part*"
-      - "research/remote/state_first_l2_v2_test.py.gz.b64.part*"
-      - "research/state_first_l2_20260724/preregistration.json"
+      - "research/remote/state_first_l2_v3.py.gz.b64.part*"
+      - "research/remote/state_first_l2_v3_test.py.gz.b64"
+      - "research/state_first_l2_20260724/preregistration_v2.json"
       - ".github/workflows/state-first-l2-research.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: state-first-l2-${{ github.event.pull_request.number }}
+  group: state-first-l2-v3-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  causal-walkforward:
+  causal-development:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     env:
       PYTHONUNBUFFERED: "1"
-      HF_HOME: ${{ github.workspace }}/.hf_cache_state_first
+      HF_HOME: ${{ github.workspace }}/.hf_cache_state_first_v3
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_HUB_ETAG_TIMEOUT: "120"
       HF_HUB_DOWNLOAD_TIMEOUT: "300"
-      ROOT: ${{ github.workspace }}/research_runs/state_first_l2_20260724
-      SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/state_first_l2.py
-      TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/test_state_first_l2.py
-      PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration.json
-      EXPECTED_SCRIPT_GZ_SHA256: 350348d6349832774f67c00237e0e149a957bdf8a16f4d4e2f93e3d55ae4d396
-      EXPECTED_SCRIPT_SHA256: 3cae6eeb57e2e7ce385bf534b8b6a3c792bec851e1534b3a65ac52971a794298
-      EXPECTED_TEST_GZ_SHA256: 4dc37136936354df36fb08c70a0741d534fb12a581c368ef64bf4d0217179285
-      EXPECTED_TEST_SHA256: a3932277d2bfd234621b726ac0f877cf34d895b0e5248f3df61423a37b248def
-      EXPECTED_PREREG_SHA256: b223ae70bd7e1fb9b7b2cc5b23ddb6d608b0a78e6a48db9f07d35dfd1195ed7e
+      ROOT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724
+      SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724/state_first_l2.py
+      TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_v3_20260724/test_state_first_l2.py
+      PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration_v2.json
+      EXPECTED_SCRIPT_GZ_SHA256: 4eec7a94b5622c3d8feaebee29b9a3594cbae4221f2ba63cc12546981b4156e4
+      EXPECTED_SCRIPT_SHA256: 6382b5ba06a20709a9933acf8e025f1072f7b39b2f77982076bb891014b3d4c5
+      EXPECTED_TEST_GZ_SHA256: 8cb271363cf1a072718dfc6a110e3535fafe8b954f14466ad34181f92b84f8aa
+      EXPECTED_TEST_SHA256: e5f05ddf700b2c1feca2391de0fc31af8a75304a669f893ad78bf1a7cbc6accc
+      EXPECTED_PREREG_SHA256: 717d9007b0ec49f6cbd5f3c5be3c5b8fee6bb06b2676717abf4dda50b104437a
     steps:
       - name: Checkout isolated research branch
         uses: actions/checkout@v4
@@ -42,18 +43,26 @@ jobs:
           ref: research/state-first-l2-20260724
           fetch-depth: 1
 
-      - name: Reconstruct and verify immutable sources
+      - name: Reconstruct and verify immutable v3 sources
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          sha256sum research/remote/state_first_l2_v2.py.gz.b64.part{00..05} \
-            research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} \
+          sha256sum \
+            research/remote/state_first_l2_v3.py.gz.b64.part00 \
+            research/remote/state_first_l2_v3.py.gz.b64.part01a \
+            research/remote/state_first_l2_v3.py.gz.b64.part01b \
+            research/remote/state_first_l2_v3.py.gz.b64.part02 \
+            research/remote/state_first_l2_v3_test.py.gz.b64 \
             > "$ROOT/input_part_sha256.txt"
-          cat research/remote/state_first_l2_v2.py.gz.b64.part{00..05} > /tmp/state_first_l2.py.gz.b64
-          cat research/remote/state_first_l2_v2_test.py.gz.b64.part{00..01} > /tmp/test_state_first_l2.py.gz.b64
+          cat \
+            research/remote/state_first_l2_v3.py.gz.b64.part00 \
+            research/remote/state_first_l2_v3.py.gz.b64.part01a \
+            research/remote/state_first_l2_v3.py.gz.b64.part01b \
+            research/remote/state_first_l2_v3.py.gz.b64.part02 \
+            > /tmp/state_first_l2.py.gz.b64
           base64 --decode /tmp/state_first_l2.py.gz.b64 > /tmp/state_first_l2.py.gz
-          base64 --decode /tmp/test_state_first_l2.py.gz.b64 > /tmp/test_state_first_l2.py.gz
+          base64 --decode research/remote/state_first_l2_v3_test.py.gz.b64 > /tmp/test_state_first_l2.py.gz
           printf '%s  %s\n' "$EXPECTED_SCRIPT_GZ_SHA256" /tmp/state_first_l2.py.gz | sha256sum --check --strict
           printf '%s  %s\n' "$EXPECTED_TEST_GZ_SHA256" /tmp/test_state_first_l2.py.gz | sha256sum --check --strict
           gzip --decompress --stdout /tmp/state_first_l2.py.gz > "$SCRIPT"
@@ -78,40 +87,32 @@ jobs:
             "hf_xet==1.1.10" \
             "pytest==8.3.4"
           python - <<'PY'
-          import json, platform, sys
-          import numpy, pandas, pyarrow, sklearn, huggingface_hub
+          import json,platform,sys
+          import numpy,pandas,pyarrow,sklearn,huggingface_hub
           from pathlib import Path
+          root=Path('research_runs/state_first_l2_v3_20260724')
           payload={
-              "python":sys.version,
-              "platform":platform.platform(),
-              "machine":platform.machine(),
-              "numpy":numpy.__version__,
-              "pandas":pandas.__version__,
-              "pyarrow":pyarrow.__version__,
-              "scikit_learn":sklearn.__version__,
-              "huggingface_hub":huggingface_hub.__version__,
-              "orders_submitted":False,
-              "paper_or_live_started":False,
-              "2026_opened":False,
+            'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),
+            'numpy':numpy.__version__,'pandas':pandas.__version__,'pyarrow':pyarrow.__version__,
+            'scikit_learn':sklearn.__version__,'huggingface_hub':huggingface_hub.__version__,
+            'orders_submitted':False,'paper_or_live_started':False,'2025_opened':False,'2026_opened':False,
           }
-          root=Path("research_runs/state_first_l2_20260724")
-          (root/"environment.json").write_text(json.dumps(payload,indent=2,sort_keys=True),encoding="utf-8")
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
           print(json.dumps(payload,sort_keys=True))
           PY
 
-      - name: Run causal unit and accounting tests
+      - name: Run causal and accounting regression tests
         shell: bash
         run: |
           set -euo pipefail
           cd "$ROOT"
           pytest -q "$TEST_SCRIPT" 2>&1 | tee unit_tests.log
 
-      - name: Run physically gated development selection confirmation
+      - name: Run development only and preserve provenance gate
         shell: bash
         run: |
           set -uo pipefail
           mkdir -p "$ROOT/development" "$ROOT/selection" "$ROOT/confirmation"
-          status="$ROOT/run_status.json"
           dev_rc=0
           python "$SCRIPT" \
             --stage development \
@@ -119,69 +120,38 @@ jobs:
             --cache-dir "$HF_HOME" \
             --preregistration "$PREREG" \
             2>&1 | tee "$ROOT/development.log" || dev_rc=$?
-
           dev_pass=0
           if [[ $dev_rc -eq 0 && -f "$ROOT/development/development_frozen.json" ]]; then
             dev_pass=$(python - "$ROOT/development/development_frozen.json" <<'PY'
-          import json, sys
-          print(int(json.load(open(sys.argv[1],encoding="utf-8")).get("realistic_gate_count",0)))
+          import json,sys
+          print(int(json.load(open(sys.argv[1],encoding='utf-8')).get('realistic_gate_count',0)))
           PY
             )
           fi
-
-          selection_rc=-1
-          primary=0
-          if [[ $dev_rc -eq 0 && $dev_pass -gt 0 ]]; then
-            selection_rc=0
-            python "$SCRIPT" \
-              --stage selection \
-              --work-dir "$ROOT/selection" \
-              --cache-dir "$HF_HOME" \
-              --preregistration "$PREREG" \
-              --predecessor "$ROOT/development/development_frozen.json" \
-              2>&1 | tee "$ROOT/selection.log" || selection_rc=$?
-            if [[ $selection_rc -eq 0 && -f "$ROOT/selection/selection_frozen.json" ]]; then
-              primary=$(python - "$ROOT/selection/selection_frozen.json" <<'PY'
-          import json, sys
-          print(int(json.load(open(sys.argv[1],encoding="utf-8")).get("primary") is not None))
-          PY
-              )
-            fi
-          fi
-
-          confirmation_rc=-1
-          if [[ $selection_rc -eq 0 && $primary -eq 1 ]]; then
-            confirmation_rc=0
-            python "$SCRIPT" \
-              --stage confirmation \
-              --work-dir "$ROOT/confirmation" \
-              --cache-dir "$HF_HOME" \
-              --preregistration "$PREREG" \
-              --predecessor "$ROOT/selection/selection_frozen.json" \
-              2>&1 | tee "$ROOT/confirmation.log" || confirmation_rc=$?
-          fi
-
-          python - "$status" "$dev_rc" "$dev_pass" "$selection_rc" "$primary" "$confirmation_rc" <<'PY'
-          import json, pathlib, sys
-          path=pathlib.Path(sys.argv[1])
+          python - "$ROOT/selection/selection_not_opened_feature_provenance.json" "$dev_pass" <<'PY'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1])
           payload={
-              "development_rc":int(sys.argv[2]),
-              "development_realistic_gate_count":int(sys.argv[3]),
-              "selection_rc":int(sys.argv[4]),
-              "selection_primary_exists":bool(int(sys.argv[5])),
-              "confirmation_rc":int(sys.argv[6]),
-              "orders_submitted":False,
-              "paper_or_live_started":False,
-              "2026_opened":False,
-              "target_gate_1pct_daily":False,
+            'development_realistic_gate_count':int(sys.argv[2]),
+            'selection_opened':False,
+            'reason':'Independent checksum-verified raw feature-builder reconstruction attestation is not yet PASSED.',
+            '2024_loaded':False,'2025_loaded':False,'2026_opened':False,
+            'candidate_pnl_observed_after_development':False,
+            'orders_submitted':False,'paper_or_live_started':False,
           }
-          confirmation=path.parent/"confirmation"/"confirmation_frozen.json"
-          if confirmation.exists():
-              value=json.loads(confirmation.read_text(encoding="utf-8"))
-              payload["confirmation_gate"]=bool(value.get("confirmation_gate",False))
-              payload["target_gate_1pct_daily"]=bool(value.get("target_gate_1pct_daily",False))
-              payload["confirmation_result"]=value.get("result")
-          path.write_text(json.dumps(payload,indent=2,sort_keys=True),encoding="utf-8")
+          p.write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+          python - "$ROOT/run_status.json" "$dev_rc" "$dev_pass" <<'PY'
+          import json,pathlib,sys
+          payload={
+            'development_rc':int(sys.argv[2]),
+            'development_realistic_gate_count':int(sys.argv[3]),
+            'selection_rc':-2,'selection_primary_exists':False,'confirmation_rc':-2,
+            'feature_builder_attestation_passed':False,
+            'selection_opened':False,'2024_loaded':False,'2025_opened':False,'2026_opened':False,
+            'orders_submitted':False,'paper_or_live_started':False,'target_gate_1pct_daily':False,
+          }
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
           print(json.dumps(payload,sort_keys=True))
           PY
           exit 0
@@ -198,8 +168,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: state-first-l2-${{ github.sha }}
-          path: research_runs/state_first_l2_20260724
+          name: state-first-l2-v3-${{ github.sha }}
+          path: research_runs/state_first_l2_v3_20260724
           if-no-files-found: error
           retention-days: 7
           compression-level: 6
