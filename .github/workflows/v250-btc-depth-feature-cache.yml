@@ -14,148 +14,159 @@ concurrency:
   group: v250-btc-depth-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  HF_HUB_DISABLE_TELEMETRY: '1'
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: '2023'
-            start: '2023-01-01'
-            end: '2024-01-01'
-          - shard: '2024'
-            start: '2024-01-01'
-            end: '2025-01-01'
-          - shard: '2025'
-            start: '2025-01-01'
-            end: '2026-01-01'
-          - shard: '2026H1'
-            start: '2026-01-01'
-            end: '2026-06-01'
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install isolated dependencies
-        run: python -m pip install --upgrade pyarrow pandas numpy
-      - name: Stream direct daily feature files and independently audit prices
-        id: build
-        continue-on-error: true
+        run: python -m pip install --upgrade 'pandas==2.2.3' 'pyarrow==18.1.0'
+      - name: Enumerate the actual dataset tree and stream only listed parquet files
         shell: bash
-        env:
-          SHARD: ${{ matrix.shard }}
-          START: ${{ matrix.start }}
-          END: ${{ matrix.end }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           python - <<'PY'
           from __future__ import annotations
-          import concurrent.futures
-          import hashlib
-          import io
-          import json
-          import os
-          import time
-          import urllib.parse
-          import urllib.request
-          import zipfile
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from pathlib import Path
-          import numpy as np
+          from urllib.parse import quote
+          import hashlib, json, re, time, urllib.request
           import pandas as pd
           import pyarrow as pa
           import pyarrow.parquet as pq
 
-          shard=os.environ['SHARD'];start=pd.Timestamp(os.environ['START'],tz='UTC');end=pd.Timestamp(os.environ['END'],tz='UTC')
-          out=Path('v250-output')/shard;tmp=Path('v250-download')/shard;out.mkdir(parents=True,exist_ok=True);tmp.mkdir(parents=True,exist_ok=True)
-          days=pd.date_range(start,end,freq='1D',inclusive='left')
-          repo='ibrahimdaud/binance-btcusdt'
-          required={'bar_time_ms','symbol','close','depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance','hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio'}
-          forward={'fwd_ret_5m','fwd_ret_15m','fwd_ret_60m','fwd_direction_5m'}
+          REPO='ibrahimdaud/binance-btcusdt'
+          PREFIX='features/BTCUSDT'
+          API=f'https://huggingface.co/api/datasets/{REPO}/tree/main/{PREFIX}'
+          START=pd.Timestamp('2023-01-01',tz='UTC')
+          END=pd.Timestamp('2026-06-01',tz='UTC')
+          OUT=Path('v250-output'); RAW=Path('v250-raw')
+          OUT.mkdir(exist_ok=True); RAW.mkdir(exist_ok=True)
+          date_re=re.compile(r'(20\d{2}-\d{2}-\d{2})')
 
-          def fetch(url:str,attempts:int=8,timeout:int=180)->bytes:
-              error=None
-              for attempt in range(attempts):
+          def request(url:str, attempts:int=8)->bytes:
+              last=None
+              for i in range(attempts):
                   try:
-                      req=urllib.request.Request(url,headers={'User-Agent':'smc-v250-direct/3.0','Accept':'application/octet-stream'})
-                      with urllib.request.urlopen(req,timeout=timeout) as response:return response.read()
+                      req=urllib.request.Request(url,headers={'User-Agent':'smc-v250-depth/3.0'})
+                      with urllib.request.urlopen(req,timeout=300) as r:
+                          return r.read()
                   except Exception as exc:
-                      error=exc;time.sleep(min(2**attempt,20))
-              raise RuntimeError(f'{url}: {error!r}')
+                      last=exc
+                      if i+1<attempts: time.sleep(min(2**i,30))
+              raise RuntimeError(f'{url}: {last!r}')
 
-          def one(day:pd.Timestamp):
-              rel=f'features/BTCUSDT/{day:%Y-%m-%d}.parquet'
-              quoted=urllib.parse.quote(rel,safe='/')
-              url=f'https://huggingface.co/datasets/{repo}/resolve/main/{quoted}?download=true'
-              payload=fetch(url)
-              path=tmp/f'{day:%Y-%m-%d}.parquet';path.write_bytes(payload)
-              table=pq.read_table(path)
-              if table.num_rows!=288:raise ValueError(f'{day:%Y-%m-%d}: rows={table.num_rows}')
-              missing=required.difference(table.column_names)
-              if missing:raise ValueError(f'{day:%Y-%m-%d}: missing={sorted(missing)}')
-              observed=table['bar_time_ms'].to_numpy(zero_copy_only=False).astype(np.int64)
-              expected=int(day.timestamp()*1000)+np.arange(288,dtype=np.int64)*300_000
-              if not np.array_equal(observed,expected):raise ValueError(f'{day:%Y-%m-%d}: invalid grid')
-              keep=[c for c in table.column_names if c not in forward]
-              return day,table.select(keep),hashlib.sha256(payload).hexdigest(),len(payload),url
+          # The tree endpoint returns the concrete file paths. Follow Link-style
+          # pagination by increasing offset; stop only on a short page.
+          entries=[]; offset=0; limit=1000
+          while True:
+              url=f'{API}?recursive=true&expand=false&limit={limit}&offset={offset}'
+              page=json.loads(request(url))
+              if not isinstance(page,list):
+                  raise ValueError(f'unexpected tree payload at offset {offset}: {type(page)}')
+              entries.extend(page)
+              if len(page)<limit: break
+              offset += len(page)
+              if offset>100000: raise ValueError('tree pagination runaway')
 
-          records=[];tables=[];errors=[]
-          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-              futures={pool.submit(one,day):day for day in days}
-              for completed,future in enumerate(concurrent.futures.as_completed(futures),1):
-                  day=futures[future]
-                  try:
-                      d,table,digest,size,url=future.result();tables.append(table);records.append({'date':f'{d:%Y-%m-%d}','url':url,'sha256':digest,'bytes':size,'rows':table.num_rows})
-                  except Exception as exc:
-                      errors.append({'date':f'{day:%Y-%m-%d}','error':repr(exc)})
-                  if completed%50==0:print(f'{shard}: {completed}/{len(days)} errors={len(errors)}',flush=True)
+          files=[]
+          for item in entries:
+              path=str(item.get('path',''))
+              if item.get('type')!='file' or not path.endswith('.parquet'): continue
+              m=date_re.search(Path(path).stem)
+              if not m: continue
+              day=pd.Timestamp(m.group(1),tz='UTC')
+              if START<=day<END: files.append((day,path,item))
+          files=sorted({p:(d,p,i) for d,p,i in files}.values())
+          if not files:
+              raise SystemExit(f'no parquet files found; tree entries={len(entries)}')
 
-          diagnostic={'shard':shard,'start':str(start),'end':str(end),'expected_days':len(days),'completed_days':len(records),'errors':errors,'records':sorted(records,key=lambda x:x['date'])}
-          (out/'DOWNLOAD_DIAGNOSTIC.json').write_text(json.dumps(diagnostic,indent=2),encoding='utf-8')
-          if errors or len(records)!=len(days):raise SystemExit(f'download errors={len(errors)} complete={len(records)}/{len(days)}')
+          required=['bar_time_ms','depth_imbalance_1pct','vpin_50','vpin_bucket_imbalance',
+                    'hawkes_buy_intensity','hawkes_sell_intensity','hawkes_net','oi_btc',
+                    'oi_change_1h','ls_count_ratio','taker_ls_vol_ratio']
+          forward_prefixes=('fwd_','future_','label_','target_')
 
-          table=pa.concat_tables(tables,promote_options='default');df=table.to_pandas().sort_values('bar_time_ms',kind='mergesort').reset_index(drop=True)
-          if forward.intersection(df.columns):raise AssertionError('future label survived')
+          def download(item):
+              day,path,meta=item
+              url=f'https://huggingface.co/datasets/{REPO}/resolve/main/{quote(path,safe="/")}?download=true'
+              payload=request(url)
+              local=RAW/f'{day.date()}.parquet'; local.write_bytes(payload)
+              table=pq.read_table(local)
+              if table.num_rows!=288:
+                  raise ValueError(f'{path}: rows={table.num_rows}')
+              missing=[c for c in required if c not in table.column_names]
+              if missing: raise ValueError(f'{path}: missing={missing}')
+              return {'day':str(day.date()),'path':path,'url':url,'bytes':len(payload),
+                      'sha256':hashlib.sha256(payload).hexdigest(),'local':str(local),
+                      'columns':table.column_names}
+
+          records=[]
+          with ThreadPoolExecutor(max_workers=12) as pool:
+              futures={pool.submit(download,x):x for x in files}
+              for n,fut in enumerate(as_completed(futures),1):
+                  records.append(fut.result())
+                  if n%100==0: print(f'downloaded {n}/{len(files)}',flush=True)
+          records=sorted(records,key=lambda r:r['day'])
+
+          tables=[]; dropped=set()
+          for rec in records:
+              table=pq.read_table(rec['local'])
+              drop=[c for c in table.column_names if c.lower().startswith(forward_prefixes)]
+              dropped.update(drop)
+              keep=[c for c in table.column_names if c not in drop]
+              tables.append(table.select(keep))
+          table=pa.concat_tables(tables,promote_options='default')
+          df=table.to_pandas().sort_values('bar_time_ms',kind='mergesort').reset_index(drop=True)
           ts=pd.to_datetime(df.bar_time_ms,unit='ms',utc=True)
-          if ts.duplicated().any() or not ts.diff().dropna().eq(pd.Timedelta(minutes=5)).all():raise ValueError('invalid combined chronology')
-          df.insert(1,'known_at_ms',df.bar_time_ms.astype('int64')+300_000)
-          delayed=['oi_btc','oi_change_1h','ls_count_ratio','taker_ls_vol_ratio']
-          for column in delayed:df[column]=df[column].shift(1)
+          if ts.duplicated().any(): raise ValueError('duplicate timestamp')
+          delta=ts.to_series(index=range(len(ts))).diff()
+          segment=(delta.ne(pd.Timedelta(minutes=5)) & delta.notna()).cumsum().astype('int32')
+          df['segment_id']=segment.to_numpy()
+          # Never bridge missing dates. Gaps are explicit in the manifest and
+          # every rolling model must restart by segment_id.
+          gap_rows=[]
+          for i in range(1,len(ts)):
+              if ts[i]-ts[i-1]!=pd.Timedelta(minutes=5):
+                  gap_rows.append({'previous':str(ts[i-1]),'next':str(ts[i]),'delta':str(ts[i]-ts[i-1])})
+          if any(c.lower().startswith(forward_prefixes) for c in df.columns):
+              raise ValueError('future/label column survived physical drop')
+          if not df.depth_imbalance_1pct.notna().any():
+              raise ValueError('depth column is entirely null')
 
-          official_root='https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/5m';official_parts=[];official_records=[]
-          months=pd.period_range(start.to_period('M'),(end-pd.Timedelta(days=1)).to_period('M'),freq='M')
-          for period in months:
-              name=f'BTCUSDT-5m-{period}.zip';url=f'{official_root}/{name}'
-              checksum=fetch(url+'.CHECKSUM').decode('utf-8-sig').strip().split()[0].lower();payload=fetch(url);actual=hashlib.sha256(payload).hexdigest()
-              if actual!=checksum:raise ValueError(f'official checksum mismatch {period}')
-              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-                  members=[m for m in archive.namelist() if m.endswith('.csv')]
-                  if len(members)!=1:raise ValueError(f'{period}: unexpected members')
-                  raw=pd.read_csv(archive.open(members[0]),header=None,low_memory=False)
-              if pd.isna(pd.to_numeric(raw.iloc[0,0],errors='coerce')):raw=raw.iloc[1:].copy()
-              official_parts.append(pd.DataFrame({'bar_time_ms':pd.to_numeric(raw.iloc[:,0],errors='raise').astype('int64'),'official_close':pd.to_numeric(raw.iloc[:,4],errors='raise').astype(float)}))
-              official_records.append({'month':str(period),'sha256':actual,'rows':len(raw),'bytes':len(payload)})
-          official=pd.concat(official_parts,ignore_index=True);official=official[(official.bar_time_ms>=int(start.timestamp()*1000))&(official.bar_time_ms<int(end.timestamp()*1000))]
-          audit=df[['bar_time_ms','close']].merge(official,on='bar_time_ms',how='left',validate='one_to_one')
-          if audit.official_close.isna().any():raise ValueError('official close missing')
-          error=(audit.close.astype(float)-audit.official_close).abs();max_error=float(error.max())
-          if max_error>1e-8:raise ValueError(f'close mismatch={max_error}')
-
-          path=out/f'BTCUSDT_depth_flow_{shard}.parquet';df.to_parquet(path,index=False,compression='zstd')
-          manifest={'schema_version':3,'shard':shard,'source_repo':repo,'research_only':True,'derived_generator_audit_pending':True,'promotion_blocked':True,'start':str(ts.min()),'end':str(ts.max()),'rows':len(df),'columns':list(df.columns),'source_files':len(records),'future_columns_removed':sorted(forward),'positioning_delayed_one_bar':delayed,'official_close_max_abs_error':max_error,'official_months':official_records,'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'records':sorted(records,key=lambda x:x['date'])}
-          (out/'MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8');print(json.dumps({k:v for k,v in manifest.items() if k not in {'records','official_months','columns'}},indent=2))
+          path=OUT/'BTCUSDT_depth_flow_future_free_2023_2026-05.parquet'
+          df.to_parquet(path,index=False,compression='zstd')
+          manifest={
+            'source_repo':REPO,'source_prefix':PREFIX,'research_only':True,
+            'tree_entries':len(entries),'selected_files':len(records),
+            'start':str(ts.min()),'end':str(ts.max()),'rows':len(df),
+            'segments':int(df.segment_id.nunique()),'gaps':gap_rows,
+            'columns':list(df.columns),'physically_dropped_forward_columns':sorted(dropped),
+            'depth_non_null':int(df.depth_imbalance_1pct.notna().sum()),
+            'output_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+            'source_records':records,
+            'causality_contract':{
+              'bar_time_ms':'source 5m bar timestamp; runtime known_at must be bar_time_ms + 5 minutes',
+              'oi_and_positioning':'must receive one additional completed-bar delay before use',
+              'forward_columns':'physically absent from feature artifact',
+              'gap_policy':'no forward fill across segment_id',
+              'promotion_allowed':False,
+            },
+          }
+          (OUT/'MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps({k:v for k,v in manifest.items() if k not in ('source_records','columns','gaps')},indent=2))
           PY
-      - name: Upload diagnostics or immutable future-free shard
-        if: always()
+      - name: Upload immutable future-free feature panel
         uses: actions/upload-artifact@v4
         with:
-          name: v250-btc-depth-${{ matrix.shard }}-${{ github.run_id }}
-          path: v250-output/${{ matrix.shard }}
-          if-no-files-found: warn
+          name: v250-btc-depth-feature-panel-${{ github.run_id }}
+          path: v250-output
+          if-no-files-found: error
           compression-level: 0
           retention-days: 14
-      - name: Fail job when the build step failed
-        if: steps.build.outcome == 'failure'
-        run: exit 1
