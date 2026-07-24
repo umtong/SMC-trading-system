@@ -6,6 +6,11 @@ on:
       - agent/quarter-hour-1m-data
     paths:
       - .github/workflows/quarter-hour-1m-data.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/quarter-hour-1m-data.yml
   workflow_dispatch:
 
 permissions:
@@ -39,7 +44,6 @@ jobs:
           import json
           import re
           import time
-          import urllib.error
           import urllib.request
           import zipfile
           from datetime import datetime, timezone
