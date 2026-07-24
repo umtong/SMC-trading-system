@@ -1,0 +1,171 @@
+name: Single-Sided Maker Queue V1
+
+on:
+  push:
+    branches: [research/single-sided-maker-queue-v1-20260724]
+    paths:
+      - '.github/workflows/single-sided-maker-queue-v1.yml'
+      - 'research_tools/single_sided_maker_queue_v1.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/single-sided-maker-queue-v1.yml'
+      - 'research_tools/single_sided_maker_queue_v1.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: single-sided-maker-queue-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - name: Compile and freeze source
+        run: |
+          set -euo pipefail
+          python -m py_compile research_tools/single_sided_maker_queue_v1.py
+          mkdir -p preflight
+          sha256sum research_tools/single_sided_maker_queue_v1.py > preflight/SOURCE_SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maker-v1-preflight-${{ github.run_id }}
+          path: preflight
+          retention-days: 30
+
+  development:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - uses: actions/cache@v4
+        with:
+          path: maker-cache/${{ matrix.symbol }}
+          key: maker-v1-${{ matrix.symbol }}-20230103-20230420-20230830
+      - name: Build checksum-verified development outcomes
+        run: |
+          set -euo pipefail
+          mkdir -p maker-outcomes/${{ matrix.symbol }}
+          /usr/bin/time -v python research_tools/single_sided_maker_queue_v1.py build \
+            --symbol '${{ matrix.symbol }}' \
+            --days 2023-01-03 2023-04-20 2023-08-30 \
+            --cache maker-cache/${{ matrix.symbol }} \
+            --output maker-outcomes/${{ matrix.symbol }}
+          rm -rf maker-cache/${{ matrix.symbol }}
+          sha256sum maker-outcomes/${{ matrix.symbol }}/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maker-v1-development-${{ matrix.symbol }}-${{ github.run_id }}
+          path: maker-outcomes/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  evaluate:
+    needs: development
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maker-v1-development-*-${{ github.run_id }}
+          path: maker-input
+          merge-multiple: true
+      - name: Select on train/selection and gate validation
+        run: |
+          set -euo pipefail
+          python research_tools/single_sided_maker_queue_v1.py evaluate \
+            --input maker-input \
+            --output maker-results
+          python -m json.tool maker-results/summary.json
+          sha256sum maker-results/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maker-v1-evaluation-${{ github.run_id }}
+          path: maker-results
+          if-no-files-found: error
+          retention-days: 30
+
+  test:
+    needs: evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade 'numpy==2.1.3' 'pandas==2.2.3'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maker-v1-evaluation-${{ github.run_id }}
+          path: maker-selected
+          merge-multiple: true
+      - name: Authorize one-shot test
+        id: gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          s=json.load(open('maker-selected/summary.json'))
+          print(s)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write('authorized='+('true' if s.get('test_authorized') else 'false')+'\n')
+          PY
+      - uses: actions/cache@v4
+        if: steps.gate.outputs.authorized == 'true'
+        with:
+          path: maker-test-cache
+          key: maker-v1-test-20231228-btc-eth
+      - name: Build sealed test only after authorization
+        if: steps.gate.outputs.authorized == 'true'
+        run: |
+          set -euo pipefail
+          for symbol in BTCUSDT ETHUSDT; do
+            python research_tools/single_sided_maker_queue_v1.py build \
+              --symbol "$symbol" \
+              --days 2023-12-28 \
+              --cache maker-test-cache/$symbol \
+              --output maker-test-input/$symbol
+          done
+          python research_tools/single_sided_maker_queue_v1.py test \
+            --input maker-test-input \
+            --selected maker-selected/summary.json \
+            --output maker-test-results
+          python -m json.tool maker-test-results/test_summary.json
+      - name: Record closed-test result when not authorized
+        if: steps.gate.outputs.authorized != 'true'
+        run: |
+          mkdir -p maker-test-results
+          printf '%s\n' '{"test_opened":false,"reason":"development_or_validation_gate_failed","promotion_allowed":false}' > maker-test-results/test_summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: maker-v1-test-${{ github.run_id }}
+          path: maker-test-results
+          if-no-files-found: error
+          retention-days: 30
