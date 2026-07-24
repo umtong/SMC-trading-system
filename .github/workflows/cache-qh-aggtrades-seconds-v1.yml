@@ -1,0 +1,286 @@
+name: Cache Quarter-Hour AggTrades Seconds v1
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-qh-aggtrades-seconds-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-seconds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { symbol: ETHUSDT, year: 2021, first_month: 7, last_month: 12 }
+          - { symbol: ETHUSDT, year: 2022, first_month: 1, last_month: 12 }
+          - { symbol: ETHUSDT, year: 2023, first_month: 1, last_month: 12 }
+          - { symbol: ETHUSDT, year: 2024, first_month: 1, last_month: 12 }
+          - { symbol: ETHUSDT, year: 2025, first_month: 1, last_month: 6 }
+          - { symbol: SOLUSDT, year: 2021, first_month: 7, last_month: 12 }
+          - { symbol: SOLUSDT, year: 2022, first_month: 1, last_month: 12 }
+          - { symbol: SOLUSDT, year: 2023, first_month: 1, last_month: 12 }
+          - { symbol: SOLUSDT, year: 2024, first_month: 1, last_month: 12 }
+          - { symbol: SOLUSDT, year: 2025, first_month: 1, last_month: 6 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+
+      - name: Download, verify, and aggregate official aggTrades
+        shell: bash
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+          YEAR: ${{ matrix.year }}
+          FIRST_MONTH: ${{ matrix.first_month }}
+          LAST_MONTH: ${{ matrix.last_month }}
+        run: |
+          set -euo pipefail
+          mkdir -p qh-aggtrades-output
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import tempfile
+          import zipfile
+          from pathlib import Path
+
+          import numpy as np
+          import pandas as pd
+          import requests
+
+          SYMBOL = os.environ["SYMBOL"]
+          YEAR = int(os.environ["YEAR"])
+          FIRST_MONTH = int(os.environ["FIRST_MONTH"])
+          LAST_MONTH = int(os.environ["LAST_MONTH"])
+          OUT = Path("qh-aggtrades-output")
+          BASE = "https://data.binance.vision/data/futures/um/monthly/aggTrades"
+          RAW_COLUMNS = [
+              "agg_trade_id", "price", "quantity", "first_trade_id",
+              "last_trade_id", "transact_time", "is_buyer_maker",
+          ]
+          ALIASES = {
+              "a": "agg_trade_id", "aggtradeid": "agg_trade_id",
+              "aggregate_trade_id": "agg_trade_id", "agg_trade_id": "agg_trade_id",
+              "p": "price", "price": "price",
+              "q": "quantity", "qty": "quantity", "quantity": "quantity",
+              "f": "first_trade_id", "first_trade_id": "first_trade_id",
+              "l": "last_trade_id", "last_trade_id": "last_trade_id",
+              "t": "transact_time", "time": "transact_time",
+              "timestamp": "transact_time", "transact_time": "transact_time",
+              "m": "is_buyer_maker", "is_buyer_maker": "is_buyer_maker",
+              "isbuyermaker": "is_buyer_maker",
+          }
+          session = requests.Session()
+          session.headers["User-Agent"] = "SMC-quarter-hour-research/aggtrades-v1"
+
+          def sha256_file(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def timestamp_unit(values: pd.Series) -> str:
+              med = float(pd.to_numeric(values, errors="raise").abs().median())
+              if med > 1e17:
+                  return "ns"
+              if med > 1e14:
+                  return "us"
+              if med > 1e11:
+                  return "ms"
+              return "s"
+
+          month_frames: list[pd.DataFrame] = []
+          archive_records: list[dict[str, object]] = []
+          for month in range(FIRST_MONTH, LAST_MONTH + 1):
+              stamp = f"{YEAR:04d}-{month:02d}"
+              name = f"{SYMBOL}-aggTrades-{stamp}.zip"
+              url = f"{BASE}/{SYMBOL}/{name}"
+              checksum_url = url + ".CHECKSUM"
+              checksum_response = session.get(checksum_url, timeout=(30, 180))
+              checksum_response.raise_for_status()
+              expected = checksum_response.text.strip().split()[0].lower()
+
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  archive = Path(tmpdir) / name
+                  h = hashlib.sha256()
+                  size = 0
+                  with session.get(url, stream=True, timeout=(30, 600)) as response:
+                      response.raise_for_status()
+                      with archive.open("wb") as output:
+                          for payload in response.iter_content(8 * 1024 * 1024):
+                              if not payload:
+                                  continue
+                              output.write(payload)
+                              h.update(payload)
+                              size += len(payload)
+                  actual = h.hexdigest()
+                  if actual != expected:
+                      raise RuntimeError(f"{name}: checksum mismatch expected={expected} actual={actual}")
+
+                  with zipfile.ZipFile(archive) as zf:
+                      csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+                      if len(csv_names) != 1:
+                          raise RuntimeError(f"{name}: expected one CSV, got {csv_names}")
+                      with zf.open(csv_names[0]) as stream:
+                          first = stream.readline().decode("utf-8", "replace").strip().split(",")
+                      first_key = first[0].strip().lower().replace(" ", "_")
+                      has_header = first_key in ALIASES
+
+                      chunk_groups: list[pd.DataFrame] = []
+                      with zf.open(csv_names[0]) as stream:
+                          reader = pd.read_csv(
+                              stream,
+                              header=0 if has_header else None,
+                              names=None if has_header else RAW_COLUMNS,
+                              chunksize=1_000_000,
+                              low_memory=False,
+                          )
+                          unit_seen = None
+                          for chunk in reader:
+                              chunk.columns = [str(c).strip().lower().replace(" ", "_") for c in chunk.columns]
+                              chunk = chunk.rename(columns={c: ALIASES.get(c, c) for c in chunk.columns})
+                              missing = sorted(set(RAW_COLUMNS) - set(chunk.columns))
+                              if missing:
+                                  raise RuntimeError(f"{name}: missing columns={missing}; actual={list(chunk.columns)}")
+                              for col in ("price", "quantity", "first_trade_id", "last_trade_id", "transact_time"):
+                                  chunk[col] = pd.to_numeric(chunk[col], errors="raise")
+                              unit = timestamp_unit(chunk["transact_time"])
+                              if unit_seen is None:
+                                  unit_seen = unit
+                              elif unit != unit_seen:
+                                  raise RuntimeError(f"{name}: timestamp unit changed within archive: {unit_seen}->{unit}")
+                              ts = pd.to_datetime(chunk["transact_time"], unit=unit, utc=True, errors="raise")
+                              quarter_mask = (ts.dt.minute % 15 == 0)
+                              if not bool(quarter_mask.any()):
+                                  continue
+                              c = chunk.loc[quarter_mask].copy()
+                              t = ts.loc[quarter_mask]
+                              sec = t.dt.second.astype(np.int16)
+                              # Keep all 60 seconds of the quarter-opening minute so any
+                              # pre-registered 1/2/5/10/20/30/60-second window can be tested.
+                              price = c["price"].to_numpy(float)
+                              qty = c["quantity"].to_numpy(float)
+                              quote = price * qty
+                              maker = c["is_buyer_maker"].astype(str).str.strip().str.lower().isin({"true", "1", "t"}).to_numpy()
+                              signed = np.where(maker, -quote, quote)
+                              raw_trade_count = (
+                                  c["last_trade_id"].to_numpy(np.int64)
+                                  - c["first_trade_id"].to_numpy(np.int64) + 1
+                              )
+                              base = pd.DataFrame({
+                                  "quarter_time": t.dt.floor("15min").to_numpy(),
+                                  "second": sec.to_numpy(),
+                                  "transact_time": t.to_numpy(),
+                                  "agg_trade_id": c["agg_trade_id"].to_numpy(np.int64),
+                                  "price": price,
+                                  "quantity": qty,
+                                  "quote_volume": quote,
+                                  "signed_quote": signed,
+                                  "raw_trade_count": raw_trade_count,
+                              })
+                              base = base.sort_values(["quarter_time", "second", "transact_time", "agg_trade_id"])
+                              g = base.groupby(["quarter_time", "second"], sort=False, observed=True)
+                              agg = g.agg(
+                                  open=("price", "first"),
+                                  high=("price", "max"),
+                                  low=("price", "min"),
+                                  close=("price", "last"),
+                                  quantity=("quantity", "sum"),
+                                  quote_volume=("quote_volume", "sum"),
+                                  signed_quote=("signed_quote", "sum"),
+                                  aggregate_trade_count=("agg_trade_id", "size"),
+                                  raw_trade_count=("raw_trade_count", "sum"),
+                                  first_time=("transact_time", "min"),
+                                  last_time=("transact_time", "max"),
+                              ).reset_index()
+                              chunk_groups.append(agg)
+
+                  if not chunk_groups:
+                      raise RuntimeError(f"{name}: no quarter-hour opening trades found")
+                  month = pd.concat(chunk_groups, ignore_index=True)
+                  month = month.sort_values(["quarter_time", "second", "first_time", "last_time"])
+                  # A (quarter, second) can span CSV chunks. Merge partial aggregates
+                  # while retaining the chronologically first open and last close.
+                  gg = month.groupby(["quarter_time", "second"], sort=True, observed=True)
+                  month_out = gg.agg(
+                      open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last"),
+                      quantity=("quantity", "sum"), quote_volume=("quote_volume", "sum"),
+                      signed_quote=("signed_quote", "sum"), aggregate_trade_count=("aggregate_trade_count", "sum"),
+                      raw_trade_count=("raw_trade_count", "sum"), first_time=("first_time", "min"), last_time=("last_time", "max"),
+                  ).reset_index()
+                  month_frames.append(month_out)
+                  archive_records.append({
+                      "period": stamp,
+                      "url": url,
+                      "checksum_url": checksum_url,
+                      "archive_bytes": size,
+                      "archive_sha256": actual,
+                      "timestamp_unit": unit_seen,
+                      "quarter_second_rows": len(month_out),
+                  })
+                  print(SYMBOL, stamp, "archive_bytes", size, "rows", len(month_out), "sha256", actual, flush=True)
+
+          data = pd.concat(month_frames, ignore_index=True)
+          data["quarter_time"] = pd.to_datetime(data["quarter_time"], utc=True)
+          data["first_time"] = pd.to_datetime(data["first_time"], utc=True)
+          data["last_time"] = pd.to_datetime(data["last_time"], utc=True)
+          data = data.sort_values(["quarter_time", "second"]).reset_index(drop=True)
+          if data.duplicated(["quarter_time", "second"]).any():
+              raise RuntimeError("duplicate quarter_time/second rows after final merge")
+          if not data["second"].between(0, 59).all():
+              raise RuntimeError("invalid second values")
+          if (data[["open", "high", "low", "close", "quantity", "quote_volume"]].to_numpy(float) <= 0).any():
+              raise RuntimeError("non-positive price/volume values")
+          if (data["signed_quote"].abs() > data["quote_volume"] * (1 + 1e-10)).any():
+              raise RuntimeError("signed quote exceeds total quote")
+          data["imbalance"] = data["signed_quote"] / data["quote_volume"]
+          data["return"] = data["close"] / data["open"] - 1.0
+          output = OUT / f"{SYMBOL}_{YEAR}_quarter_open_seconds.parquet"
+          data.to_parquet(output, index=False, compression="zstd")
+          manifest = {
+              "source": "official Binance Vision USD-M monthly aggTrades",
+              "symbol": SYMBOL,
+              "year": YEAR,
+              "months": [FIRST_MONTH, LAST_MONTH],
+              "semantics": {
+                  "is_buyer_maker_true": "aggressive seller; signed_quote negative",
+                  "quarter_time": "UTC quarter-hour boundary",
+                  "second": "integer second within the opening minute",
+                  "raw_trade_count": "sum(last_trade_id-first_trade_id+1)",
+              },
+              "output": str(output),
+              "output_bytes": output.stat().st_size,
+              "output_sha256": sha256_file(output),
+              "rows": len(data),
+              "quarter_count": int(data["quarter_time"].nunique()),
+              "start": data["quarter_time"].min().isoformat(),
+              "end": data["quarter_time"].max().isoformat(),
+              "archives": archive_records,
+          }
+          manifest_path = OUT / f"{SYMBOL}_{YEAR}_manifest.json"
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(json.dumps({k: v for k, v in manifest.items() if k != "archives"}, indent=2), flush=True)
+          PY
+
+      - name: Upload quarter-hour second cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: qh-aggtrades-seconds-${{ matrix.symbol }}-${{ matrix.year }}-${{ github.run_id }}
+          path: qh-aggtrades-output/**
+          retention-days: 7
+          if-no-files-found: error

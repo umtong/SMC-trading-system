@@ -1,0 +1,97 @@
+name: Cache ETH 2023 Quarter-Hour AggTrades Monthly
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cache-qh-aggtrades-eth2023-monthly.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache-month:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        month: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install data tools
+        run: python -m pip install --upgrade pandas pyarrow requests
+      - name: Download and aggregate one official archive
+        shell: bash
+        env:
+          MONTH: ${{ matrix.month }}
+        run: |
+          set -euo pipefail
+          mkdir -p eth2023-month
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib, io, json, os, zipfile
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+          import requests
+
+          symbol='ETHUSDT'; year=2023; month=int(os.environ['MONTH']); stamp=f'{year:04d}-{month:02d}'
+          name=f'{symbol}-aggTrades-{stamp}.zip'
+          url=f'https://data.binance.vision/data/futures/um/monthly/aggTrades/{symbol}/{name}'
+          session=requests.Session(); session.headers['User-Agent']='SMC-qh-eth2023-monthly/1.0'
+          cr=session.get(url+'.CHECKSUM',timeout=(30,180)); cr.raise_for_status(); expected=cr.text.strip().split()[0].lower()
+          ar=session.get(url,timeout=(30,600)); ar.raise_for_status(); payload=ar.content
+          actual=hashlib.sha256(payload).hexdigest()
+          if actual!=expected: raise RuntimeError(f'checksum mismatch {expected} {actual}')
+          aliases={'a':'agg_trade_id','aggtradeid':'agg_trade_id','aggregate_trade_id':'agg_trade_id','agg_trade_id':'agg_trade_id','p':'price','price':'price','q':'quantity','qty':'quantity','quantity':'quantity','f':'first_trade_id','first_trade_id':'first_trade_id','l':'last_trade_id','last_trade_id':'last_trade_id','t':'transact_time','time':'transact_time','timestamp':'transact_time','transact_time':'transact_time','m':'is_buyer_maker','is_buyer_maker':'is_buyer_maker','isbuyermaker':'is_buyer_maker'}
+          cols=['agg_trade_id','price','quantity','first_trade_id','last_trade_id','transact_time','is_buyer_maker']
+          chunks=[]
+          with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+              names=[n for n in zf.namelist() if n.lower().endswith('.csv')]
+              if len(names)!=1: raise RuntimeError(names)
+              with zf.open(names[0]) as stream:
+                  first=stream.readline().decode('utf-8','replace').strip().split(',')[0].strip().lower().replace(' ','_')
+              header=first in aliases
+              with zf.open(names[0]) as stream:
+                  reader=pd.read_csv(stream,header=0 if header else None,names=None if header else cols,chunksize=600_000,low_memory=False)
+                  unit_seen=None
+                  for c in reader:
+                      c.columns=[str(x).strip().lower().replace(' ','_') for x in c.columns]
+                      c=c.rename(columns={x:aliases.get(x,x) for x in c.columns})
+                      missing=sorted(set(cols)-set(c.columns))
+                      if missing: raise RuntimeError(f'missing={missing}, columns={list(c.columns)}')
+                      for x in ('agg_trade_id','price','quantity','first_trade_id','last_trade_id','transact_time'): c[x]=pd.to_numeric(c[x],errors='raise')
+                      med=float(c.transact_time.abs().median()); unit='us' if med>1e14 else 'ms' if med>1e11 else 's'
+                      unit_seen=unit_seen or unit
+                      if unit!=unit_seen: raise RuntimeError('timestamp unit changed')
+                      ts=pd.to_datetime(c.transact_time,unit=unit,utc=True,errors='raise')
+                      m=(ts.dt.minute%15==0)
+                      if not bool(m.any()): continue
+                      c=c.loc[m].copy(); t=ts.loc[m]
+                      price=c.price.to_numpy(float); qty=c.quantity.to_numpy(float); quote=price*qty
+                      maker=c.is_buyer_maker.astype(str).str.strip().str.lower().isin({'true','1','t'}).to_numpy()
+                      base=pd.DataFrame({'quarter_time':t.dt.floor('15min').to_numpy(),'second':t.dt.second.to_numpy(np.int16),'transact_time':t.to_numpy(),'agg_trade_id':c.agg_trade_id.to_numpy(np.int64),'price':price,'quantity':qty,'quote_volume':quote,'signed_quote':np.where(maker,-quote,quote),'raw_trade_count':c.last_trade_id.to_numpy(np.int64)-c.first_trade_id.to_numpy(np.int64)+1})
+                      base=base.sort_values(['quarter_time','second','transact_time','agg_trade_id'])
+                      g=base.groupby(['quarter_time','second'],sort=False,observed=True)
+                      chunks.append(g.agg(open=('price','first'),high=('price','max'),low=('price','min'),close=('price','last'),quantity=('quantity','sum'),quote_volume=('quote_volume','sum'),signed_quote=('signed_quote','sum'),aggregate_trade_count=('agg_trade_id','size'),raw_trade_count=('raw_trade_count','sum'),first_time=('transact_time','min'),last_time=('transact_time','max')).reset_index())
+          if not chunks: raise RuntimeError('no quarter rows')
+          d=pd.concat(chunks,ignore_index=True).sort_values(['quarter_time','second','first_time','last_time'])
+          g=d.groupby(['quarter_time','second'],sort=True,observed=True)
+          d=g.agg(open=('open','first'),high=('high','max'),low=('low','min'),close=('close','last'),quantity=('quantity','sum'),quote_volume=('quote_volume','sum'),signed_quote=('signed_quote','sum'),aggregate_trade_count=('aggregate_trade_count','sum'),raw_trade_count=('raw_trade_count','sum'),first_time=('first_time','min'),last_time=('last_time','max')).reset_index()
+          d['imbalance']=d.signed_quote/d.quote_volume; d['return']=d.close/d.open-1
+          out=Path('eth2023-month')/f'ETHUSDT_2023_{month:02d}_quarter_open_seconds.parquet'; d.to_parquet(out,index=False,compression='zstd')
+          manifest={'source':'official Binance Vision USD-M monthly aggTrades','symbol':symbol,'period':stamp,'url':url,'archive_bytes':len(payload),'archive_sha256':actual,'timestamp_unit':unit_seen,'rows':len(d),'quarter_count':int(d.quarter_time.nunique()),'output':str(out),'output_bytes':out.stat().st_size,'output_sha256':hashlib.sha256(out.read_bytes()).hexdigest()}
+          (Path('eth2023-month')/f'ETHUSDT_2023_{month:02d}_manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          print(json.dumps(manifest,indent=2))
+          PY
+      - name: Upload monthly cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: qh-aggtrades-ETHUSDT-2023-${{ matrix.month }}-${{ github.run_id }}
+          path: eth2023-month/**
+          retention-days: 7
+          if-no-files-found: error
