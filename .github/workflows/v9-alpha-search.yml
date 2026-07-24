@@ -1,0 +1,180 @@
+name: V9 Alpha Search
+
+on:
+  push:
+    branches:
+      - "research/v9-alpha-search-20260723"
+    paths:
+      - "research/v9_alpha_search.py.gz.b64"
+      - ".github/workflows/v9-alpha-search.yml"
+  pull_request:
+    paths:
+      - "research/v9_alpha_search.py.gz.b64"
+      - ".github/workflows/v9-alpha-search.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  alpha-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark V9 run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh pr comment 35 --body "## V9 chronological alpha search\n\n- status: \`RUN_STARTED\`\n- run_id: \`${GITHUB_RUN_ID}\`\n- sha: \`${GITHUB_SHA}\`\n\n_Research-only; no paper/live/order/sizing changes._" --edit-last --create-if-none
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas tabulate
+
+      - name: Restore Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/xsmc-v9
+          key: xsmc-v9-binance-usdm-15m-2019-2026-v1
+
+      - name: Run fixed-candidate chronological alpha search
+        id: alpha
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          mkdir -p artifacts/v9-alpha-search
+          python - <<'PY' 2>&1 | tee artifacts-v9.log
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          source = Path('research/v9_alpha_search.py.gz.b64')
+          text = ''.join(source.read_text(encoding='utf-8').split())
+          print(f'encoded_chars={len(text)}')
+          try:
+              compressed = base64.b64decode(text, validate=False)
+              print(f'compressed_bytes={len(compressed)} sha256={hashlib.sha256(compressed).hexdigest()}')
+              payload = gzip.decompress(compressed)
+              print(f'source_bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()}')
+              Path('/tmp/v9_alpha_search.py').write_bytes(payload)
+          except Exception as exc:
+              print(f'decode_exception={type(exc).__name__}: {exc}')
+              raise
+          PY
+          decode_status=${PIPESTATUS[0]}
+          if [ "$decode_status" -ne 0 ]; then
+            echo "exit_code=$decode_status" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python /tmp/v9_alpha_search.py \
+            --start-month 2019-01 \
+            --end-month 2026-06 \
+            --evaluation-start 2024-01 \
+            --evaluation-end 2026-06 \
+            --symbols BTCUSDT ETHUSDT \
+            --output-dir artifacts/v9-alpha-search \
+            2>&1 | tee -a artifacts-v9.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build V9 PR report
+        if: always()
+        env:
+          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          out = Path('artifacts/v9-alpha-search')
+          lines = ['## V9 chronological alpha search', '', f"- process exit code: `{os.environ.get('ALPHA_EXIT_CODE', 'unknown')}`"]
+          summary = out / 'summary.json'
+          if summary.exists():
+              s = json.loads(summary.read_text())
+              lines += [
+                  f"- status: `{'TARGET_MET' if s.get('target_1pct_met') else 'TARGET_NOT_MET'}`",
+                  f"- candidates: `{s.get('candidate_count')}`",
+                  f"- OOS trades: `{s.get('trades')}`",
+                  f"- OOS final multiple: `{s.get('final_multiple')}`",
+                  f"- OOS geometric daily net: `{s.get('geo_daily')}`",
+                  f"- OOS max drawdown: `{s.get('max_drawdown')}`",
+                  f"- positive-month ratio: `{s.get('positive_month_ratio')}`",
+                  f"- no-trade months: `{s.get('no_trade_months')}`",
+                  '',
+              ]
+          else:
+              lines += ['- status: `RUN_FAILED_BEFORE_SUMMARY`', '']
+              log = Path('artifacts-v9.log')
+              if log.exists():
+                  lines += ['### Failure log tail', '', '```text', '\n'.join(log.read_text(errors='replace').splitlines()[-120:]), '```', '']
+          top = out / 'top30_pre2024.csv'
+          if top.exists():
+              frame = pd.read_csv(top).head(10)
+              cols = [c for c in ['candidate_id','family','pre2x_final_multiple','pre_final_multiple','post2024_diag_final_multiple','pre_trades','pre2x_max_drawdown'] if c in frame.columns]
+              lines += ['### Top pre-2024 diagnostics', '', frame[cols].to_markdown(index=False), '']
+          months = out / 'walkforward_months.csv'
+          if months.exists():
+              frame = pd.read_csv(months)
+              lines += ['### Walk-forward monthly tail', '', frame.tail(12).to_markdown(index=False), '']
+          lines += ['', '_Research-only; no paper/live/order/sizing changes._']
+          Path('artifacts/v9-pr-comment.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+      - name: Publish V9 report to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh pr comment 35 --body-file artifacts/v9-pr-comment.md --edit-last --create-if-none
+
+      - name: Upload research outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v9-alpha-search-${{ github.run_id }}
+          path: |
+            artifacts/v9-alpha-search
+            artifacts-v9.log
+            artifacts/v9-pr-comment.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Persist successful research outputs on the research branch
+        if: steps.alpha.outputs.exit_code == '0' && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add artifacts/v9-alpha-search artifacts-v9.log artifacts/v9-pr-comment.md
+          if git diff --cached --quiet; then
+            echo "No result changes to commit"
+            exit 0
+          fi
+          git commit -m "Record V9 chronological alpha search results"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Preserve alpha-search failure status
+        if: always() && steps.alpha.outputs.exit_code != '0'
+        env:
+          ALPHA_EXIT_CODE: ${{ steps.alpha.outputs.exit_code }}
+        run: |
+          echo "V9 alpha search failed with exit code ${ALPHA_EXIT_CODE}"
+          exit 1
