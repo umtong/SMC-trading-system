@@ -54,11 +54,14 @@ jobs:
             research_tools/state_first_l1_clean_v2/run_fixed.py \
             research_tools/state_first_l1_clean_v2/run_available_dates.py
       - name: Build checksum-verified causal panel
+        shell: bash
         run: |
+          set -o pipefail
           python research_tools/state_first_l1_clean_v2/run_available_dates.py panel \
             --symbol '${{ matrix.symbol }}' \
             --data-dir 'state-first-cache/${{ matrix.symbol }}' \
-            --output-dir 'state-first-panel/${{ matrix.symbol }}'
+            --output-dir 'state-first-panel/${{ matrix.symbol }}' \
+            2>&1 | tee state-first-evidence/${{ matrix.symbol }}/panel-build.log
       - name: Fail closed on unresolved BBO entries
         shell: bash
         run: |
@@ -77,10 +80,14 @@ jobs:
           python -m json.tool state-first-panel/${{ matrix.symbol }}/${{ matrix.symbol }}_manifest.json
           shasum -a 256 state-first-panel/${{ matrix.symbol }}/*
           du -h state-first-panel/${{ matrix.symbol }}/*
-      - uses: actions/upload-artifact@v4
+      - name: Upload panel or failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: state-first-l1-clean-v2-${{ matrix.symbol }}-${{ github.run_id }}
-          path: state-first-panel/${{ matrix.symbol }}
+          path: |
+            state-first-panel/${{ matrix.symbol }}
+            state-first-evidence/${{ matrix.symbol }}
           if-no-files-found: error
           retention-days: 14
           compression-level: 6
