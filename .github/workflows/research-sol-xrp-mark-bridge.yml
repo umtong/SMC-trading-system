@@ -37,7 +37,7 @@ jobs:
           for symbol in ('SOLUSDT','XRPUSDT'):
               frames=[]
               for month in months:
-                  name=f'{symbol}-markPriceKlines-5m-{month}.zip'
+                  name=f'{symbol}-5m-{month}.zip'
                   url=f'https://data.binance.vision/data/futures/um/monthly/markPriceKlines/{symbol}/5m/{name}'
                   cr=session.get(url+'.CHECKSUM',timeout=30)
                   if cr.status_code==404:
