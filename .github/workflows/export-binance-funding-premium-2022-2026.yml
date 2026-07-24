@@ -1,0 +1,181 @@
+name: Export Binance funding and premium index 2022-2026
+
+on:
+  push:
+    branches:
+      - agent/easychart-v3-fivefold-rebuild
+    paths:
+      - .github/workflows/export-binance-funding-premium-2022-2026.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-derivatives-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install pandas numpy
+      - name: Download, verify, normalize
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/binance-derivatives-context/raw
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import json
+          from pathlib import Path
+          import urllib.request
+          import zipfile
+
+          import pandas as pd
+
+          ROOT = "https://data.binance.vision/data/futures/um/monthly"
+          OUT = Path("/tmp/binance-derivatives-context")
+          RAW = OUT / "raw"
+          SYMBOLS = ("BTCUSDT", "ETHUSDT")
+          START = (2022, 1)
+          END = (2026, 6)
+          KLINE_COLUMNS = [
+              "open_time", "open", "high", "low", "close", "volume",
+              "close_time", "quote_volume", "trades", "taker_buy_base",
+              "taker_buy_quote", "ignore",
+          ]
+
+          def months():
+              year, month = START
+              while (year, month) <= END:
+                  yield year, month
+                  month += 1
+                  if month == 13:
+                      year += 1
+                      month = 1
+
+          def fetch(url: str, path: Path) -> bytes:
+              if path.exists() and path.stat().st_size:
+                  return path.read_bytes()
+              request = urllib.request.Request(
+                  url, headers={"User-Agent": "SMC-research-context/1.0"}
+              )
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  payload = response.read()
+              path.write_bytes(payload)
+              return payload
+
+          def verified_zip(url: str, stem: str) -> tuple[bytes, dict[str, object]]:
+              payload = fetch(url, RAW / stem)
+              actual = hashlib.sha256(payload).hexdigest()
+              checksum_blob = fetch(url + ".CHECKSUM", RAW / (stem + ".CHECKSUM"))
+              expected = checksum_blob.decode("utf-8", errors="replace").strip().split()[0]
+              if actual.lower() != expected.lower():
+                  raise RuntimeError(f"checksum mismatch: {stem}: {expected} != {actual}")
+              return payload, {
+                  "url": url,
+                  "sha256": actual,
+                  "checksum_expected": expected,
+                  "checksum_ok": True,
+              }
+
+          manifest: dict[str, object] = {
+              "schema": "ictbt.binance_usdm_derivatives_context.v1",
+              "source": ROOT,
+              "range": ["2022-01-01T00:00:00Z", "2026-07-01T00:00:00Z"],
+              "symbols": {},
+              "archives": [],
+          }
+
+          for symbol in SYMBOLS:
+              funding_chunks: list[pd.DataFrame] = []
+              premium_chunks: list[pd.DataFrame] = []
+              for year, month in months():
+                  funding_stem = f"{symbol}-fundingRate-{year:04d}-{month:02d}.zip"
+                  funding_url = f"{ROOT}/fundingRate/{symbol}/{funding_stem}"
+                  funding_blob, funding_meta = verified_zip(funding_url, funding_stem)
+                  with zipfile.ZipFile(io.BytesIO(funding_blob)) as archive:
+                      members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                      if len(members) != 1:
+                          raise RuntimeError(f"unexpected funding members: {funding_stem}: {members}")
+                      with archive.open(members[0]) as handle:
+                          funding = pd.read_csv(handle)
+                  normalized_names = {str(column).strip().lower(): column for column in funding.columns}
+                  time_column = normalized_names.get("calc_time") or normalized_names.get("fundingtime") or normalized_names.get("funding_time")
+                  rate_column = normalized_names.get("last_funding_rate") or normalized_names.get("fundingrate") or normalized_names.get("funding_rate")
+                  if time_column is None or rate_column is None:
+                      raise RuntimeError(f"unexpected funding columns for {funding_stem}: {funding.columns.tolist()}")
+                  funding = funding.rename(columns={time_column: "funding_time", rate_column: "funding_rate"})
+                  funding["funding_time"] = pd.to_datetime(pd.to_numeric(funding["funding_time"], errors="raise"), unit="ms", utc=True)
+                  funding["funding_rate"] = pd.to_numeric(funding["funding_rate"], errors="raise")
+                  funding = funding[["funding_time", "funding_rate"]]
+                  funding_chunks.append(funding)
+                  funding_meta.update({"symbol": symbol, "kind": "fundingRate", "year": year, "month": month, "rows": len(funding)})
+                  manifest["archives"].append(funding_meta)
+
+                  premium_stem = f"{symbol}-5m-{year:04d}-{month:02d}.zip"
+                  premium_url = f"{ROOT}/premiumIndexKlines/{symbol}/5m/{premium_stem}"
+                  premium_blob, premium_meta = verified_zip(premium_url, premium_stem)
+                  with zipfile.ZipFile(io.BytesIO(premium_blob)) as archive:
+                      members = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                      if len(members) != 1:
+                          raise RuntimeError(f"unexpected premium members: {premium_stem}: {members}")
+                      with archive.open(members[0]) as handle:
+                          premium = pd.read_csv(handle, header=None, names=KLINE_COLUMNS, dtype=str)
+                  first = str(premium.iloc[0]["open_time"]).strip().lower()
+                  if not first.lstrip("-").isdigit():
+                      premium = premium.iloc[1:].copy()
+                  raw_time = pd.to_numeric(premium["open_time"], errors="raise").astype("int64")
+                  unit = "us" if int(raw_time.abs().median()) >= 10**14 else "ms"
+                  premium["open_time"] = pd.to_datetime(raw_time, unit=unit, utc=True)
+                  for column in ("open", "high", "low", "close"):
+                      premium[column] = pd.to_numeric(premium[column], errors="raise")
+                  premium = premium[["open_time", "open", "high", "low", "close"]]
+                  premium_chunks.append(premium)
+                  premium_meta.update({"symbol": symbol, "kind": "premiumIndexKlines_5m", "year": year, "month": month, "rows": len(premium)})
+                  manifest["archives"].append(premium_meta)
+                  print(f"OK {symbol} {year:04d}-{month:02d} funding={len(funding)} premium={len(premium)}", flush=True)
+
+              funding_all = pd.concat(funding_chunks, ignore_index=True).drop_duplicates("funding_time", keep="last").sort_values("funding_time")
+              premium_all = pd.concat(premium_chunks, ignore_index=True).drop_duplicates("open_time", keep="last").sort_values("open_time")
+              start = pd.Timestamp("2022-01-01", tz="UTC")
+              end = pd.Timestamp("2026-07-01", tz="UTC")
+              funding_all = funding_all[(funding_all.funding_time >= start) & (funding_all.funding_time < end)].reset_index(drop=True)
+              premium_all = premium_all[(premium_all.open_time >= start) & (premium_all.open_time < end)].reset_index(drop=True)
+              expected_grid = pd.date_range(start, end - pd.Timedelta(minutes=5), freq="5min")
+              if not pd.DatetimeIndex(premium_all.open_time).equals(expected_grid):
+                  raise RuntimeError(f"non-contiguous premium index for {symbol}")
+              funding_path = OUT / f"{symbol}_funding.csv.gz"
+              premium_path = OUT / f"{symbol}_premium_index_5m.csv.gz"
+              funding_all.to_csv(funding_path, index=False, compression="gzip", float_format="%.12g")
+              premium_all.to_csv(premium_path, index=False, compression="gzip", float_format="%.12g")
+              manifest["symbols"][symbol] = {
+                  "funding_rows": len(funding_all),
+                  "funding_first": funding_all.funding_time.iloc[0].isoformat(),
+                  "funding_last": funding_all.funding_time.iloc[-1].isoformat(),
+                  "funding_sha256": hashlib.sha256(funding_path.read_bytes()).hexdigest(),
+                  "premium_rows": len(premium_all),
+                  "premium_first": premium_all.open_time.iloc[0].isoformat(),
+                  "premium_last": premium_all.open_time.iloc[-1].isoformat(),
+                  "premium_sha256": hashlib.sha256(premium_path.read_bytes()).hexdigest(),
+              }
+
+          (OUT / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(manifest["symbols"], ensure_ascii=False, indent=2))
+          PY
+      - name: Upload funding and premium context
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-funding-premium-2022-2026-${{ github.run_id }}
+          path: |
+            /tmp/binance-derivatives-context/*.csv.gz
+            /tmp/binance-derivatives-context/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

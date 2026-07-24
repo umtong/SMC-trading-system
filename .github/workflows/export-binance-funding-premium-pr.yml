@@ -1,0 +1,94 @@
+name: Export Binance funding premium context
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pandas
+      - name: Download official archives and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/context/raw
+          python - <<'PY'
+          import hashlib, io, json, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+
+          ROOT='https://data.binance.vision/data/futures/um/monthly'
+          OUT=Path('/tmp/context'); RAW=OUT/'raw'; RAW.mkdir(parents=True,exist_ok=True)
+          symbols=('BTCUSDT','ETHUSDT'); start=(2022,1); end=(2026,6)
+          cols=['open_time','open','high','low','close','volume','close_time','quote_volume','trades','taker_buy_base','taker_buy_quote','ignore']
+          def months():
+              y,m=start
+              while (y,m)<=end:
+                  yield y,m
+                  m+=1
+                  if m==13:y+=1;m=1
+          def get(url,path):
+              req=urllib.request.Request(url,headers={'User-Agent':'SMC-research/1.0'})
+              with urllib.request.urlopen(req,timeout=180) as r:data=r.read()
+              path.write_bytes(data);return data
+          def archive(url,stem):
+              blob=get(url,RAW/stem); actual=hashlib.sha256(blob).hexdigest()
+              expected=get(url+'.CHECKSUM',RAW/(stem+'.CHECKSUM')).decode().strip().split()[0]
+              if actual.lower()!=expected.lower():raise RuntimeError(f'checksum mismatch {stem}')
+              with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                  names=[n for n in z.namelist() if n.lower().endswith('.csv')]
+                  if len(names)!=1:raise RuntimeError(f'unexpected members {stem}: {names}')
+                  return z.read(names[0]),actual
+          manifest={'schema':'ictbt.binance_usdm_context.v1','source':ROOT,'archives':[],'symbols':{}}
+          for symbol in symbols:
+              funding=[];premium=[]
+              for y,m in months():
+                  fs=f'{symbol}-fundingRate-{y:04d}-{m:02d}.zip'; fu=f'{ROOT}/fundingRate/{symbol}/{fs}'
+                  raw,sha=archive(fu,fs); f=pd.read_csv(io.BytesIO(raw))
+                  names={str(c).strip().lower():c for c in f.columns}
+                  tc=names.get('calc_time') or names.get('fundingtime') or names.get('funding_time')
+                  rc=names.get('last_funding_rate') or names.get('fundingrate') or names.get('funding_rate')
+                  if tc is None or rc is None:raise RuntimeError(f'funding columns {f.columns.tolist()}')
+                  f=f.rename(columns={tc:'funding_time',rc:'funding_rate'})[['funding_time','funding_rate']]
+                  f.funding_time=pd.to_datetime(pd.to_numeric(f.funding_time),unit='ms',utc=True);f.funding_rate=pd.to_numeric(f.funding_rate)
+                  funding.append(f);manifest['archives'].append({'kind':'funding','symbol':symbol,'year':y,'month':m,'sha256':sha,'rows':len(f)})
+                  ps=f'{symbol}-5m-{y:04d}-{m:02d}.zip'; pu=f'{ROOT}/premiumIndexKlines/{symbol}/5m/{ps}'
+                  raw,sha=archive(pu,ps);p=pd.read_csv(io.BytesIO(raw),header=None,names=cols,dtype=str)
+                  if not str(p.iloc[0].open_time).strip().lstrip('-').isdigit():p=p.iloc[1:].copy()
+                  ts=pd.to_numeric(p.open_time).astype('int64');unit='us' if int(ts.abs().median())>=10**14 else 'ms';p.open_time=pd.to_datetime(ts,unit=unit,utc=True)
+                  for c in ('open','high','low','close'):p[c]=pd.to_numeric(p[c])
+                  p=p[['open_time','open','high','low','close']];premium.append(p)
+                  manifest['archives'].append({'kind':'premium_5m','symbol':symbol,'year':y,'month':m,'sha256':sha,'rows':len(p)})
+                  print('OK',symbol,y,m,len(f),len(p),flush=True)
+              f=pd.concat(funding).drop_duplicates('funding_time').sort_values('funding_time').reset_index(drop=True)
+              p=pd.concat(premium).drop_duplicates('open_time').sort_values('open_time').reset_index(drop=True)
+              lo=pd.Timestamp('2022-01-01',tz='UTC');hi=pd.Timestamp('2026-07-01',tz='UTC')
+              f=f[(f.funding_time>=lo)&(f.funding_time<hi)];p=p[(p.open_time>=lo)&(p.open_time<hi)]
+              expected=pd.date_range(lo,hi-pd.Timedelta(minutes=5),freq='5min')
+              if not pd.DatetimeIndex(p.open_time).equals(expected):raise RuntimeError(f'premium gap {symbol}')
+              fp=OUT/f'{symbol}_funding.csv.gz';pp=OUT/f'{symbol}_premium_index_5m.csv.gz'
+              f.to_csv(fp,index=False,compression='gzip');p.to_csv(pp,index=False,compression='gzip')
+              manifest['symbols'][symbol]={'funding_rows':len(f),'premium_rows':len(p),'funding_sha256':hashlib.sha256(fp.read_bytes()).hexdigest(),'premium_sha256':hashlib.sha256(pp.read_bytes()).hexdigest()}
+          (OUT/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          print(json.dumps(manifest['symbols'],indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-funding-premium-${{ github.run_id }}
+          path: |
+            /tmp/context/*.csv.gz
+            /tmp/context/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

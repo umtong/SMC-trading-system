@@ -1,0 +1,42 @@
+name: Probe Binance USD-M metrics
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe official metrics paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/metrics-probe
+          base=https://data.binance.vision/data/futures/um
+          for path in \
+            daily/metrics/BTCUSDT/BTCUSDT-metrics-2022-01-01.zip \
+            daily/metrics/ETHUSDT/ETHUSDT-metrics-2022-01-01.zip \
+            monthly/metrics/BTCUSDT/BTCUSDT-metrics-2022-01.zip \
+            daily/liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2022-01-01.zip; do
+            code=$(curl -sS -L -o "/tmp/metrics-probe/$(echo "$path" | tr / _).bin" -w '%{http_code}' "$base/$path" || true)
+            printf '%s %s\n' "$code" "$path" | tee -a /tmp/metrics-probe/status.txt
+          done
+          for file in /tmp/metrics-probe/*.bin; do
+            if unzip -t "$file" >/dev/null 2>&1; then
+              unzip -l "$file" > "$file.members.txt"
+              unzip -p "$file" | head -n 12 > "$file.head.txt"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usdm-metrics-probe-${{ github.run_id }}
+          path: /tmp/metrics-probe
+          compression-level: 0
+          retention-days: 2

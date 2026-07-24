@@ -1,0 +1,104 @@
+name: Export Binance USD-M metrics prehistory PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/export-binance-usdm-metrics-prehistory-pr.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install pandas
+      - name: Download available official daily metrics and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/usdm-metrics-prehistory
+          python - <<'PY'
+          from __future__ import annotations
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import hashlib, io, json, time, urllib.error, urllib.request, zipfile
+          from pathlib import Path
+          import pandas as pd
+
+          ROOT="https://data.binance.vision/data/futures/um/daily/metrics"
+          OUT=Path('/tmp/usdm-metrics-prehistory')
+          SYMBOLS=('BTCUSDT','ETHUSDT')
+          START=pd.Timestamp('2019-09-01',tz='UTC'); END=pd.Timestamp('2022-01-01',tz='UTC')
+          DAYS=tuple(pd.date_range(START,END-pd.Timedelta(days=1),freq='1D'))
+          COLUMNS=('create_time','symbol','sum_open_interest','sum_open_interest_value','count_toptrader_long_short_ratio','sum_toptrader_long_short_ratio','count_long_short_ratio','sum_taker_long_short_vol_ratio')
+
+          def fetch(url,attempts=5):
+              last=None
+              for attempt in range(attempts):
+                  try:
+                      req=urllib.request.Request(url,headers={'User-Agent':'SMC-metrics-prehistory/1.0'})
+                      with urllib.request.urlopen(req,timeout=120) as response:return response.read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code==404:raise
+                      last=exc
+                  except Exception as exc:last=exc
+                  time.sleep(.5*2**attempt)
+              raise last
+
+          def one(symbol,day):
+              date=day.strftime('%Y-%m-%d'); stem=f'{symbol}-metrics-{date}.zip'; url=f'{ROOT}/{symbol}/{stem}'
+              try:payload=fetch(url); checksum=fetch(url+'.CHECKSUM')
+              except urllib.error.HTTPError as exc:
+                  if exc.code==404:return symbol,None,{'symbol':symbol,'date':date,'url':url,'available':False}
+                  raise
+              actual=hashlib.sha256(payload).hexdigest(); expected=checksum.decode('utf-8',errors='replace').strip().split()[0]
+              if actual.lower()!=expected.lower():raise RuntimeError(f'checksum mismatch: {stem}')
+              with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                  names=[n for n in archive.namelist() if n.lower().endswith('.csv')]
+                  if len(names)!=1:raise RuntimeError(names)
+                  with archive.open(names[0]) as handle:frame=pd.read_csv(handle)
+              normalized={str(c).strip().lower():c for c in frame.columns}; missing=set(COLUMNS).difference(normalized)
+              if missing:raise RuntimeError(f'missing columns: {missing}')
+              frame=frame.rename(columns={normalized[name]:name for name in COLUMNS})[list(COLUMNS)].copy()
+              frame['create_time']=pd.to_datetime(frame.create_time,utc=True,errors='raise')
+              for column in COLUMNS[2:]:frame[column]=pd.to_numeric(frame[column],errors='coerce')
+              frame['symbol']=frame.symbol.astype(str)
+              return symbol,frame,{'symbol':symbol,'date':date,'url':url,'sha256':actual,'checksum_expected':expected,'checksum_ok':True,'rows':len(frame),'available':True}
+
+          frames={s:[] for s in SYMBOLS}; manifest={'schema':'ictbt.binance_usdm_metrics_prehistory.v1','source':ROOT,'requested_range':[START.isoformat(),END.isoformat()],'symbols':{},'archives':[]}
+          tasks=[(s,d) for s in SYMBOLS for d in DAYS]
+          with ThreadPoolExecutor(max_workers=20) as pool:
+              futures=[pool.submit(one,*task) for task in tasks]
+              for i,future in enumerate(as_completed(futures),1):
+                  symbol,frame,meta=future.result(); manifest['archives'].append(meta)
+                  if frame is not None:frames[symbol].append(frame)
+                  if i%100==0 or i==len(tasks):print(f'completed={i}/{len(tasks)}',flush=True)
+          for symbol in SYMBOLS:
+              if not frames[symbol]:manifest['symbols'][symbol]={'available':False,'rows':0};continue
+              frame=pd.concat(frames[symbol],ignore_index=True).drop_duplicates('create_time',keep='last').sort_values('create_time')
+              frame=frame[(frame.create_time>=START)&(frame.create_time<END)].reset_index(drop=True)
+              path=OUT/f'{symbol}_metrics_5m_2019_2021.csv.gz';frame.to_csv(path,index=False,compression='gzip',float_format='%.12g')
+              expected=pd.date_range(frame.create_time.iloc[0],frame.create_time.iloc[-1],freq='5min');actual=pd.DatetimeIndex(frame.create_time)
+              manifest['symbols'][symbol]={'available':True,'rows':len(frame),'first':frame.create_time.iloc[0].isoformat(),'last':frame.create_time.iloc[-1].isoformat(),'missing_5m_within_available_range':len(expected.difference(actual)),'extra_5m':len(actual.difference(expected)),'null_counts':{c:int(frame[c].isna().sum()) for c in COLUMNS[2:]},'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+              print(json.dumps({symbol:manifest['symbols'][symbol]},indent=2),flush=True)
+          manifest['archives']=sorted(manifest['archives'],key=lambda x:(x['symbol'],x['date']))
+          (OUT/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binance-usdm-metrics-prehistory-pr-${{ github.run_id }}
+          path: |
+            /tmp/usdm-metrics-prehistory/*_metrics_5m_2019_2021.csv.gz
+            /tmp/usdm-metrics-prehistory/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
