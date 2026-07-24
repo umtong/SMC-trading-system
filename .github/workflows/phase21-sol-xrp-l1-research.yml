@@ -7,6 +7,11 @@ on:
       - research/phase21-sol-xrp-l1-20260724
     paths:
       - '.github/workflows/phase21-sol-xrp-l1-research.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/phase21-sol-xrp-l1-research.yml'
 
 permissions:
   contents: read
@@ -59,9 +64,15 @@ jobs:
               with zipfile.ZipFile(p) as z:
                   names=[n for n in z.namelist() if n.endswith('.csv')]
                   if len(names)!=1: raise RuntimeError(names)
-                  return pd.read_csv(io.BytesIO(z.read(names[0])))
+                  payload=z.read(names[0])
+              first=payload.splitlines()[0].decode('utf-8-sig').split(',')[0].strip()
+              return pd.read_csv(io.BytesIO(payload), header=0 if not first.lstrip('-').isdigit() else None)
           book_name=f'{symbol}-bookTicker-{day}.zip'; trade_name=f'{symbol}-aggTrades-{day}.zip'
           b=read(book_name); t=read(trade_name)
+          if isinstance(b.columns[0], int):
+              b.columns=['update_id','best_bid_price','best_bid_qty','best_ask_price','best_ask_qty','transaction_time','event_time'][:len(b.columns)]
+          if isinstance(t.columns[0], int):
+              t.columns=['agg_trade_id','price','quantity','first_trade_id','last_trade_id','transact_time','is_buyer_maker'][:len(t.columns)]
           b=b.rename(columns={'transaction_time':'ts','best_bid_price':'bid','best_bid_qty':'bid_qty','best_ask_price':'ask','best_ask_qty':'ask_qty'})
           t=t.rename(columns={'transact_time':'ts','quantity':'qty'})
           for c in ['ts','bid','bid_qty','ask','ask_qty']: b[c]=pd.to_numeric(b[c],errors='coerce')
@@ -83,6 +94,8 @@ jobs:
           state=pd.merge_asof(panel,b[['ts','bid','bid_qty','ask','ask_qty']].sort_values('ts'),left_on='bucket',right_on='ts',direction='backward')
           state=state.merge(flow,on='bucket',how='left')
           state[['quote','signed_quote','trade_count']]=state[['quote','signed_quote','trade_count']].fillna(0.0)
+          quote_age_ms=state.bucket-state.ts
+          state.loc[quote_age_ms>1000,['bid','bid_qty','ask','ask_qty']]=np.nan
           mid=(state.bid+state.ask)/2
           state['mid']=mid
           state['spread_bps']=(state.ask/state.bid-1)*10000
@@ -104,7 +117,7 @@ jobs:
           keep=['bucket','bid','bid_qty','ask','ask_qty','mid','spread_bps','relative_tick_bps','imbalance','microprice_bps','quote','signed_quote','trade_count','trade_vwap','flow_imbalance','bid_depletion','ask_depletion','bid_replenishment','ask_replenishment']+[c for c in state.columns if c.startswith(('long_gross_','short_gross_'))]
           state=state[keep].replace([np.inf,-np.inf],np.nan)
           path=out/f'{symbol}_{day}_l1_250ms.csv.gz'; state.to_csv(path,index=False,compression='gzip')
-          manifest={'symbol':symbol,'day':day,'rows':len(state),'start_ms':int(start),'end_ms':int(end),'book_rows':len(b),'trade_rows':len(t),'panel_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'source_sha256':{n:hashlib.sha256((raw/n).read_bytes()).hexdigest() for n in (book_name,trade_name)},'availability_rule':'decision at completed 250ms bucket; entry at first subsequent state'}
+          manifest={'symbol':symbol,'day':day,'rows':len(state),'start_ms':int(start),'end_ms':int(end),'book_rows':len(b),'trade_rows':len(t),'panel_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'source_sha256':{n:hashlib.sha256((raw/n).read_bytes()).hexdigest() for n in (book_name,trade_name)},'availability_rule':'decision at completed 250ms bucket; entry at first subsequent state; quote states older than 1s invalidated'}
           (out/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
           print(json.dumps(manifest))
           PY
