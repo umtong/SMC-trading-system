@@ -24,14 +24,16 @@ jobs:
       PYTHONUNBUFFERED: "1"
       HF_HOME: ${{ github.workspace }}/.hf_cache_state_first
       HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_ETAG_TIMEOUT: "120"
+      HF_HUB_DOWNLOAD_TIMEOUT: "300"
       ROOT: ${{ github.workspace }}/research_runs/state_first_l2_20260724
       SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/state_first_l2.py
       TEST_SCRIPT: ${{ github.workspace }}/research_runs/state_first_l2_20260724/test_state_first_l2.py
       PREREG: ${{ github.workspace }}/research/state_first_l2_20260724/preregistration.json
-      EXPECTED_SCRIPT_GZ_SHA256: b69952025cff08ad26abb96ea5d7b43a1568e0e63f1588dfc68460c79c9bb617
-      EXPECTED_SCRIPT_SHA256: 795e98af3c1709960c7893facfc4cc27f523eb0e3758379902bea40162b30a3c
-      EXPECTED_TEST_GZ_SHA256: cefb9e4700149a2dfb39c5345e3ef2a11a317085c0785e5fc1a241eb78bf0c30
-      EXPECTED_TEST_SHA256: 31a798dbbf3541c5466031add3326a90d6405701d12d9a1e0a9a9608b500dd1e
+      EXPECTED_SCRIPT_GZ_SHA256: 8e1e2fc64ace4b726fb9198a63fa368bd5419fcaad768d6459c918c586d074d0
+      EXPECTED_SCRIPT_SHA256: fa9dc42cbc198c688f868f30b7fb1eca2ccd13596f23c3e5ee1b23b9fda8b534
+      EXPECTED_TEST_GZ_SHA256: e675644fe901add6e29a99ae86c85d7f1996acc82cd61cc17b8754dec7d2c491
+      EXPECTED_TEST_SHA256: 832d7c367dfc8ad5ac16e6027b2737dbb57a1e189b875b81e362caf3112db0f4
       EXPECTED_PREREG_SHA256: b223ae70bd7e1fb9b7b2cc5b23ddb6d608b0a78e6a48db9f07d35dfd1195ed7e
     steps:
       - name: Checkout isolated research branch
