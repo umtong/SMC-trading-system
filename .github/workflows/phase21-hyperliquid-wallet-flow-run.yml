@@ -6,10 +6,21 @@ on:
     paths:
       - '.github/workflows/phase21-hyperliquid-wallet-flow-run.yml'
       - 'research/phase21_hl_wallet_extract.py'
+      - 'research/phase21_hl_wallet_preregistration.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase21-hyperliquid-wallet-flow-run.yml'
+      - 'research/phase21_hl_wallet_extract.py'
+      - 'research/phase21_hl_wallet_preregistration.md'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: phase21-hl-wallet-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   extract:
@@ -28,8 +39,10 @@ jobs:
           python-version: '3.11'
       - name: Install frozen extraction environment
         run: pip install --disable-pip-version-check duckdb==1.3.2 pandas==2.2.3 pyarrow==19.0.1 requests==2.32.4 numpy==2.1.3
-      - name: Compile source
-        run: python -m py_compile research/phase21_hl_wallet_extract.py
+      - name: Compile source and lock provenance
+        run: |
+          python -m py_compile research/phase21_hl_wallet_extract.py
+          sha256sum research/phase21_hl_wallet_extract.py research/phase21_hl_wallet_preregistration.md
       - name: Extract one causal wallet-flow window
         run: |
           python research/phase21_hl_wallet_extract.py \
