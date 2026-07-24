@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install data tools
-        run: python -m pip install --upgrade pandas pyarrow requests
+        run: python -m pip install --upgrade pandas pyarrow requests numpy
       - name: Download and verify official daily metrics
         shell: bash
         env:
@@ -42,6 +42,7 @@ jobs:
           import zipfile
           from pathlib import Path
 
+          import numpy as np
           import pandas as pd
           import requests
 
@@ -54,7 +55,7 @@ jobs:
           base = "https://data.binance.vision/data/futures/um/daily/metrics"
           out_dir = Path("metrics-cache")
           session = requests.Session()
-          session.headers["User-Agent"] = "SMC-trading-system-official-metrics-cache/1.0"
+          session.headers["User-Agent"] = "SMC-trading-system-official-metrics-cache/1.1"
 
           frames = []
           archives = []
@@ -112,12 +113,17 @@ jobs:
               raise RuntimeError(f"{symbol} {year}: no official metrics archives found")
           data = pd.concat(frames, ignore_index=True)
           data = data[(data.timestamp >= start) & (data.timestamp < end)].copy()
-          data = data.sort_values("timestamp").reset_index(drop=True)
-          if data.timestamp.duplicated().any():
-              dup = data.loc[data.timestamp.duplicated(keep=False), "timestamp"].head().astype(str).tolist()
-              raise RuntimeError(f"{symbol} {year}: duplicate timestamps {dup}")
+          data = data.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+
+          # Binance daily archives can repeat a boundary observation. Preserve the
+          # last published row for that exact timestamp, record the duplicate count,
+          # and never synthesize or forward-fill a missing observation.
+          duplicate_rows = int(data.timestamp.duplicated(keep=False).sum())
+          duplicate_timestamps_removed = int(data.timestamp.duplicated(keep="last").sum())
+          data = data.drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+
           numeric = data.select_dtypes(include="number")
-          if not numeric.empty and not numeric.map(pd.notna).all().all():
+          if not numeric.empty and not np.isfinite(numeric.to_numpy(dtype=float)).all():
               raise RuntimeError(f"{symbol} {year}: non-finite numeric metrics")
           spacing = data.timestamp.diff().dropna()
           output = out_dir / f"{symbol}_metrics_{year}.parquet"
@@ -133,10 +139,14 @@ jobs:
               "columns": list(data.columns),
               "first_timestamp": data.timestamp.iloc[0].isoformat(),
               "last_timestamp": data.timestamp.iloc[-1].isoformat(),
+              "duplicate_rows_observed": duplicate_rows,
+              "duplicate_timestamps_removed": duplicate_timestamps_removed,
+              "duplicate_policy": "stable chronological sort then keep last published row at identical timestamp",
               "median_spacing_seconds": float(spacing.median().total_seconds()) if len(spacing) else None,
               "gap_count_over_5m": int((spacing > pd.Timedelta(minutes=5)).sum()),
               "largest_gap_seconds": float(spacing.max().total_seconds()) if len(spacing) else 0.0,
               "missing_archive_dates": missing,
+              "missing_value_policy": "no imputation and no synthetic fill",
               "output": str(output),
               "output_bytes": output.stat().st_size,
               "output_sha256": digest,
