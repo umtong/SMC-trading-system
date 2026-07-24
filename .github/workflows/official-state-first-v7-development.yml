@@ -1,0 +1,271 @@
+name: Official state-first V7 development
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/official_state_first_model_20260724/official_state_first_v7_bundle.tar.gz.b64.part*"
+      - ".github/workflows/official-state-first-v7-development.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: official-state-first-v7-development-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PANEL_RUN_ID: "30101251898"
+  PART00_SHA256: e6908c4207324d8887063477e77c34c316a2fd72611e5950f9c24c4d2a3e3d43
+  PART01_SHA256: 23dfde5b993cbeede11ad7d77d0fec52b756719c6090f5bd1d1869633ca259e3
+  PART02_SHA256: a03cab1465db71bc1f682ee09d33d2194824e8a52c50b536dbad25b32eecffe2
+  PART03_SHA256: 659e9068595ce9407b64d0ac81605668baa24a10203947c0d7d0d5b4c3ba5b5f
+  COMBINED_B64_SHA256: 4578a193cd149079025e67902f1fc5f652a62d325ceda4f94ff2c1dffcf7f085
+  BUNDLE_GZ_SHA256: e602d0c76cb665b79c2037afb5e0b402a86eee0ca99fd6381127a26dc3cbb87b
+  SCRIPT_SHA256: 6baac7066c599b01880ec1fef006dccb5635c75c1e0bea54a660056c61c9a866
+  TEST_SHA256: 19d0966ad14ac1e249ae95575209532f4ee5485f1e3e09abedb4d55c9da3ec0e
+  PREREG_SHA256: 8ca8e84aeed2073d10757a403ec82997b8ef5c8968e59dab7d0ba59d336895a2
+  MANIFEST_SHA256: 853fe473aa3d09426eb351ac5d027f61ef98aa710bb12a6a634147b635b4c88e
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/official-state-first-model-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct immutable V7 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_prepare"
+          mkdir -p "$root/source" "$root/panels"
+          pfx=research/official_state_first_model_20260724/official_state_first_v7_bundle.tar.gz.b64.part
+          printf '%s  %s\n' "$PART00_SHA256" "${pfx}00" | sha256sum --check --strict
+          printf '%s  %s\n' "$PART01_SHA256" "${pfx}01" | sha256sum --check --strict
+          printf '%s  %s\n' "$PART02_SHA256" "${pfx}02" | sha256sum --check --strict
+          printf '%s  %s\n' "$PART03_SHA256" "${pfx}03" | sha256sum --check --strict
+          cat "${pfx}00" "${pfx}01" "${pfx}02" "${pfx}03" > /tmp/official_state_first_v7.tar.gz.b64
+          printf '%s  %s\n' "$COMBINED_B64_SHA256" /tmp/official_state_first_v7.tar.gz.b64 | sha256sum --check --strict
+          base64 --decode /tmp/official_state_first_v7.tar.gz.b64 > /tmp/official_state_first_v7.tar.gz
+          printf '%s  %s\n' "$BUNDLE_GZ_SHA256" /tmp/official_state_first_v7.tar.gz | sha256sum --check --strict
+          tar -xzf /tmp/official_state_first_v7.tar.gz -C "$root/source" --strip-components=1
+          printf '%s  %s\n' "$SCRIPT_SHA256" "$root/source/official_state_first.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$TEST_SHA256" "$root/source/test_official_state_first.py" | sha256sum --check --strict
+          printf '%s  %s\n' "$PREREG_SHA256" "$root/source/state_first_hazard_direction_preregistration_v3.json" | sha256sum --check --strict
+          printf '%s  %s\n' "$MANIFEST_SHA256" "$root/source/SOURCE_MANIFEST.json" | sha256sum --check --strict
+          python -m py_compile "$root/source/official_state_first.py" "$root/source/test_official_state_first.py"
+
+      - name: Install fixed preparation environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "scikit-learn==1.6.1" "pytest==8.3.4"
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_prepare"
+          cd "$root/source"
+          pytest -q test_official_state_first.py 2>&1 | tee "$root/unit_tests.log"
+
+      - name: Download the fixed V7 panel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.PANEL_RUN_ID }}
+          pattern: state-first-panel-v7-*
+          path: research_runs/official_state_first_v7_prepare/downloaded
+          merge-multiple: false
+
+      - name: Verify complete official 2023-H2 panel inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_prepare"
+          python - "$root/downloaded" "$root/panels" "$root/panel_inventory.json" <<'PY'
+          import calendar,hashlib,json,shutil,sys
+          from pathlib import Path
+          downloaded=Path(sys.argv[1])
+          panels=Path(sys.argv[2])
+          inventory_path=Path(sys.argv[3])
+          expected={(symbol,f'2023-{month:02d}') for symbol in ('BTCUSDT','ETHUSDT') for month in range(7,13)}
+          found={}
+          manifests=list(downloaded.rglob('*_official_state_v7_manifest.json'))
+          if len(manifests)!=12:
+              raise RuntimeError(f'expected 12 V7 manifests, found {len(manifests)}')
+          for manifest_path in manifests:
+              obj=json.loads(manifest_path.read_text(encoding='utf-8'))
+              key=(obj['symbol'],obj['month'])
+              if key not in expected or key in found:
+                  raise RuntimeError(f'unexpected or duplicate panel {key}')
+              year,month=map(int,obj['month'].split('-'))
+              expected_rows=calendar.monthrange(year,month)[1]*288
+              audits=obj['audits']
+              assert obj['builder_contract']=='official_state_v7_monthly_masked_source_and_metric_health'
+              assert obj['rows']==expected_rows
+              assert audits['complete_5m_grid'] is True
+              assert audits['future_depth_rows']==0 and audits['future_metric_rows']==0
+              assert audits['forbidden_outcome_columns']==[]
+              assert audits['max_metric_missing_observation_fraction']<=0.02
+              assert obj['strategy_executed'] is False and obj['candidate_pnl_observed'] is False
+              assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+              assert obj['orders_submitted'] is False and obj['paper_or_live_started'] is False
+              panel_name=f"{obj['symbol']}_{obj['month']}_official_state_v7.parquet"
+              matches=list(manifest_path.parent.glob(panel_name))
+              if len(matches)!=1:
+                  matches=list(downloaded.rglob(panel_name))
+              if len(matches)!=1:
+                  raise RuntimeError(f'cannot locate unique {panel_name}: {matches}')
+              panel_path=matches[0]
+              sha=hashlib.sha256(panel_path.read_bytes()).hexdigest()
+              if sha!=obj['panel_sha256']:
+                  raise RuntimeError(f'panel hash mismatch {key}')
+              dest=panels/panel_name
+              shutil.copy2(panel_path,dest)
+              shutil.copy2(manifest_path,panels/manifest_path.name)
+              found[key]={
+                  'rows':obj['rows'],'panel_sha256':sha,
+                  'metric_missing':audits['total_metric_missing_observations'],
+                  'metric_ineligible_rows':audits['total_metric_delayed_ineligible_rows'],
+                  'masked_price':audits['total_one_minute_price_masked_bars'],
+                  'masked_flow':audits['total_one_minute_flow_masked_bars'],
+                  'masked_aggregate':audits['total_aggregate_interior_masked_bars'],
+              }
+          if set(found)!=expected:
+              raise RuntimeError(f'missing panels: {sorted(expected-set(found))}')
+          payload={
+              'panel_run_id':30101251898,
+              'panel_run_commit':'7ea4296fa331a2e1e85777e3b5b34be75390f142',
+              'panels':{f'{k[0]}_{k[1]}':v for k,v in sorted(found.items())},
+              'development_period':['2023-07-01','2024-01-01'],
+              '2024_opened':False,'2025_opened':False,'2026_opened':False,
+              'orders_submitted':False,'paper_or_live_started':False,
+          }
+          payload['inventory_digest']=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          inventory_path.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps({'panels':len(found),'inventory_digest':payload['inventory_digest']},sort_keys=True))
+          PY
+          find "$root/source" "$root/panels" -type f -print0 | sort -z | xargs -0 sha256sum > "$root/PREPARED_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-state-first-v7-prepared-${{ github.sha }}
+          path: research_runs/official_state_first_v7_prepare
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 3
+
+  development:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [logistic, extra_trees, fixed]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 340
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-state-first-v7-prepared-${{ github.sha }}
+          path: research_runs/official_state_first_v7_prepare
+
+      - name: Install fixed development environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install "numpy==2.1.3" "pandas==2.2.3" "pyarrow==18.1.0" "requests==2.32.4" "scikit-learn==1.6.1" "pytest==8.3.4"
+
+      - name: Run one preregistered development slice only
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_prepare"
+          out="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_development/${{ matrix.slice }}"
+          mkdir -p "$out" "$GITHUB_WORKSPACE/.funding_cache_v7"
+          python "$prepared/source/official_state_first.py" \
+            --stage development \
+            --panel-root "$prepared/panels" \
+            --funding-cache "$GITHUB_WORKSPACE/.funding_cache_v7" \
+            --work-dir "$out" \
+            --preregistration "$prepared/source/state_first_hazard_direction_preregistration_v3.json" \
+            --slice "${{ matrix.slice }}" \
+            2>&1 | tee "$out/development.log"
+          checkpoint="$out/development_${{ matrix.slice }}_frozen.json"
+          test -f "$checkpoint"
+          python - "$checkpoint" <<'PY'
+          import json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert obj['stage']=='development'
+          assert obj['slice'] in ('logistic','extra_trees','fixed')
+          assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+          assert obj['orders_submitted'] is False and obj['paper_or_live_started'] is False
+          print(json.dumps({'slice':obj['slice'],'candidate_count':obj['candidate_count'],'realistic_candidate_count':obj['realistic_candidate_count'],'realistic_gate_count':obj['realistic_gate_count']},sort_keys=True))
+          PY
+          find "$out" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$out/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: official-state-first-v7-development-${{ matrix.slice }}-${{ github.sha }}
+          path: research_runs/official_state_first_v7_development/${{ matrix.slice }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+  merge:
+    needs: development
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: official-state-first-v7-prepared-${{ github.sha }}
+          path: research_runs/official_state_first_v7_prepare
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: official-state-first-v7-development-*-${{ github.sha }}
+          path: research_runs/official_state_first_v7_development
+          merge-multiple: false
+
+      - name: Merge only immutable development representatives
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_prepare"
+          root="$GITHUB_WORKSPACE/research_runs/official_state_first_v7_development"
+          out="$root/merged"
+          mkdir -p "$out"
+          mapfile -t checkpoints < <(find "$root" -type f -name 'development_*_frozen.json' | sort)
+          if [[ ${#checkpoints[@]} -ne 3 ]]; then
+            printf 'expected 3 slice checkpoints, found %s\n' "${#checkpoints[@]}" >&2
+            exit 1
+          fi
+          python "$prepared/source/official_state_first.py" \
+            --stage merge \
+            --work-dir "$out" \
+            --preregistration "$prepared/source/state_first_hazard_direction_preregistration_v3.json" \
+            --predecessors "${checkpoints[@]}" \
+            2>&1 | tee "$out/merge.log"
+          python - "$out/development_frozen.json" <<'PY'
+          import json,sys
+          obj=json.load(open(sys.argv[1],encoding='utf-8'))
+          assert obj['stage']=='development' and obj['slice']=='merged'
+          assert obj['2024_opened'] is False and obj['2025_opened'] is False and obj['2026_opened'] is False
+          assert obj['orders_submitted'] is False and obj['paper_or_live_started'] is False
+          print(json.dumps({'representatives':obj['realistic_gate_count'],'candidate_count':obj['candidate_count'],'content_digest':obj['content_digest']},sort_keys=True))
+          PY
+          find "$out" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$out/OUTPUT_SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-state-first-v7-development-merged-${{ github.sha }}
+          path: research_runs/official_state_first_v7_development/merged
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
