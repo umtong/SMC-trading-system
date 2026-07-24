@@ -1,0 +1,50 @@
+    x = events[events.day.isin(days) & (events.route == rule.route)].copy()
+    if x.empty:
+        return x
+    if rule.route == 'CONT':
+        mask = (
+            (x.price_move_bps >= rule.price_threshold_bps)
+            & (x.flow_align >= rule.flow_threshold)
+            & (x.depth_ratio <= rule.depth_ratio_threshold)
+            & (x.micro_align_bps >= -0.05)
+        )
+    else:
+        mask = (
+            (x.price_move_bps <= rule.price_threshold_bps)
+            & (x.flow_align <= -rule.flow_threshold)
+            & (x.depth_ratio >= rule.depth_ratio_threshold)
+            & (x.micro_align_bps <= 0.05)
+        )
+    x = x[mask].sort_values('entry_sec')
+    if x.empty:
+        return x
+    chosen = []
+    free = -10**30
+    for i, r in x.iterrows():
+        if int(r.entry_sec) >= free:
+            chosen.append(i)
+            free = int(r.exit_sec)
+    x = x.loc[chosen].copy()
+    x['net_bps'] = x.gross_crossed_bps - fee_bps
+    return x
+
+
+def stats(x: pd.DataFrame) -> dict[str, float | int]:
+    if x.empty:
+        return {'n': 0}
+    v = x.net_bps.to_numpy(float)
+    daily = x.groupby('day').net_bps.sum()
+    return {
+        'n': int(len(v)), 'mean_bps': float(v.mean()), 'median_bps': float(np.median(v)),
+        'top3_removed_bps': trim(v, 3), 'top10_removed_bps': trim(v, 10),
+        'win_rate': float((v > 0).mean()), 'positive_day_fraction': float((daily > 0).mean()),
+        'day_count': int(daily.size), 'sum_bps': float(v.sum()),
+    }
+
+
+def main() -> None:
+    local = Path(snapshot_download(REPO_ID, repo_type='dataset', allow_patterns=['**/*.parquet', 'README.md']))
+    groups = file_groups(local)
+    days = sorted(groups)
+    split = chronological_split(days)
+    audit = {'repo_id': REPO_ID, 'local': str(local), 'complete_days': days, 'stream_file_counts': {d: {k: len(v) for k, v in groups[d].items()} for d in days}}
