@@ -45,3 +45,40 @@ jobs:
           path: pytest.log
           if-no-files-found: error
           retention-days: 7
+
+  v25q-public-2025:
+    if: github.event_name == 'pull_request' && github.head_ref == 'research/v25q-oos-data-20260724'
+    runs-on: macos-14
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade 'pandas==2.2.3'
+      - uses: actions/cache@v4
+        with:
+          path: .cache/v25q-public
+          key: v25q-binance-public-2025-2026jan-btc-eth-sol-xrp-v1
+      - name: Export frozen checksum-verified inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf v25q-public-2025
+          python research/v25q_public_export.py \
+            --cache .cache/v25q-public \
+            --output v25q-public-2025 \
+            --workers 10 2>&1 | tee v25q-public-export.log
+          find v25q-public-2025 -type f -print0 | sort -z | xargs -0 shasum -a 256 | tee v25q-public-2025/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v25q-frozen-public-2025-${{ github.run_id }}
+          path: |
+            v25q-public-2025
+            v25q-public-export.log
+            research/v25q_public_export.py
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
