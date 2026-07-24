@@ -1,0 +1,63 @@
+name: Cross-asset survival source audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/cross-asset-survival-source-audit.yml'
+      - 'research/remote/cross_asset_survival_v2.py.gz.b64.part*'
+      - 'research/cross_asset_survival_20260724/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct research source without opening 2025 outcomes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source-audit
+          cat research/remote/cross_asset_survival_v2.py.gz.b64.part00 \
+              research/remote/cross_asset_survival_v2.py.gz.b64.part01 \
+            | tr -d '[:space:]' \
+            | base64 -d \
+            | gzip -dc > source-audit/cross_asset_survival_v2.py
+          python -m py_compile source-audit/cross_asset_survival_v2.py
+          cp research/cross_asset_survival_20260724/preregistration_v2.json source-audit/
+          cp research/cross_asset_survival_20260724/development_frozen.json.gz.b64 source-audit/
+          python - <<'PY'
+          import base64, gzip, hashlib, json
+          from pathlib import Path
+          root=Path('source-audit')
+          encoded=(root/'development_frozen.json.gz.b64').read_text().strip()
+          raw=gzip.decompress(base64.b64decode(encoded))
+          (root/'development_frozen.json').write_bytes(raw)
+          p=json.loads((root/'preregistration_v2.json').read_text())
+          evidence={
+            'source_sha256':hashlib.sha256((root/'cross_asset_survival_v2.py').read_bytes()).hexdigest(),
+            'development_checkpoint_sha256':hashlib.sha256(raw).hexdigest(),
+            'declared_development_checkpoint_sha256':p['fixed_base']['development_checkpoint_sha256'],
+            'checkpoint_match':hashlib.sha256(raw).hexdigest()==p['fixed_base']['development_checkpoint_sha256'],
+            'candidate_pnl_observed_in_audit':False,
+            'confirmation_2025_opened_in_audit':False,
+            'sealed_2026_opened':False,
+            'orders_submitted':False,
+            'production_enabled':False,
+          }
+          (root/'audit.json').write_text(json.dumps(evidence,sort_keys=True,indent=2)+'\n')
+          print(json.dumps(evidence,sort_keys=True,indent=2))
+          PY
+          sha256sum source-audit/* | tee source-audit/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-asset-survival-source-audit-${{ github.run_id }}
+          path: source-audit
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
