@@ -1,0 +1,59 @@
+name: Phase21 BTC Metrics macOS Bridge
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/phase21-metrics-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install 'pandas>=2.2' 'pyarrow>=16'
+      - name: Download and verify fixed parquet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p phase21_metrics
+          url='https://huggingface.co/datasets/Mindbyte-89/btcusdt_perp_metrics_5m_09_2020_to_04_2026/resolve/main/data/train-00000-of-00001.parquet?download=true'
+          curl --fail --location --retry 10 --retry-all-errors --connect-timeout 30 --max-time 1800 "$url" -o phase21_metrics/upstream.parquet
+          echo 'db5959a0e38d8155ee5931a5a22fb04b6ed3af853faba01fe498f65d17ea37ce  phase21_metrics/upstream.parquet' | shasum -a 256 -c -
+      - name: Audit and exclude post-2025-08 sealed interval
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          import pandas as pd
+          root=Path('phase21_metrics'); source=root/'upstream.parquet'
+          frame=pd.read_parquet(source)
+          expected=['timestamp','sum_open_interest','sum_open_interest_value','count_toptrader_long_short_ratio','sum_toptrader_long_short_ratio','count_long_short_ratio','sum_taker_long_short_vol_ratio']
+          if list(frame.columns)!=expected: raise RuntimeError(list(frame.columns))
+          frame['timestamp']=pd.to_datetime(frame['timestamp'],utc=True)
+          frame=frame.sort_values('timestamp').drop_duplicates('timestamp',keep='last')
+          frame=frame.loc[frame.timestamp<pd.Timestamp('2025-08-01T00:00:00Z')].copy()
+          output=root/'BTCUSDT_metrics_5m_pre_oos.parquet';frame.to_parquet(output,index=False,compression='zstd')
+          delta=frame.timestamp.diff().dropna();manifest={'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'rows':len(frame),'first':frame.timestamp.iloc[0].isoformat(),'last':frame.timestamp.iloc[-1].isoformat(),'irregular_gaps':int((delta!=pd.Timedelta(minutes=5)).sum()),'output_sha256':hashlib.sha256(output.read_bytes()).hexdigest(),'status':'PROVISIONAL_REQUIRES_OFFICIAL_RECONCILIATION'}
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n');print(json.dumps(manifest,indent=2))
+          PY
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase21-btc-metrics-macos-${{ github.sha }}
+          path: |
+            phase21_metrics/BTCUSDT_metrics_5m_pre_oos.parquet
+            phase21_metrics/manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
