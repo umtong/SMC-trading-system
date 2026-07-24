@@ -1,0 +1,152 @@
+name: Cross-asset stop-survival confirmation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "research/remote/cross_asset_survival_v2.py.gz.b64.part*"
+      - "research/cross_asset_survival_20260724/**"
+      - ".github/workflows/cross-asset-survival-confirmation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-asset-survival-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  survival-confirmation:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 340
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: ${{ github.workspace }}/.hf_cache_survival
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_ETAG_TIMEOUT: "120"
+      HF_HUB_DOWNLOAD_TIMEOUT: "300"
+      ROOT: ${{ github.workspace }}/research_runs/cross_asset_survival_20260724
+      BASE_SCRIPT: ${{ github.workspace }}/research_runs/cross_asset_survival_20260724/locked_base_wfv.py
+      EXPERIMENT: ${{ github.workspace }}/research/remote/cross_asset_survival_v2.py
+      CHECKPOINT: ${{ github.workspace }}/research_runs/cross_asset_survival_20260724/development_frozen.json
+      PREREG: ${{ github.workspace }}/research/cross_asset_survival_20260724/preregistration_v2.json
+      TEST_SCRIPT: ${{ github.workspace }}/research/cross_asset_survival_20260724/test_experiment.py
+      EXPECTED_BASE_SHA256: 66b08521a6136ce26fe1c586dcd915877e874228692b03e312fa834afe9554af
+      EXPECTED_EXPERIMENT_GZ_SHA256: bdf367b2c4244090c11a1df3ed096470d1569cd3dd74d2f83903980b9affa229
+      EXPECTED_EXPERIMENT_SHA256: 8fd640512981ac81f9842a4e63390400b2629b8360dd9e921636ff338c44ad03
+      EXPECTED_CHECKPOINT_GZ_SHA256: 7bbdc52089c56ab570b5cff54ea0ee3035c6dfb006d4946e5d1e30c8004f1313
+      EXPECTED_CHECKPOINT_SHA256: 884015977d01118526227447467960c098a7dae93dd16cfda65b388e7ecccc93
+      EXPECTED_PREREG_SHA256: b6918ce559ec15a8ee7edf8d1d6fda82423921dd1c5b1947e6195faadbcb0bb5
+      EXPECTED_TEST_SHA256: 05dadc4d250ac985c0f482bd5cbac5e1397ed6d99021955f95e5401614e6dfd7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/cross-asset-survival-20260724
+          fetch-depth: 1
+
+      - name: Reconstruct and verify immutable research sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          cat research/remote/cross_asset_wfv_v3.py.b64.part{00..06} > /tmp/base_wfv.py.b64
+          base64 --decode /tmp/base_wfv.py.b64 > "$BASE_SCRIPT"
+          python research/remote/repair_cross_asset_wfv_v3_transfer.py "$BASE_SCRIPT" 2>&1 | tee "$ROOT/base_repair.log"
+          printf '%s  %s\n' "$EXPECTED_BASE_SHA256" "$BASE_SCRIPT" | sha256sum --check --strict
+
+          cat research/remote/cross_asset_survival_v2.py.gz.b64.part{00..01} > /tmp/cross_asset_survival.py.gz.b64
+          base64 --decode /tmp/cross_asset_survival.py.gz.b64 > /tmp/cross_asset_survival.py.gz
+          printf '%s  %s\n' "$EXPECTED_EXPERIMENT_GZ_SHA256" /tmp/cross_asset_survival.py.gz | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/cross_asset_survival.py.gz > "$EXPERIMENT"
+          printf '%s  %s\n' "$EXPECTED_EXPERIMENT_SHA256" "$EXPERIMENT" | sha256sum --check --strict
+
+          base64 --decode research/cross_asset_survival_20260724/development_frozen.json.gz.b64 > /tmp/development_frozen.json.gz
+          printf '%s  %s\n' "$EXPECTED_CHECKPOINT_GZ_SHA256" /tmp/development_frozen.json.gz | sha256sum --check --strict
+          gzip --decompress --stdout /tmp/development_frozen.json.gz > "$CHECKPOINT"
+          printf '%s  %s\n' "$EXPECTED_CHECKPOINT_SHA256" "$CHECKPOINT" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_PREREG_SHA256" "$PREREG" | sha256sum --check --strict
+          printf '%s  %s\n' "$EXPECTED_TEST_SHA256" "$TEST_SCRIPT" | sha256sum --check --strict
+          python -m py_compile "$BASE_SCRIPT" "$EXPERIMENT" "$TEST_SCRIPT"
+          cp "$EXPERIMENT" "$ROOT/locked_experiment.py"
+          cp "$PREREG" "$ROOT/preregistration.json"
+
+      - name: Install fixed research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "pip==25.1.1"
+          python -m pip install \
+            "numpy==2.1.3" \
+            "pandas==2.2.3" \
+            "pyarrow==18.1.0" \
+            "scikit-learn==1.6.1" \
+            "huggingface_hub==0.27.1" \
+            "hf_xet==1.1.10" \
+            "pytest==8.3.4"
+          python - <<'PY'
+          import json,platform,sys
+          import numpy,pandas,pyarrow,sklearn,huggingface_hub
+          from pathlib import Path
+          payload={
+            'python':sys.version,'platform':platform.platform(),'machine':platform.machine(),
+            'numpy':numpy.__version__,'pandas':pandas.__version__,'pyarrow':pyarrow.__version__,
+            'scikit_learn':sklearn.__version__,'huggingface_hub':huggingface_hub.__version__,
+            'orders_submitted':False,'paper_or_live_started':False,'2026_opened':False,
+          }
+          root=Path('research_runs/cross_asset_survival_20260724')
+          (root/'environment.json').write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Run causal regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q "$TEST_SCRIPT" 2>&1 | tee "$ROOT/unit_tests.log"
+
+      - name: Run fixed 2024 gate then one-shot 2025 confirmation
+        shell: bash
+        run: |
+          set -uo pipefail
+          rc=0
+          python "$EXPERIMENT" \
+            --base-script "$BASE_SCRIPT" \
+            --checkpoint "$CHECKPOINT" \
+            --preregistration "$PREREG" \
+            --work-dir "$ROOT" \
+            --cache-dir "$HF_HOME" \
+            2>&1 | tee "$ROOT/research.log" || rc=$?
+          python - "$ROOT/wrapper_status.json" "$rc" <<'PY'
+          import json,pathlib,sys
+          path=pathlib.Path(sys.argv[1])
+          payload={'experiment_rc':int(sys.argv[2]),'orders_submitted':False,'paper_or_live_started':False,'2026_opened':False,'target_gate_1pct_daily':False}
+          confirmation=path.parent/'confirmation_frozen.json'
+          if confirmation.exists():
+              value=json.loads(confirmation.read_text(encoding='utf-8'))
+              payload['confirmation_gate']=bool(value.get('confirmation_gate',False))
+              payload['target_gate_1pct_daily']=bool(value.get('target_gate_1pct_daily',False))
+              payload['base_result']=value.get('results',{}).get('base')
+          not_opened=path.parent/'confirmation_not_opened.json'
+          if not_opened.exists(): payload['confirmation_not_opened']=json.loads(not_opened.read_text(encoding='utf-8'))
+          path.write_text(json.dumps(payload,indent=2,sort_keys=True),encoding='utf-8')
+          print(json.dumps(payload,sort_keys=True))
+          PY
+          exit 0
+
+      - name: Record immutable output checksums
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          find "$ROOT" -type f ! -name OUTPUT_SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$ROOT/OUTPUT_SHA256SUMS.txt"
+
+      - name: Upload research evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-asset-survival-${{ github.sha }}
+          path: research_runs/cross_asset_survival_20260724
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
