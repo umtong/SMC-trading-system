@@ -22,7 +22,6 @@ jobs:
     env:
       ROOT: ${{ github.workspace }}/research_runs/state_first_official_builder_v2_20260724
       BUNDLE_B64: ${{ github.workspace }}/research/state_first_raw_provenance_20260724/official_builder_v2_bundle.tar.gz.b64
-      EXPECTED_BUNDLE_B64_SHA256: f76ea333a13118a659c91eac6134402c7feac6b32d45152f1603ccc5d9a78176
       EXPECTED_BUNDLE_GZ_SHA256: 294d99940f8988ab8214db735aac06ab0d4ce17862f612c73ddb2e2682f752e9
       EXPECTED_SCRIPT_SHA256: 0f8c3f1c463dec2f3dcd16117b4992405ff2332cf6a2860df40cb5be03ff3a9d
       EXPECTED_TEST_SHA256: 44f095585bfbdead4aa3690084dce4f428c6417bf6aff507cc2dc4bf95695004
@@ -38,7 +37,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT/source"
-          printf '%s  %s\n' "$EXPECTED_BUNDLE_B64_SHA256" "$BUNDLE_B64" | sha256sum --check --strict
+          # GitHub Contents API normalizes a trailing newline in text payloads.
+          # The canonical security identity is therefore the decoded gzip and each extracted source, not the transport text bytes.
+          sha256sum "$BUNDLE_B64" > "$ROOT/bundle_transport_sha256.txt"
           base64 --decode "$BUNDLE_B64" > /tmp/official_builder_v2_bundle.tar.gz
           printf '%s  %s\n' "$EXPECTED_BUNDLE_GZ_SHA256" /tmp/official_builder_v2_bundle.tar.gz | sha256sum --check --strict
           tar -xzf /tmp/official_builder_v2_bundle.tar.gz -C "$ROOT/source"
@@ -56,7 +57,7 @@ jobs:
           files=list((root/'source').iterdir())
           payload={
             'git_commit':os.environ.get('GITHUB_SHA'),
-            'bundle_base64_sha256':os.environ['EXPECTED_BUNDLE_B64_SHA256'],
+            'bundle_transport_sha256':hashlib.sha256(Path(os.environ['BUNDLE_B64']).read_bytes()).hexdigest(),
             'bundle_gzip_sha256':os.environ['EXPECTED_BUNDLE_GZ_SHA256'],
             'files':{p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files},
             'strategy_executed':False,'candidate_pnl_observed':False,
