@@ -34,7 +34,7 @@ jobs:
         run: |
           python scripts/download_bybit_public_archive_1m.py \
             --symbols BTCUSDT ETHUSDT \
-            --start-month 2022-01 \
+            --start-month 2023-01 \
             --end-month 2024-11 \
             --workers 10 \
             --output artifacts/bybit_linear_crossvenue_1m
@@ -47,8 +47,8 @@ jobs:
           manifest=json.loads((root/'manifest.json').read_text())
           if manifest['errors'] or manifest['missing_archives']:
               raise SystemExit(f"incomplete snapshot: {manifest['errors']} {manifest['missing_archives'][:3]}")
-          if len(manifest['datasets']) != 70:
-              raise SystemExit(f"expected 70 monthly datasets, found {len(manifest['datasets'])}")
+          if len(manifest['datasets']) != 46:
+              raise SystemExit(f"expected 46 monthly datasets, found {len(manifest['datasets'])}")
           for key, info in manifest['datasets'].items():
               path=root/info['path']
               if not path.exists() or path.stat().st_size <= 0 or info['line_count'] <= 0:
