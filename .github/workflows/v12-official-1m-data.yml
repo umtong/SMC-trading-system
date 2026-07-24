@@ -1,0 +1,68 @@
+name: V12 official Binance 1m data
+
+on:
+  push:
+    branches:
+      - agent/v12-one-minute-validation
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build month manifest
+        run: |
+          python - <<'PY' > months.txt
+          year, month = 2022, 1
+          while (year, month) < (2026, 7):
+              print(f"{year:04d}-{month:02d}")
+              month += 1
+              if month == 13:
+                  year += 1
+                  month = 1
+          PY
+          cat months.txt
+
+      - name: Download and verify official USD-M 1m archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://data.binance.vision/data/futures/um/monthly/klines"
+          mkdir -p official-binance-1m
+          for symbol in BTCUSDT ETHUSDT; do
+            mkdir -p "official-binance-1m/${symbol}"
+            while read -r month; do
+              name="${symbol}-1m-${month}.zip"
+              url="${root}/${symbol}/1m/${name}"
+              echo "Downloading ${name}"
+              curl --fail --location --retry 5 --retry-all-errors \
+                --connect-timeout 30 --max-time 300 \
+                "${url}" --output "official-binance-1m/${symbol}/${name}"
+              curl --fail --location --retry 5 --retry-all-errors \
+                --connect-timeout 30 --max-time 120 \
+                "${url}.CHECKSUM" --output "official-binance-1m/${symbol}/${name}.CHECKSUM"
+              expected="$(awk '{print tolower($1)}' "official-binance-1m/${symbol}/${name}.CHECKSUM")"
+              actual="$(sha256sum "official-binance-1m/${symbol}/${name}" | awk '{print tolower($1)}')"
+              test "${actual}" = "${expected}"
+            done < months.txt
+          done
+          find official-binance-1m -type f -name '*.zip' | sort | wc -l
+          find official-binance-1m -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-binance-1m/MANIFEST.sha256
+
+      - name: Upload verified archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-1m-2022-2026-${{ github.run_id }}
+          path: official-binance-1m
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

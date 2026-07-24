@@ -1,0 +1,63 @@
+name: V12 derivatives context sample
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe and verify one official sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sample
+          urls=(
+            "https://data.binance.vision/data/futures/um/monthly/metrics/BTCUSDT/BTCUSDT-metrics-2025-01.zip"
+            "https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2025-01-01.zip"
+            "https://data.binance.vision/data/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2025-01.zip"
+            "https://data.binance.vision/data/futures/um/monthly/premiumIndexKlines/BTCUSDT/5m/BTCUSDT-5m-2025-01.zip"
+            "https://data.binance.vision/data/futures/um/monthly/markPriceKlines/BTCUSDT/5m/BTCUSDT-5m-2025-01.zip"
+          )
+          : > sample/STATUS.txt
+          for url in "${urls[@]}"; do
+            name="$(basename "$url")"
+            key="$(echo "$url" | sha256sum | cut -c1-12)-${name}"
+            if curl --fail --location --retry 2 --retry-all-errors --connect-timeout 20 --max-time 120 "$url" -o "sample/$key"; then
+              if curl --fail --location --retry 2 --retry-all-errors --connect-timeout 20 --max-time 60 "$url.CHECKSUM" -o "sample/$key.CHECKSUM"; then
+                expected="$(awk '{print tolower($1)}' "sample/$key.CHECKSUM")"
+                actual="$(sha256sum "sample/$key" | awk '{print tolower($1)}')"
+                test "$actual" = "$expected"
+                echo "FOUND CHECKSUM_OK $url $key" >> sample/STATUS.txt
+              else
+                echo "FOUND NO_CHECKSUM $url $key" >> sample/STATUS.txt
+              fi
+            else
+              rm -f "sample/$key"
+              echo "MISSING $url" >> sample/STATUS.txt
+            fi
+          done
+          cat sample/STATUS.txt
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          for p in Path('sample').glob('*.zip'):
+              print('\n###', p)
+              with zipfile.ZipFile(p) as z:
+                  print(z.namelist())
+                  raw=z.read(z.namelist()[0]).decode('utf-8',errors='replace').splitlines()
+                  print('\n'.join(raw[:5]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: derivatives-context-sample-${{ github.run_id }}
+          path: sample
+          if-no-files-found: error
+          retention-days: 7

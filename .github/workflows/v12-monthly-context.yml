@@ -1,0 +1,85 @@
+name: V12 official monthly funding premium mark
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build monthly manifest
+        run: |
+          python - <<'PY' > context_jobs.tsv
+          root = "https://data.binance.vision/data/futures/um/monthly"
+          year, month = 2022, 1
+          while (year, month) < (2026, 7):
+              stamp = f"{year:04d}-{month:02d}"
+              for symbol in ("BTCUSDT", "ETHUSDT"):
+                  print("fundingRate", symbol, "none", stamp, f"{root}/fundingRate/{symbol}/{symbol}-fundingRate-{stamp}.zip", sep="\t")
+                  for dataset in ("premiumIndexKlines", "markPriceKlines"):
+                      print(dataset, symbol, "5m", stamp, f"{root}/{dataset}/{symbol}/5m/{symbol}-5m-{stamp}.zip", sep="\t")
+              month += 1
+              if month == 13:
+                  year += 1
+                  month = 1
+          PY
+          echo "jobs: $(wc -l < context_jobs.tsv)"
+
+      - name: Download and checksum-verify monthly context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-binance-monthly-context
+          export ROOT_OUT="$PWD/official-binance-monthly-context"
+          download_one() {
+            dataset="$1"; symbol="$2"; interval="$3"; stamp="$4"; url="$5"
+            if [ "$interval" = "none" ]; then
+              dir="$ROOT_OUT/$dataset/$symbol"
+              name="${symbol}-${dataset}-${stamp}.zip"
+            else
+              dir="$ROOT_OUT/$dataset/$symbol/$interval"
+              name="${symbol}-${interval}-${stamp}.zip"
+            fi
+            mkdir -p "$dir"
+            out="$dir/$name"
+            for attempt in 1 2 3 4 5; do
+              if curl --fail --location --connect-timeout 30 --max-time 180 "$url" -o "$out.part" && \
+                 curl --fail --location --connect-timeout 30 --max-time 60 "$url.CHECKSUM" -o "$out.CHECKSUM.part"; then
+                expected="$(awk '{print tolower($1)}' "$out.CHECKSUM.part")"
+                actual="$(sha256sum "$out.part" | awk '{print tolower($1)}')"
+                if [ "$actual" = "$expected" ]; then
+                  mv "$out.part" "$out"
+                  mv "$out.CHECKSUM.part" "$out.CHECKSUM"
+                  return 0
+                fi
+              fi
+              rm -f "$out.part" "$out.CHECKSUM.part"
+              sleep "$((attempt * 2))"
+            done
+            echo "FAILED $url" >&2
+            return 1
+          }
+          export -f download_one
+          xargs -P 12 -n 5 bash -c 'download_one "$@"' _ < context_jobs.tsv
+          expected="$(wc -l < context_jobs.tsv)"
+          actual="$(find official-binance-monthly-context -type f -name '*.zip' | wc -l)"
+          test "$actual" = "$expected"
+          find official-binance-monthly-context -type f -name '*.zip' -print0 | sort -z | xargs -0 sha256sum > official-binance-monthly-context/MANIFEST.sha256
+          echo "verified archives: $actual"
+
+      - name: Upload verified monthly context
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-binance-usdm-monthly-context-2022-2026-${{ github.run_id }}
+          path: official-binance-monthly-context
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
