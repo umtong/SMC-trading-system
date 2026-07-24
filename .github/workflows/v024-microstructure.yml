@@ -1,0 +1,149 @@
+name: v0.24.1 microstructure locked integrity
+
+on:
+  push:
+    branches:
+      - research/v024-microstructure-20260723
+    paths:
+      - 'research/v024_bundle_v4/**'
+      - '.github/workflows/v024-microstructure.yml'
+  pull_request:
+    paths:
+      - 'research/v024_bundle_v4/**'
+      - '.github/workflows/v024-microstructure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v0241-integrity-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUNNER_ARCHIVE_SHA256: cd9424d230bc5095bd8b867f5e30c05ff05b26cdc6c4f65b49a99551b3c0d2d8
+  PLAN_FILE_SHA256: dc7b24fe72f9d98373ff765e0bae7698cf78b01cbcfc90560ed5eccb613154bf
+  PLAN_PAYLOAD_SHA256: e424afcf20ac04673b6d4f7de24042545c581a753e9cee18f46543b367593094
+  SOURCE_MANIFEST_SHA256: 683735f7c13f20fb457c2f137a23012660999168b0f53ede100b85294addb92d
+  DATA_PLAN_FILE_SHA256: 156e9755446f4cd737f9b987ad46f50e38a0fd4a19b9e226f40b6bf6bfd51ad1
+  DATA_PLAN_PAYLOAD_SHA256: 12e4c72b4a05c3719d2c2cbc7b7ca06563ad3829f5460277f1655d2a483d43a6
+
+jobs:
+  integrity:
+    name: Reconstruct and validate locked v0.24.1 runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact research commit
+        uses: actions/checkout@v4
+
+      - name: Reconstruct SHA-locked runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p integrity-evidence
+          count="$(find research/v024_bundle_v4 -maxdepth 1 -name 'part-*.b64' | wc -l)"
+          printf '%s\n' "$count" | tee integrity-evidence/part-count.txt
+          test "$count" -eq 8
+          cat research/v024_bundle_v4/part-*.b64 | base64 -d > /tmp/v0241_locked_runner.tar.xz
+          echo "${RUNNER_ARCHIVE_SHA256}  /tmp/v0241_locked_runner.tar.xz" | sha256sum -c - | tee integrity-evidence/archive-sha256.txt
+          xz -t /tmp/v0241_locked_runner.tar.xz
+          tar -tJf /tmp/v0241_locked_runner.tar.xz | tee integrity-evidence/archive-members.txt
+          tar -xJf /tmp/v0241_locked_runner.tar.xz
+          test -f v024/RELEASE_MANIFEST.json
+          test -f v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
+          test -f v024/artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: v024/requirements-lock.txt
+
+      - name: Install locked dependencies
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+
+      - name: Verify preregistration identity
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          mkdir -p ci_evidence
+          echo "${PLAN_FILE_SHA256}  artifacts/microstructure_liquidity_v0_24/research_plan_locked.json" | sha256sum -c -
+          echo "${DATA_PLAN_FILE_SHA256}  artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json" | sha256sum -c -
+          python - <<'PY' | tee ci_evidence/preregistration-audit.json
+          import json, os
+          from pathlib import Path
+
+          plan = json.loads(Path('artifacts/microstructure_liquidity_v0_24/research_plan_locked.json').read_text())
+          acquisition = json.loads(Path('artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json').read_text())
+          release = json.loads(Path('RELEASE_MANIFEST.json').read_text())
+
+          assert plan['study_id'] == 'derivatives_microstructure_conditioned_smc_v0_24_1'
+          assert plan['plan_payload_sha256'] == os.environ['PLAN_PAYLOAD_SHA256']
+          assert plan['source_tree_manifest_sha256'] == os.environ['SOURCE_MANIFEST_SHA256']
+          assert plan['candidate_count'] == 64
+          assert plan['evaluation_period']['start_inclusive'] == '2021-12-02T00:00:00+00:00'
+          assert plan['evaluation_period']['preholdout_end_exclusive'] == '2025-10-01T00:00:00+00:00'
+          assert plan['evaluation_period']['terminal_holdout_locked'] is True
+          assert plan['production_enabled'] is False
+
+          assert acquisition['payload_sha256'] == os.environ['DATA_PLAN_PAYLOAD_SHA256']
+          assert acquisition['download_start_inclusive'] == '2021-11-01'
+          assert acquisition['download_end_inclusive'] == '2025-09-30'
+          assert acquisition['evaluation_start_inclusive'] == '2021-12-02'
+          assert acquisition['request_count'] == 3272
+          assert len(acquisition['requests']) == 3272
+          assert acquisition['terminal_holdout_download_prohibited_by_default'] is True
+          assert acquisition['availability_boundary_evidence']['candidate_pnl_observed_before_correction'] is False
+          assert acquisition['availability_boundary_evidence']['terminal_holdout_opened_before_correction'] is False
+
+          assert release['study_id'] == plan['study_id']
+          assert release['plan_payload_sha256'] == os.environ['PLAN_PAYLOAD_SHA256']
+          assert release['source_tree_manifest_sha256'] == os.environ['SOURCE_MANIFEST_SHA256']
+          assert release['data_plan_payload_sha256'] == os.environ['DATA_PLAN_PAYLOAD_SHA256']
+
+          print(json.dumps({
+              'study_id': plan['study_id'],
+              'plan_payload_sha256': plan['plan_payload_sha256'],
+              'source_tree_manifest_sha256': plan['source_tree_manifest_sha256'],
+              'data_plan_payload_sha256': acquisition['payload_sha256'],
+              'candidate_count': plan['candidate_count'],
+              'request_count': acquisition['request_count'],
+              'evaluation_start': plan['evaluation_period']['start_inclusive'],
+              'preholdout_end_exclusive': plan['evaluation_period']['preholdout_end_exclusive'],
+              'terminal_holdout_locked': plan['evaluation_period']['terminal_holdout_locked'],
+              'production_enabled': plan['production_enabled'],
+          }, sort_keys=True, indent=2))
+          PY
+
+      - name: Run full regression and compile gates
+        shell: bash
+        working-directory: v024
+        run: |
+          set -euo pipefail
+          python -m pytest -q | tee ci_evidence/pytest.txt
+          python -m compileall -q smc_ict_quant scripts tests
+          python scripts/run_microstructure_pipeline_v0_24.py --help | tee ci_evidence/pipeline-help.txt
+          python scripts/run_microstructure_liquidity_v0_24.py --help | tee ci_evidence/research-help.txt
+          python scripts/download_binance_um_parallel.py --help | tee ci_evidence/downloader-help.txt
+
+      - name: Upload integrity evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v0241-integrity-${{ github.run_id }}
+          path: |
+            integrity-evidence
+            v024/ci_evidence
+            v024/RELEASE_MANIFEST.json
+            v024/artifacts/microstructure_liquidity_v0_24/research_plan_locked.json
+            v024/artifacts/microstructure_liquidity_v0_24/data_acquisition_plan.json
+          if-no-files-found: warn
+          retention-days: 30
