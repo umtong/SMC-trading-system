@@ -1,6 +1,11 @@
 name: Export Binance USD-M Funding Research Data
 
 on:
+  push:
+    branches:
+      - agent/binance-data-export-20260724
+    paths:
+      - ".github/workflows/export-binance-funding.yml"
   pull_request:
     paths:
       - ".github/workflows/export-binance-funding.yml"
@@ -18,54 +23,81 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Download and validate funding history
+      - name: Download, checksum, normalize monthly funding archives
         shell: bash
         run: |
           python - <<'PY'
           from __future__ import annotations
-          import csv, hashlib, json, time, urllib.parse, urllib.request
+          import csv, hashlib, io, json, urllib.request, zipfile
           from datetime import datetime, timezone
           from pathlib import Path
 
           SYMBOLS=("BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT")
-          START=1735689600000
-          END=1782863999999
+          START=(2025,1); END=(2026,6)
+          BASE="https://data.binance.vision/data/futures/um/monthly/fundingRate"
           OUT=Path("research_data/binance_um_funding")
           OUT.mkdir(parents=True,exist_ok=True)
-          manifest={"generated_at_utc":datetime.now(timezone.utc).isoformat(),"source":"Binance USD-M REST /fapi/v1/fundingRate","start_ms":START,"end_ms":END,"symbols":{}}
 
-          def get_json(url:str):
-              req=urllib.request.Request(url,headers={"User-Agent":"smc-research-funding-export/1.0"})
-              with urllib.request.urlopen(req,timeout=60) as r:
-                  return json.loads(r.read().decode("utf-8"))
+          def months(start,end):
+              y,m=start
+              while (y,m)<=end:
+                  yield f"{y:04d}-{m:02d}"
+                  y,m=(y+1,1) if m==12 else (y,m+1)
+
+          def get(url):
+              req=urllib.request.Request(url,headers={"User-Agent":"smc-funding-archive-export/2.0"})
+              with urllib.request.urlopen(req,timeout=120) as r:
+                  return r.read()
+
+          def sha(data): return hashlib.sha256(data).hexdigest()
+
+          manifest={"generated_at_utc":datetime.now(timezone.utc).isoformat(),
+                    "source":"Binance public USD-M monthly fundingRate archives",
+                    "start_month":"2025-01","end_month":"2026-06","symbols":{}}
 
           for symbol in SYMBOLS:
-              rows=[]; cursor=START
-              while cursor<=END:
-                  q=urllib.parse.urlencode({"symbol":symbol,"startTime":cursor,"endTime":END,"limit":1000})
-                  batch=get_json("https://fapi.binance.com/fapi/v1/fundingRate?"+q)
-                  if not batch: break
-                  rows.extend(batch)
-                  nxt=int(batch[-1]["fundingTime"])+1
-                  if nxt<=cursor: raise RuntimeError("non-advancing funding cursor")
-                  cursor=nxt
-                  if len(batch)<1000: break
-                  time.sleep(0.15)
-              rows=sorted(rows,key=lambda x:int(x["fundingTime"]))
-              times=[int(x["fundingTime"]) for x in rows]
+              rows=[]; sources=[]; header_seen=None
+              for month in months(START,END):
+                  fn=f"{symbol}-fundingRate-{month}.zip"
+                  url=f"{BASE}/{symbol}/{fn}"
+                  archive=get(url)
+                  checksum=get(url+".CHECKSUM").decode("utf-8").strip().split()[0].lower()
+                  actual=sha(archive)
+                  if actual!=checksum:
+                      raise RuntimeError(f"checksum mismatch {fn}: {actual} != {checksum}")
+                  with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+                      members=[n for n in zf.namelist() if not n.endswith("/")]
+                      if len(members)!=1: raise RuntimeError(f"unexpected members {fn}: {members}")
+                      text=io.TextIOWrapper(zf.open(members[0]),encoding="utf-8-sig",newline="")
+                      data=list(csv.reader(text))
+                  if not data: raise RuntimeError(f"empty archive {fn}")
+                  first=data[0]
+                  has_header=not first[0].lstrip("-").isdigit()
+                  header=[x.strip().lower() for x in first] if has_header else [f"c{i}" for i in range(len(first))]
+                  body=data[1:] if has_header else data
+                  if header_seen is None: header_seen=header
+                  time_idx=next((i for i,n in enumerate(header) if n in {"calc_time","funding_time","fundingtime","time"}),0)
+                  rate_idx=next((i for i,n in enumerate(header) if "rate" in n and "interval" not in n),len(header)-1)
+                  interval_idx=next((i for i,n in enumerate(header) if "interval" in n),None)
+                  month_n=0
+                  for r in body:
+                      if not r or not r[time_idx].lstrip("-").isdigit(): continue
+                      t=int(r[time_idx]); rate=float(r[rate_idx]); interval=float(r[interval_idx]) if interval_idx is not None and r[interval_idx] else 8.0
+                      rows.append((t,interval,rate)); month_n+=1
+                  sources.append({"month":month,"url":url,"official_sha256":checksum,"archive_bytes":len(archive),"rows":month_n,"source_header":header})
+              rows=sorted(rows,key=lambda x:x[0])
+              times=[r[0] for r in rows]
               if len(times)!=len(set(times)) or any(b<=a for a,b in zip(times,times[1:])):
-                  raise RuntimeError(f"bad funding timestamps for {symbol}")
-              path=OUT/f"{symbol}_funding_2025-01_2026-06.csv"
-              with path.open("w",newline="",encoding="utf-8") as f:
-                  w=csv.writer(f); w.writerow(("symbol","funding_time","funding_rate","mark_price"))
-                  for x in rows:
-                      w.writerow((symbol,int(x["fundingTime"]),x["fundingRate"],x.get("markPrice","")))
-              sha=hashlib.sha256(path.read_bytes()).hexdigest()
-              manifest["symbols"][symbol]={"rows":len(rows),"first_time":times[0] if times else None,"last_time":times[-1] if times else None,"output":path.as_posix(),"sha256":sha}
-              print(symbol,len(rows),times[0] if times else None,times[-1] if times else None,sha,flush=True)
-          mp=OUT/"manifest.json"; mp.write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding="utf-8")
+                  raise RuntimeError(f"non-unique/non-monotonic funding times for {symbol}")
+              out=OUT/f"{symbol}_funding_2025-01_2026-06.csv"
+              with out.open("w",newline="",encoding="utf-8") as f:
+                  w=csv.writer(f);w.writerow(("symbol","calc_time","funding_interval_hours","funding_rate"))
+                  for t,interval,rate in rows:w.writerow((symbol,t,interval,rate))
+              manifest["symbols"][symbol]={"rows":len(rows),"first_time":times[0] if times else None,"last_time":times[-1] if times else None,"output":out.as_posix(),"output_sha256":sha(out.read_bytes()),"sources":sources}
+              print(symbol,len(rows),times[0] if times else None,times[-1] if times else None,flush=True)
+          mp=OUT/"manifest.json";mp.write_text(json.dumps(manifest,indent=2,sort_keys=True),encoding="utf-8")
           PY
-      - name: Upload funding research data
+      - name: Upload verified funding research data
         uses: actions/upload-artifact@v4
         with:
           name: binance-um-funding-2025-01_2026-06
